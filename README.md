@@ -23,29 +23,6 @@
 
 ---
 
-## Tabla de Contenidos
-
-- [Características](#-características)
-- [Instalación](#-instalación)
-  - [Instalación Rápida](#-instalación-rápida)
-  - [Requisitos](#-requisitos)
-  - [Métodos de Instalación](#-métodos-de-instalación)
-  - [Desktop Launcher](#-desktop-launcher)
-  - [Certificados SSL](#-certificados-ssl)
-- [Uso](#-uso)
-  - [Inicio Rápido](#inicio-rápido)
-  - [Gestión de Proyectos](#gestión-de-proyectos)
-  - [Proxy Interceptor](#proxy-interceptor)
-  - [Repeater](#repeater)
-  - [Scope](#scope)
-  - [Extensiones](#extensiones)
-- [Portabilidad](#-portabilidad)
-- [Verificación y Troubleshooting](#-verificación-y-troubleshooting)
-- [Contribuir](#-contribuir)
-- [Créditos](#-créditos)
-
----
-
 ## Características
 
 - **Proxy Interceptor**: Captura y modifica peticiones/respuestas HTTP/HTTPS en tiempo real
@@ -66,7 +43,7 @@
 
 ```bash
 # 1. Descarga el proyecto
-git clone https://github.com/[tu-usuario]/blackwire.git
+git clone https://github.com/Glitchboi-sudo/Blackwire.git
 cd blackwire
 
 # 2. Ejecuta el instalador
@@ -147,7 +124,7 @@ chmod +x *.sh
 
 ---
 
-### 🖥️ Desktop Launcher
+### Desktop Launcher
 
 #### Instalar Launcher en el Menú
 
