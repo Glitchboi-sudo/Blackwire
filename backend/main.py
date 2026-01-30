@@ -1,0 +1,934 @@
+#!/usr/bin/env python3
+"""
+Blackwire - Proxy Interceptor Backend
+"""
+
+import asyncio
+import logging
+import os
+import threading
+import json
+import subprocess
+import sys
+import hashlib
+import re
+import shutil
+import importlib.util
+import shlex
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, List, Dict
+from contextlib import asynccontextmanager
+from urllib.parse import urlparse
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Body
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+import aiosqlite
+import httpx
+
+BASE_DIR = Path(__file__).parent.parent
+PROJECTS_DIR = BASE_DIR / "projects"
+CURRENT_PROJECT_FILE = BASE_DIR / ".current_project"
+EXTENSIONS_DIR = Path(__file__).parent / "extensions"
+FRONTEND_DIR = BASE_DIR / "frontend"
+APP_JSX_PATH = FRONTEND_DIR / "App.jsx"
+
+WEBHOOKSITE_BASE = "https://webhook.site"
+WEBHOOKSITE_API_BASE = "https://webhook.site"
+
+connections: List[WebSocket] = []
+proxy_process: Optional[subprocess.Popen] = None
+intercepted_requests: Dict[str, dict] = {}
+intercept_enabled: bool = False
+scope_rules: List[dict] = []
+current_project: Optional[str] = None
+extensions_config: Dict[str, dict] = {}
+
+# --- Logging ---
+LOG_LEVEL = os.getenv('BLACKWIRE_LOG_LEVEL', 'INFO').upper()
+LOG_FORMAT = os.getenv('BLACKWIRE_LOG_FORMAT', '%(asctime)s %(levelname)s %(name)s: %(message)s')
+logger = logging.getLogger('blackwire')
+
+def setup_logging():
+    """Configure logging once."""
+    if logger.handlers:
+        return
+    logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO), format=LOG_FORMAT)
+    logger.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
+    logger.info('Logging initialized (level=%s)', LOG_LEVEL)
+
+
+
+class Project(BaseModel):
+    name: str
+    description: Optional[str] = ""
+
+class ScopeRule(BaseModel):
+    pattern: str
+    rule_type: str = "include"
+    enabled: bool = True
+
+class RepeaterRequest(BaseModel):
+    name: str
+    method: str
+    url: str
+    headers: dict
+    body: Optional[str] = None
+
+
+def get_project_path(name: str) -> Path:
+    return PROJECTS_DIR / name
+
+def get_project_db(name: str) -> Path:
+    return get_project_path(name) / "blackwire.db"
+
+def get_current_project() -> Optional[str]:
+    global current_project
+    if current_project:
+        return current_project
+    if CURRENT_PROJECT_FILE.exists():
+        current_project = CURRENT_PROJECT_FILE.read_text().strip()
+        return current_project
+    return None
+
+def set_current_project(name: Optional[str]):
+    global current_project
+    current_project = name
+    if name:
+        CURRENT_PROJECT_FILE.write_text(name)
+    elif CURRENT_PROJECT_FILE.exists():
+        CURRENT_PROJECT_FILE.unlink()
+
+async def get_project_config(name: str) -> Optional[dict]:
+    config_path = get_project_path(name) / "config.json"
+    if config_path.exists():
+        return json.loads(config_path.read_text())
+    return None
+
+async def save_project_config(name: str, config: dict):
+    config_path = get_project_path(name) / "config.json"
+    config_path.write_text(json.dumps(config, indent=2))
+
+async def load_project_settings(name: str):
+    global scope_rules, intercept_enabled, extensions_config
+    config = await get_project_config(name)
+    if config:
+        scope_rules = config.get("scope_rules", [])
+        intercept_enabled = config.get("intercept_enabled", False)
+        extensions_config = config.get("extensions", {})
+
+
+def webhook_headers(api_key: Optional[str]) -> dict:
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    if api_key:
+        headers["Api-Key"] = api_key
+    return headers
+
+
+async def save_extension_config(project: str, name: str, config: dict):
+    global extensions_config
+    extensions_config[name] = config
+    proj_config = await get_project_config(project)
+    if not proj_config:
+        raise HTTPException(status_code=404, detail="Project not found")
+    proj_config["extensions"] = extensions_config
+    await save_project_config(project, proj_config)
+    await update_proxy_config()
+
+
+def load_extension_metadata() -> List[dict]:
+    meta_list: List[dict] = []
+    if not EXTENSIONS_DIR.exists():
+        return meta_list
+    for path in sorted(EXTENSIONS_DIR.glob("*.py")):
+        if path.name.startswith("_") or path.name == "__init__.py":
+            continue
+        meta = {
+            "name": path.stem,
+            "title": path.stem.replace("_", " ").title(),
+            "description": "",
+            "tabs": [],
+        }
+        try:
+            spec = importlib.util.spec_from_file_location(f"blackwire_ext_meta_{path.stem}", path)
+            if spec and spec.loader:
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                if hasattr(module, "EXTENSION_META"):
+                    meta.update(module.EXTENSION_META)
+                elif hasattr(module, "Extension"):
+                    ext = module.Extension()
+                    meta["name"] = getattr(ext, "name", meta["name"])
+        except Exception as e:
+            logger.warning("Failed to load extension metadata from %s: %s", path.name, e)
+        meta_list.append(meta)
+    return meta_list
+
+
+async def init_db(name: str):
+    project_path = get_project_path(name)
+    project_path.mkdir(parents=True, exist_ok=True)
+    db_path = get_project_db(name)
+    
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute("""CREATE TABLE IF NOT EXISTS requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, method TEXT NOT NULL, url TEXT NOT NULL,
+            headers TEXT NOT NULL, body TEXT, response_status INTEGER, response_headers TEXT,
+            response_body TEXT, timestamp TEXT NOT NULL, request_type TEXT DEFAULT 'http',
+            tags TEXT DEFAULT '[]', notes TEXT, saved INTEGER DEFAULT 0, in_scope INTEGER DEFAULT 1,
+            hash TEXT UNIQUE)""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS repeater (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, method TEXT NOT NULL,
+            url TEXT NOT NULL, headers TEXT NOT NULL, body TEXT, created_at TEXT NOT NULL,
+            last_response TEXT)""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS webhook_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, token_id TEXT NOT NULL, request_id TEXT NOT NULL UNIQUE,
+            method TEXT, url TEXT, ip TEXT, user_agent TEXT, content TEXT, headers TEXT,
+            query TEXT, created_at TEXT, raw_json TEXT)""")
+        await db.commit()
+
+async def get_db():
+    project = get_current_project()
+    if not project:
+        raise HTTPException(status_code=400, detail="No project selected")
+    return aiosqlite.connect(get_project_db(project))
+
+
+def match_scope(url: str, rules: List[dict]) -> bool:
+    logger.debug('Scope check: url=%s rules=%d', url, len(rules))
+    if not rules:
+        return True
+    parsed = urlparse(url)
+    host = parsed.netloc
+    in_scope = False
+    has_include = any(r.get("rule_type") == "include" and r.get("enabled", True) for r in rules)
+    for rule in rules:
+        if not rule.get("enabled", True):
+            continue
+        pattern = rule.get("pattern", "")
+        rule_type = rule.get("rule_type", "include")
+        regex = pattern.replace(".", r"\.").replace("*", ".*")
+        try:
+            if re.match(regex, host) or re.match(regex, url):
+                if rule_type == "include":
+                    in_scope = True
+                elif rule_type == "exclude":
+                    return False
+        except:
+            continue
+    return in_scope if has_include else True
+
+
+class GitManager:
+    def __init__(self, name: str):
+        self.repo_path = get_project_path(name)
+
+    async def _ensure_identity(self) -> bool:
+        async def _get_config(key: str) -> Optional[str]:
+            proc = await asyncio.create_subprocess_exec(
+                "git", "config", "--get", key,
+                cwd=str(self.repo_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await proc.communicate()
+            value = stdout.decode().strip()
+            return value or None
+
+        name = await _get_config("user.name")
+        email = await _get_config("user.email")
+        if name and email:
+            return True
+
+        default_name = os.getenv("BLACKWIRE_GIT_NAME", "Blackwire")
+        default_email = os.getenv("BLACKWIRE_GIT_EMAIL", "blackwire@local")
+        proc = await asyncio.create_subprocess_exec(
+            "git", "config", "user.name", default_name,
+            cwd=str(self.repo_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+        proc = await asyncio.create_subprocess_exec(
+            "git", "config", "user.email", default_email,
+            cwd=str(self.repo_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+        return True
+    
+    async def init_repo(self):
+        if not (self.repo_path / ".git").exists():
+            proc = await asyncio.create_subprocess_exec("git", "init", cwd=str(self.repo_path),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            await proc.communicate()
+            (self.repo_path / ".gitignore").write_text("*.pyc\n__pycache__/\n")
+            await self._ensure_identity()
+            await self.commit("Initial commit")
+    
+    async def commit(self, message: str) -> Optional[str]:
+        await self._ensure_identity()
+        proc = await asyncio.create_subprocess_exec(
+            "git", "add", "-A", cwd=str(self.repo_path),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+        proc = await asyncio.create_subprocess_exec(
+            "git", "commit", "-m", message, cwd=str(self.repo_path),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode == 0:
+            proc = await asyncio.create_subprocess_exec("git", "rev-parse", "HEAD", cwd=str(self.repo_path),
+                stdout=asyncio.subprocess.PIPE)
+            stdout, _ = await proc.communicate()
+            return stdout.decode().strip()[:8]
+        if stderr:
+            logger.warning("Git commit failed: %s", stderr.decode().strip())
+        return None
+    
+    async def get_history(self, limit: int = 50) -> List[dict]:
+        proc = await asyncio.create_subprocess_exec("git", "log", f"-{limit}", "--pretty=format:%H|%s|%ai",
+            cwd=str(self.repo_path), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, _ = await proc.communicate()
+        commits = []
+        for line in stdout.decode().strip().split("\n"):
+            if line and "|" in line:
+                parts = line.split("|")
+                commits.append({"hash": parts[0][:8], "message": parts[1], "date": parts[2] if len(parts) > 2 else ""})
+        return commits
+
+
+async def update_proxy_config():
+    config = {
+        "intercept_enabled": intercept_enabled,
+        "scope_rules": scope_rules,
+        "project": get_current_project(),
+        "extensions": extensions_config,
+    }
+    (Path(__file__).parent / ".proxy_config.json").write_text(json.dumps(config))
+    logger.debug('Proxy config updated at %s: %s', Path(__file__).parent / '.proxy_config.json', config)
+
+
+def _stream_pipe(pipe, level_fn, label: str):
+    """Read lines from a subprocess pipe and log them.
+
+    NOTE: We spawn mitmproxy with text=True, so readline() returns str, not bytes.
+    """
+    try:
+        if not pipe:
+            return
+        for line in iter(pipe.readline, ''):  # '' == EOF en text mode
+            if not line:
+                break
+            line = line.rstrip()
+            if line:
+                level_fn('[%s] %s', label, line)
+    except Exception as e:
+        logger.debug('Pipe reader for %s stopped: %s', label, e)
+
+async def start_proxy(port: int = 8080, mode: str = "regular", extra_args: str = ""):
+    global proxy_process
+    logger.debug('start_proxy called (port=%s)', port)
+    if proxy_process and proxy_process.poll() is None:
+        return {"status": "already_running", "port": port}
+    
+    await update_proxy_config()
+    addon_path = Path(__file__).parent / "mitm_addon.py"
+    logger.info('Starting mitmproxy (port=%s) with addon=%s', port, addon_path)
+    
+    # Use mitmdump (headless) instead of mitmproxy UI; running the dump module directly does nothing.
+    mitmdump_bin = Path(sys.executable).with_name("mitmdump")
+    if not mitmdump_bin.exists():
+        resolved = shutil.which("mitmdump")
+        mitmdump_bin = Path(resolved) if resolved else None
+    if not mitmdump_bin:
+        logger.error("mitmdump binary not found near current Python. Verify the venv/paths.")
+        return {"status": "failed", "error": "mitmdump not found in venv or PATH"}
+    extra = shlex.split(extra_args) if extra_args else []
+    cmd = [str(mitmdump_bin), "--mode", mode, "-p", str(port),
+           "-s", str(addon_path), "--set", "connection_strategy=lazy", "--ssl-insecure"]
+    if extra:
+        cmd.extend(extra)
+    logger.debug('mitmproxy command: %s', ' '.join(cmd))
+    
+    logger.debug('Spawning mitmproxy subprocess...')
+    logger.info("Launching proxy subprocess: %s", " ".join(map(str, cmd)))
+    proxy_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    # Give the process a moment to initialize and bind the port
+    await asyncio.sleep(1.0)
+    if proxy_process.poll() is None:
+        # Stream mitmproxy stdout/stderr into our logs for easier debugging
+        threading.Thread(target=_stream_pipe, args=(proxy_process.stdout, logger.info, "mitm:stdout"), daemon=True).start()
+        threading.Thread(target=_stream_pipe, args=(proxy_process.stderr, logger.error, "mitm:stderr"), daemon=True).start()
+    else:
+        # Process already exited; capture whatever it printed
+        try:
+            stdout, stderr = proxy_process.communicate(timeout=1.0)
+        except Exception:
+            stdout, stderr = "", ""
+        logger.error("Proxy exited immediately (returncode=%s). stdout=%r stderr=%r", proxy_process.returncode, stdout, stderr)
+        return {"status": "failed", "error": (stderr or stdout or "Proxy exited immediately")}
+    # If still running after startup window, report started
+    return {"status": "started", "port": port, "pid": proxy_process.pid}
+async def stop_proxy():
+    global proxy_process
+    logger.debug('stop_proxy called')
+    if proxy_process:
+        proxy_process.terminate()
+        logger.info('Stopping mitmproxy (pid=%s)...', proxy_process.pid)
+        try:
+            proxy_process.wait(timeout=5)
+        except:
+            proxy_process.kill()
+        proxy_process = None
+        return {"status": "stopped"}
+    return {"status": "not_running"}
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+    setup_logging()
+    project = get_current_project()
+    if project:
+        await init_db(project)
+        await load_project_settings(project)
+    yield
+    await stop_proxy()
+
+app = FastAPI(title="Blackwire API", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+# Usar el frontend.html original que tiene toda la funcionalidad
+FRONTEND_HTML_PATH = Path(__file__).parent / "frontend.html"
+FRONTEND_HTML = FRONTEND_HTML_PATH.read_text() if FRONTEND_HTML_PATH.exists() else "<h1>Frontend not found</h1>"
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    return HTMLResponse(FRONTEND_HTML)
+
+@app.get("/App.jsx")
+async def app_jsx():
+    if APP_JSX_PATH.exists():
+        return FileResponse(APP_JSX_PATH, media_type="text/javascript")
+    raise HTTPException(status_code=404, detail="App.jsx not found")
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    connections.append(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        connections.remove(websocket)
+
+async def broadcast(data: dict):
+    for conn in connections:
+        try:
+            await conn.send_json(data)
+        except:
+            pass
+
+
+@app.get("/api/projects")
+async def list_projects():
+    projects = []
+    if PROJECTS_DIR.exists():
+        for p in PROJECTS_DIR.iterdir():
+            if p.is_dir() and (p / "config.json").exists():
+                config = json.loads((p / "config.json").read_text())
+                projects.append({"name": p.name, "description": config.get("description", ""),
+                    "created_at": config.get("created_at"), "is_current": p.name == get_current_project()})
+    return sorted(projects, key=lambda x: x.get("created_at", ""), reverse=True)
+
+@app.post("/api/projects")
+async def create_project(project: Project):
+    if get_project_path(project.name).exists():
+        raise HTTPException(status_code=400, detail="Project exists")
+    get_project_path(project.name).mkdir(parents=True)
+    config = {"name": project.name, "description": project.description, "scope_rules": [],
+        "proxy_port": 8080, "proxy_mode": "regular", "proxy_args": "", "intercept_enabled": False, "created_at": datetime.now().isoformat(),
+        "extensions": {
+            "match_replace": {"enabled": False, "rules": []}
+        }}
+    await save_project_config(project.name, config)
+    await init_db(project.name)
+    git = GitManager(project.name)
+    await git.init_repo()
+    logger.info('Created project %s', project.name)
+    return {"status": "created", "name": project.name}
+
+@app.get("/api/projects/current")
+async def get_current():
+    project = get_current_project()
+    if project:
+        config = await get_project_config(project)
+        return {"project": project, "config": config}
+    return {"project": None}
+
+@app.post("/api/projects/{name}/select")
+async def select_project(name: str):
+    global scope_rules, intercept_enabled, extensions_config
+    config = await get_project_config(name)
+    if not config:
+        raise HTTPException(status_code=404, detail="Project not found")
+    set_current_project(name)
+    logger.info('Selected project %s', name)
+    await init_db(name)
+    scope_rules = config.get("scope_rules", [])
+    intercept_enabled = config.get("intercept_enabled", False)
+    extensions_config = config.get("extensions", {})
+    return {"status": "selected", "project": name}
+
+@app.put("/api/projects/{name}")
+async def update_project(name: str, config: dict = Body(...)):
+    if not get_project_path(name).exists():
+        raise HTTPException(status_code=404, detail="Project not found")
+    await save_project_config(name, config)
+    logger.info('Updated project %s config', name)
+    return {"status": "updated", "name": name}
+
+
+@app.get("/api/extensions")
+async def get_extensions():
+    project = get_current_project()
+    if not project:
+        raise HTTPException(status_code=400, detail="Select a project first")
+    meta_list = load_extension_metadata()
+    for meta in meta_list:
+        cfg = extensions_config.get(meta.get("name", ""), {})
+        meta["config"] = cfg
+        meta["enabled"] = cfg.get("enabled", False)
+    return {"extensions": meta_list}
+
+
+@app.put("/api/extensions/{name}")
+async def update_extension_config(name: str, config: dict = Body(...)):
+    project = get_current_project()
+    if not project:
+        raise HTTPException(status_code=400, detail="Select a project first")
+    await save_extension_config(project, name, config)
+    return {"status": "updated", "name": name, "config": config}
+
+
+@app.post("/api/webhooksite/token")
+async def create_webhook_token(body: dict = Body(default={})):
+    project = get_current_project()
+    if not project:
+        raise HTTPException(status_code=400, detail="Select a project first")
+    cfg = extensions_config.get("webhook_site", {})
+    api_key = cfg.get("api_key")
+    async with httpx.AsyncClient(timeout=20) as client:
+        try:
+            resp = await client.post(f"{WEBHOOKSITE_API_BASE}/token", headers=webhook_headers(api_key))
+        except httpx.HTTPError as e:
+            raise HTTPException(status_code=502, detail=f"Webhook.site error: {e}")
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=resp.status_code, detail="Failed to create webhook token")
+    data = resp.json()
+    token_id = data.get("uuid") or data.get("token") or data.get("id")
+    if not token_id:
+        raise HTTPException(status_code=500, detail="Webhook token missing")
+    token_url = data.get("url") or f"{WEBHOOKSITE_BASE}/{token_id}"
+    cfg.update({
+        "enabled": cfg.get("enabled", True),
+        "token_id": token_id,
+        "token_url": token_url,
+        "token_created_at": datetime.now().isoformat(),
+    })
+    await save_extension_config(project, "webhook_site", cfg)
+    return {"status": "created", "token_id": token_id, "token_url": token_url}
+
+
+@app.post("/api/webhooksite/refresh")
+async def refresh_webhook_requests(body: dict = Body(default={})):
+    project = get_current_project()
+    if not project:
+        raise HTTPException(status_code=400, detail="Select a project first")
+    cfg = extensions_config.get("webhook_site", {})
+    token_id = cfg.get("token_id")
+    if not token_id:
+        raise HTTPException(status_code=400, detail="No webhook token configured")
+    api_key = cfg.get("api_key")
+    limit = int(body.get("limit", 50))
+    url = f"{WEBHOOKSITE_API_BASE}/token/{token_id}/requests?sorting=newest&per_page={limit}"
+    async with httpx.AsyncClient(timeout=20) as client:
+        try:
+            resp = await client.get(url, headers=webhook_headers(api_key))
+        except httpx.HTTPError as e:
+            raise HTTPException(status_code=502, detail=f"Webhook.site error: {e}")
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=resp.status_code, detail="Failed to fetch webhook requests")
+    data = resp.json()
+    items = data.get("data") if isinstance(data, dict) else data
+    if not isinstance(items, list):
+        items = []
+    async with await get_db() as db:
+        for item in items:
+            req_id = item.get("uuid") or item.get("request_id") or item.get("id")
+            if not req_id:
+                continue
+            method = item.get("method") or item.get("request_method")
+            target_url = item.get("url") or item.get("request_url") or item.get("path")
+            ip = item.get("ip")
+            user_agent = item.get("user_agent") or item.get("headers", {}).get("User-Agent")
+            content = item.get("content") if isinstance(item.get("content"), str) else json.dumps(item.get("content", "")) if item.get("content") is not None else None
+            headers = json.dumps(item.get("headers", {}))
+            query = json.dumps(item.get("query", {}))
+            created_at = item.get("created_at") or item.get("created") or item.get("timestamp")
+            raw_json = json.dumps(item)
+            await db.execute(
+                """INSERT OR IGNORE INTO webhook_requests
+                (token_id, request_id, method, url, ip, user_agent, content, headers, query, created_at, raw_json)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (token_id, req_id, method, target_url, ip, user_agent, content, headers, query, created_at, raw_json)
+            )
+        await db.commit()
+    cfg["last_sync"] = datetime.now().isoformat()
+    await save_extension_config(project, "webhook_site", cfg)
+    return {"status": "ok", "count": len(items)}
+
+
+@app.get("/api/webhooksite/requests")
+async def get_webhook_requests(limit: int = 200):
+    project = get_current_project()
+    if not project:
+        raise HTTPException(status_code=400, detail="Select a project first")
+    cfg = extensions_config.get("webhook_site", {})
+    token_id = cfg.get("token_id")
+    if not token_id:
+        return {"requests": []}
+    async with await get_db() as db:
+        cursor = await db.execute(
+            "SELECT request_id, method, url, ip, user_agent, content, headers, query, created_at FROM webhook_requests WHERE token_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
+            (token_id, limit)
+        )
+        rows = await cursor.fetchall()
+    reqs = [{
+        "request_id": r[0],
+        "method": r[1],
+        "url": r[2],
+        "ip": r[3],
+        "user_agent": r[4],
+        "content": r[5],
+        "headers": json.loads(r[6]) if r[6] else {},
+        "query": json.loads(r[7]) if r[7] else {},
+        "created_at": r[8],
+    } for r in rows]
+    return {"requests": reqs}
+
+
+@app.delete("/api/webhooksite/requests")
+async def clear_webhook_requests():
+    project = get_current_project()
+    if not project:
+        raise HTTPException(status_code=400, detail="Select a project first")
+    cfg = extensions_config.get("webhook_site", {})
+    token_id = cfg.get("token_id")
+    if not token_id:
+        return {"status": "ok", "deleted": 0}
+    async with await get_db() as db:
+        cursor = await db.execute("DELETE FROM webhook_requests WHERE token_id = ?", (token_id,))
+        await db.commit()
+    return {"status": "ok", "deleted": cursor.rowcount}
+
+@app.delete("/api/projects/{name}")
+async def delete_project(name: str):
+    if not get_project_path(name).exists():
+        raise HTTPException(status_code=404, detail="Not found")
+    if name == get_current_project():
+        set_current_project(None)
+    shutil.rmtree(get_project_path(name))
+    return {"status": "deleted"}
+
+
+@app.get("/api/scope")
+async def get_scope():
+    return {"rules": scope_rules}
+
+@app.post("/api/scope/rules")
+async def add_scope_rule(rule: ScopeRule):
+    global scope_rules
+    new_rule = {"pattern": rule.pattern, "rule_type": rule.rule_type, "enabled": rule.enabled,
+        "id": hashlib.md5(f"{rule.pattern}{datetime.now()}".encode()).hexdigest()[:8]}
+    scope_rules.append(new_rule)
+    project = get_current_project()
+    if project:
+        config = await get_project_config(project)
+        config["scope_rules"] = scope_rules
+        await save_project_config(project, config)
+    await update_proxy_config()
+    return {"status": "added", "rule": new_rule}
+
+@app.delete("/api/scope/rules/{rule_id}")
+async def delete_scope_rule(rule_id: str):
+    global scope_rules
+    scope_rules = [r for r in scope_rules if r.get("id") != rule_id]
+    project = get_current_project()
+    if project:
+        config = await get_project_config(project)
+        config["scope_rules"] = scope_rules
+        await save_project_config(project, config)
+    await update_proxy_config()
+    return {"status": "deleted"}
+
+@app.put("/api/scope/rules/{rule_id}")
+async def toggle_scope_rule(rule_id: str):
+    global scope_rules
+    for rule in scope_rules:
+        if rule.get("id") == rule_id:
+            rule["enabled"] = not rule.get("enabled", True)
+    project = get_current_project()
+    if project:
+        config = await get_project_config(project)
+        config["scope_rules"] = scope_rules
+        await save_project_config(project, config)
+    await update_proxy_config()
+    return {"status": "toggled"}
+
+
+@app.get("/api/intercept/status")
+async def get_intercept_status():
+    return {"enabled": intercept_enabled, "pending_count": len(intercepted_requests)}
+
+@app.post("/api/intercept/toggle")
+async def toggle_intercept():
+    global intercept_enabled
+    intercept_enabled = not intercept_enabled
+    logger.info('Intercept toggled -> %s', intercept_enabled)
+    project = get_current_project()
+    if project:
+        config = await get_project_config(project)
+        config["intercept_enabled"] = intercept_enabled
+        await save_project_config(project, config)
+    await update_proxy_config()
+    await broadcast({"type": "intercept_status", "enabled": intercept_enabled})
+    return {"enabled": intercept_enabled}
+
+@app.get("/api/intercept/pending")
+async def get_pending():
+    return list(intercepted_requests.values())
+
+@app.post("/api/intercept/{request_id}/forward")
+async def forward_request(request_id: str, modified: Optional[dict] = Body(None)):
+    if request_id not in intercepted_requests:
+        raise HTTPException(status_code=404)
+    intercepted_requests.pop(request_id)
+    action_file = Path(__file__).parent / f".action_{request_id}.json"
+    action_file.write_text(json.dumps({"action": "forward", "modified": modified}))
+    await broadcast({"type": "intercept_forwarded", "request_id": request_id})
+    return {"status": "forwarded"}
+
+@app.post("/api/intercept/{request_id}/drop")
+async def drop_request(request_id: str):
+    if request_id not in intercepted_requests:
+        raise HTTPException(status_code=404)
+    intercepted_requests.pop(request_id)
+    action_file = Path(__file__).parent / f".action_{request_id}.json"
+    action_file.write_text(json.dumps({"action": "drop"}))
+    await broadcast({"type": "intercept_dropped", "request_id": request_id})
+    return {"status": "dropped"}
+
+@app.post("/api/intercept/forward-all")
+async def forward_all():
+    for rid in list(intercepted_requests.keys()):
+        (Path(__file__).parent / f".action_{rid}.json").write_text(json.dumps({"action": "forward"}))
+    count = len(intercepted_requests)
+    intercepted_requests.clear()
+    await broadcast({"type": "intercept_all_forwarded"})
+    return {"status": "forwarded", "count": count}
+
+@app.post("/api/intercept/drop-all")
+async def drop_all():
+    for rid in list(intercepted_requests.keys()):
+        (Path(__file__).parent / f".action_{rid}.json").write_text(json.dumps({"action": "drop"}))
+    count = len(intercepted_requests)
+    intercepted_requests.clear()
+    return {"status": "dropped", "count": count}
+
+
+@app.post("/api/proxy/start")
+async def api_start_proxy(port: int = 8080, mode: str = "regular", extra: str = ""):
+    if not get_current_project():
+        raise HTTPException(status_code=400, detail="Select a project first")
+    return await start_proxy(port, mode, extra)
+
+@app.post("/api/proxy/stop")
+async def api_stop_proxy():
+    return await stop_proxy()
+
+@app.get("/api/proxy/status")
+async def proxy_status():
+    running = proxy_process is not None and proxy_process.poll() is None
+    return {"running": running, "intercept_enabled": intercept_enabled}
+
+
+@app.get("/api/requests")
+async def get_requests(limit: int = 500, saved_only: bool = False, in_scope_only: bool = False, search: str = ""):
+    async with await get_db() as db:
+        query = "SELECT * FROM requests WHERE 1=1"
+        params = []
+        if saved_only:
+            query += " AND saved = 1"
+        if in_scope_only:
+            query += " AND in_scope = 1"
+        if search:
+            query += " AND url LIKE ?"
+            params.append(f"%{search}%")
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        cursor = await db.execute(query, params)
+        rows = await cursor.fetchall()
+        return [{"id": r[0], "method": r[1], "url": r[2], "headers": json.loads(r[3]), "body": r[4],
+            "response_status": r[5], "response_headers": json.loads(r[6]) if r[6] else None,
+            "response_body": r[7], "timestamp": r[8], "request_type": r[9],
+            "saved": bool(r[12]), "in_scope": bool(r[13]) if len(r) > 13 else True} for r in rows]
+
+@app.put("/api/requests/{rid}/save")
+async def toggle_save(rid: int):
+    async with await get_db() as db:
+        cursor = await db.execute("SELECT saved FROM requests WHERE id = ?", (rid,))
+        row = await cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404)
+        await db.execute("UPDATE requests SET saved = ? WHERE id = ?", (0 if row[0] else 1, rid))
+        await db.commit()
+        return {"saved": not row[0]}
+
+@app.delete("/api/requests/{rid}")
+async def delete_req(rid: int):
+    async with await get_db() as db:
+        await db.execute("DELETE FROM requests WHERE id = ?", (rid,))
+        await db.commit()
+        return {"status": "deleted"}
+
+@app.delete("/api/requests")
+async def clear_history(keep_saved: bool = True):
+    async with await get_db() as db:
+        if keep_saved:
+            await db.execute("DELETE FROM requests WHERE saved = 0")
+        else:
+            await db.execute("DELETE FROM requests")
+        await db.commit()
+        return {"status": "cleared"}
+
+
+@app.get("/api/repeater")
+async def get_repeater():
+    async with await get_db() as db:
+        cursor = await db.execute("SELECT * FROM repeater ORDER BY id DESC")
+        rows = await cursor.fetchall()
+        return [{"id": r[0], "name": r[1], "method": r[2], "url": r[3], "headers": json.loads(r[4]),
+            "body": r[5], "created_at": r[6], "last_response": json.loads(r[7]) if r[7] else None} for r in rows]
+
+@app.post("/api/repeater")
+async def create_repeater(req: RepeaterRequest):
+    async with await get_db() as db:
+        await db.execute("INSERT INTO repeater (name, method, url, headers, body, created_at) VALUES (?,?,?,?,?,?)",
+            (req.name, req.method, req.url, json.dumps(req.headers), req.body, datetime.now().isoformat()))
+        await db.commit()
+        return {"status": "created"}
+
+@app.post("/api/repeater/send-raw")
+async def send_raw(data: dict = Body(...)):
+    try:
+        async with httpx.AsyncClient(verify=False, timeout=30) as client:
+            start = datetime.now()
+            resp = await client.request(method=data.get("method", "GET"), url=data.get("url", ""),
+                headers=data.get("headers", {}), content=data.get("body", "").encode() if data.get("body") else None)
+            return {"status_code": resp.status_code, "headers": dict(resp.headers), "body": resp.text,
+                "elapsed": (datetime.now() - start).total_seconds(), "size": len(resp.content)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/git/commit")
+async def create_commit(message: str):
+    project = get_current_project()
+    if not project:
+        raise HTTPException(status_code=400)
+    git = GitManager(project)
+    h = await git.commit(message)
+    return {"status": "committed" if h else "nothing_to_commit", "hash": h}
+
+@app.get("/api/git/history")
+async def get_git_history():
+    project = get_current_project()
+    if not project:
+        return []
+    return await GitManager(project).get_history()
+
+
+@app.get("/api/export")
+async def export_data():
+    project = get_current_project()
+    if not project:
+        raise HTTPException(status_code=400)
+    async with await get_db() as db:
+        cursor = await db.execute("SELECT * FROM requests WHERE saved = 1")
+        saved = await cursor.fetchall()
+        cursor = await db.execute("SELECT * FROM repeater")
+        repeater = await cursor.fetchall()
+    return {"project": project, "exported_at": datetime.now().isoformat(), "saved_requests": saved, "repeater": repeater}
+
+
+@app.post("/api/browser/launch")
+async def launch_browser(proxy_port: int = 8080):
+    profile = Path("/tmp/blackwire_browser")
+    profile.mkdir(exist_ok=True)
+    for browser in ["chromium-browser", "google-chrome", "chromium", "firefox"]:
+        try:
+            if "firefox" in browser:
+                cmd = [browser, "-no-remote", "-profile", str(profile)]
+            else:
+                cmd = [browser, f"--proxy-server=http://127.0.0.1:{proxy_port}",
+                    f"--user-data-dir={profile}", "--ignore-certificate-errors", "--no-first-run"]
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return {"status": "launched", "browser": browser}
+        except FileNotFoundError:
+            continue
+    return {"status": "failed", "error": "No browser found"}
+
+
+@app.post("/api/internal/request")
+async def receive_request(data: dict = Body(...)):
+    project = get_current_project()
+    if not project:
+        return {"status": "no_project"}
+    in_scope = match_scope(data["url"], scope_rules)
+    logger.debug('Internal capture: %s %s (in_scope=%s)', data.get('method'), data.get('url'), in_scope)
+    async with aiosqlite.connect(get_project_db(project)) as db:
+        h = hashlib.md5(f"{data['method']}{data['url']}{data.get('body','')}".encode()).hexdigest()
+        try:
+            await db.execute("""INSERT INTO requests (method,url,headers,body,response_status,response_headers,
+                response_body,timestamp,request_type,in_scope,hash) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (data["method"], data["url"], json.dumps(data.get("headers", {})), data.get("body"),
+                data.get("response_status"), json.dumps(data.get("response_headers", {})) if data.get("response_headers") else None,
+                data.get("response_body"), datetime.now().isoformat(), data.get("request_type", "http"), 1 if in_scope else 0, h))
+            await db.commit()
+            cursor = await db.execute("SELECT last_insert_rowid()")
+            rid = (await cursor.fetchone())[0]
+            await broadcast({"type": "new_request", "data": {"id": rid, **data, "in_scope": in_scope, "timestamp": datetime.now().isoformat()}})
+            return {"status": "received", "id": rid}
+        except aiosqlite.IntegrityError:
+            return {"status": "duplicate"}
+
+@app.post("/api/internal/intercept")
+async def receive_intercept(data: dict = Body(...)):
+    rid = data.get("request_id", hashlib.md5(str(datetime.now()).encode()).hexdigest()[:12])
+    logger.debug('Intercept incoming: %s %s', data.get('method'), data.get('url'))
+    intercepted_requests[rid] = {"id": rid, "method": data["method"], "url": data["url"],
+        "headers": data.get("headers", {}), "body": data.get("body"), "timestamp": datetime.now().isoformat()}
+    await broadcast({"type": "intercept_new", "data": intercepted_requests[rid]})
+    return {"status": "intercepted", "request_id": rid}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=5000)
