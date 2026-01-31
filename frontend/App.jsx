@@ -1417,7 +1417,9 @@ function Blackwire() {
   const stCls = s => !s ? '' : s < 300 ? 'st2' : s < 400 ? 'st3' : s < 500 ? 'st4' : 'st5';
   const fmtTime = t => t ? new Date(t).toLocaleTimeString('en-US', { hour12: false }) : '';
   const fmtH = h => h ? Object.entries(h).map(([k, v]) => k + ': ' + (Array.isArray(v) ? v.join(', ') : v)).join('\n') : '';
-  const themeVars = (THEMES[themeId] && THEMES[themeId].vars) ? THEMES[themeId].vars : THEMES.midnight.vars;
+  const themeVars = (THEMES[themeId] && THEMES[themeId].vars)
+    ? THEMES[themeId].vars
+    : (THEMES.midnight && THEMES.midnight.vars) ? THEMES.midnight.vars : {};
 
   return (
     <div className="app" style={themeVars}>

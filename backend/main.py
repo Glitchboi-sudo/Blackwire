@@ -35,6 +35,7 @@ CURRENT_PROJECT_FILE = BASE_DIR / ".current_project"
 EXTENSIONS_DIR = Path(__file__).parent / "extensions"
 FRONTEND_DIR = BASE_DIR / "frontend"
 APP_JSX_PATH = FRONTEND_DIR / "App.jsx"
+THEMES_JS_PATH = FRONTEND_DIR / "themes.js"
 
 WEBHOOKSITE_BASE = "https://webhook.site"
 WEBHOOKSITE_API_BASE = "https://webhook.site"
@@ -526,6 +527,12 @@ async def app_jsx():
     if APP_JSX_PATH.exists():
         return FileResponse(APP_JSX_PATH, media_type="text/javascript")
     raise HTTPException(status_code=404, detail="App.jsx not found")
+
+@app.get("/themes.js")
+async def themes_js():
+    if THEMES_JS_PATH.exists():
+        return FileResponse(THEMES_JS_PATH, media_type="text/javascript")
+    raise HTTPException(status_code=404, detail="themes.js not found")
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
