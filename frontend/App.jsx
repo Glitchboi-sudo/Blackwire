@@ -30,10 +30,11 @@ function Blackwire() {
   const [repU, setRepU] = useState('');
   const [repH, setRepH] = useState('');
   const [repB, setRepB] = useState('');
+  const [repBodyColor, setRepBodyColor] = useState(false);
   const [repResp, setRepResp] = useState(null);
   const [repRespBody, setRepRespBody] = useState('');
 
-  // NUEVA FUNCIONALIDAD: Historial de navegación en Repeater
+  // Historial de navegación en Repeater
   const [repHistory, setRepHistory] = useState([]);
   const [repHistoryIndex, setRepHistoryIndex] = useState(-1);
   const [repFollowRedirects, setRepFollowRedirects] = useState(false);
@@ -85,7 +86,7 @@ function Blackwire() {
   // Proxy Config
   const [showProxyCfg, setShowProxyCfg] = useState(false);
 
-  // NUEVA FUNCIONALIDAD: Menú contextual
+  // Menú contextual
   const [contextMenu, setContextMenu] = useState(null);
   const ctxMenuRef = useRef(null);
 
@@ -118,6 +119,8 @@ function Blackwire() {
   const [showCollPick, setShowCollPick] = useState(null);
 
   const wsRef = useRef(null);
+  const repBodyEditRef = useRef(null);
+  const repBodyCaretRef = useRef(null);
   const webhookExt = extensions.find(e => e.name === 'webhook_site');
 
   const getSelectedText = () => {
@@ -207,7 +210,7 @@ function Blackwire() {
     }
   }, [curPrj]);
 
-  // NUEVA FUNCIONALIDAD: Ctrl+S para auto-commits
+  // Ctrl+S para auto-commits
   useEffect(() => {
     const handleKeyDown = e => {
       if (e.ctrlKey && e.key === 's') {
@@ -499,7 +502,7 @@ function Blackwire() {
     await loadScope();
   };
 
-  // NUEVA FUNCIONALIDAD: Pretty Print/Minify en Repeater
+  // Pretty Print/Minify en Repeater
   // Protobuf best-effort decoder (sin esquema)
   const tryDecodeProtobuf = raw => {
     try {
@@ -821,7 +824,7 @@ function Blackwire() {
     setCollResps({});
   };
 
-  // NUEVA FUNCIONALIDAD: Historial de navegación en Repeater
+  // Historial de navegación en Repeater
   const saveToHistory = (request, response) => {
     const historyItem = {
       method: request.method,
@@ -991,7 +994,7 @@ function Blackwire() {
     }
   };
 
-  // NUEVA FUNCIONALIDAD: Auto-commit con Ctrl+S
+  // Auto-commit con Ctrl+S
   const autoCommit = async () => {
     const msg = 'Auto-commit ' + new Date().toISOString();
     const r = await api.post('/api/git/commit?message=' + encodeURIComponent(msg));
@@ -1262,6 +1265,43 @@ function Blackwire() {
       });
   };
 
+  const escapeHtml = s => String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  const getCaretOffset = el => {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return null;
+    const range = sel.getRangeAt(0);
+    if (!el.contains(range.startContainer)) return null;
+    const pre = range.cloneRange();
+    pre.selectNodeContents(el);
+    pre.setEnd(range.startContainer, range.startOffset);
+    return pre.toString().length;
+  };
+
+  const setCaretOffset = (el, offset) => {
+    if (offset == null) return;
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
+    let node;
+    let remaining = offset;
+    while ((node = walker.nextNode())) {
+      const len = node.textContent.length;
+      if (remaining <= len) {
+        const range = document.createRange();
+        range.setStart(node, remaining);
+        range.collapse(true);
+        const sel = window.getSelection();
+        if (!sel) return;
+        sel.removeAllRanges();
+        sel.addRange(range);
+        return;
+      }
+      remaining -= len;
+    }
+  };
+
   // Colorea cualquier body inteligentemente (JSON, XML, protobuf, texto plano)
   const colorizeBody = text => {
     if (!text) return { text: text, html: false };
@@ -1311,7 +1351,25 @@ function Blackwire() {
     return colorizeBody(body);
   };
 
-  // NUEVA FUNCIONALIDAD: Menú contextual
+  const handleRepBodyInput = () => {
+    const el = repBodyEditRef.current;
+    if (!el) return;
+    repBodyCaretRef.current = getCaretOffset(el);
+    const text = el.textContent || '';
+    setRepB(text);
+  };
+
+  useEffect(() => {
+    if (!repBodyColor) return;
+    const el = repBodyEditRef.current;
+    if (!el) return;
+    const bodyFmt = formatBody(repB || '', 'pretty');
+    const html = bodyFmt.html ? bodyFmt.text : escapeHtml(bodyFmt.text || '');
+    if (el.innerHTML !== html) el.innerHTML = html;
+    if (repBodyCaretRef.current != null) setCaretOffset(el, repBodyCaretRef.current);
+  }, [repB, repBodyColor]);
+
+  // Menú contextual
   // Unified context menu
   const normalizeRequest = (req, source) => {
     if (source === 'webhook') {
@@ -1346,6 +1404,8 @@ function Blackwire() {
     const norm = normalizeRequest(req, source || 'history');
     setContextMenu({ x: e.clientX, y: e.clientY, request: req, source: source || 'history', normalized: norm });
   };
+
+  
 
   const handleContextAction = async action => {
     if (!contextMenu) return;
@@ -1484,6 +1544,8 @@ function Blackwire() {
 .pend-item:hover{background:var(--bgh)}.pend-item.sel{background:var(--bg3);border-left:3px solid var(--orange)}
 .int-edit{flex:1;display:flex;flex-direction:column;overflow:hidden}.ed-row{display:flex;gap:10px;padding:10px 14px;background:var(--bg2);border-bottom:1px solid var(--brd)}
 .ed-ta{width:100%;padding:14px;background:var(--bg);border:none;border-bottom:1px solid var(--brd);color:var(--txt);font-family:var(--font-mono);font-size:11px;resize:none;outline:none;overflow:auto;min-height:0}
+.ed-ce{flex:1;padding:14px;background:var(--bg);border:none;border-bottom:1px solid var(--brd);color:var(--txt);font-family:var(--font-mono);font-size:11px;line-height:1.5;outline:none;overflow:auto;white-space:pre-wrap;word-break:break-all;tab-size:2}
+.overlay-ta::selection{background:rgba(88,166,255,.35)}
 .scp-pnl{padding:24px;max-width:700px;margin:0 auto;width:100%}.scp-hdr{margin-bottom:20px}.scp-hdr h3{font-size:16px;margin-bottom:6px}.scp-hdr p{color:var(--txt2);font-size:12px}
 .scp-form{display:flex;gap:10px;margin-bottom:20px}.sel{padding:8px 12px;background:var(--bg3);border:1px solid var(--brd);border-radius:5px;color:var(--txt);font-size:12px}
 .scp-rules{display:flex;flex-direction:column;gap:6px}.scp-rule{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px}
@@ -1989,11 +2051,21 @@ function Blackwire() {
                   <div className="ed-hdr">
                     <span>Body</span>
                     <div style={{ display: 'flex', gap: '4px' }}>
-                      <button className="btn btn-sm btn-s" onClick={() => setRepB(prettyPrint(repB))} title="Pretty Print">Pretty</button>
-                      <button className="btn btn-sm btn-s" onClick={() => setRepB(minify(repB))} title="Minify">Minify</button>
+                      <button className="btn btn-sm btn-s" onClick={() => { setRepB(prettyPrint(repB)); setRepBodyColor(true); }} title="Pretty Print">Pretty</button>
+                      <button className="btn btn-sm btn-s" onClick={() => { setRepB(minify(repB)); setRepBodyColor(false); }} title="Minify">Minify</button>
                     </div>
                   </div>
-                  <textarea className="ed-ta" style={{ flex: 1 }} value={repB} onChange={e => setRepB(e.target.value)} />
+                  {repBodyColor ? (
+                    <div
+                      ref={repBodyEditRef}
+                      className="ed-ce"
+                      contentEditable
+                      suppressContentEditableWarning
+                      onInput={handleRepBodyInput}
+                    />
+                  ) : (
+                    <textarea className="ed-ta" style={{ flex: 1 }} value={repB} onChange={e => setRepB(e.target.value)} />
+                  )}
                 </div>
                 <div className="ed-pane">
                   <div className="ed-hdr">
