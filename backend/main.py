@@ -78,6 +78,106 @@ class RepeaterRequest(BaseModel):
     headers: dict
     body: Optional[str] = None
 
+class ChepyOperation(BaseModel):
+    name: str
+    args: dict = {}
+
+class ChepyRecipe(BaseModel):
+    input: str
+    operations: List[ChepyOperation]
+
+class WsResendRequest(BaseModel):
+    url: str
+    message: str
+    headers: Optional[dict] = None
+
+class CollectionCreate(BaseModel):
+    name: str
+    description: Optional[str] = ""
+
+class CollectionItemCreate(BaseModel):
+    method: str
+    url: str
+    headers: dict = {}
+    body: Optional[str] = None
+    var_extracts: List[dict] = []
+    position: Optional[int] = None
+
+class CollectionItemExecute(BaseModel):
+    variables: dict = {}
+
+CHEPY_OPERATIONS = {
+    "Encoding": [
+        {"name": "base64_encode", "label": "Base64 Encode", "params": []},
+        {"name": "base64_decode", "label": "Base64 Decode", "params": []},
+        {"name": "url_encode", "label": "URL Encode", "params": []},
+        {"name": "url_decode", "label": "URL Decode", "params": []},
+        {"name": "html_encode", "label": "HTML Encode", "params": []},
+        {"name": "html_decode", "label": "HTML Decode", "params": []},
+        {"name": "to_hex", "label": "To Hex", "params": []},
+        {"name": "from_hex", "label": "From Hex", "params": []},
+        {"name": "to_octal", "label": "To Octal", "params": []},
+        {"name": "from_octal", "label": "From Octal", "params": []},
+        {"name": "to_binary", "label": "To Binary", "params": []},
+        {"name": "from_binary", "label": "From Binary", "params": []},
+        {"name": "to_decimal", "label": "To Decimal", "params": []},
+        {"name": "from_decimal", "label": "From Decimal", "params": []},
+        {"name": "to_charcode", "label": "To Charcode", "params": []},
+        {"name": "from_charcode", "label": "From Charcode", "params": [
+            {"name": "delimiter", "type": "string", "default": " ", "label": "Delimiter"}
+        ]},
+    ],
+    "Hashing": [
+        {"name": "md5", "label": "MD5", "params": []},
+        {"name": "sha1", "label": "SHA-1", "params": []},
+        {"name": "sha2_256", "label": "SHA-256", "params": []},
+        {"name": "sha2_512", "label": "SHA-512", "params": []},
+        {"name": "hmac_hash", "label": "HMAC", "params": [
+            {"name": "key", "type": "string", "default": "", "label": "Key"},
+            {"name": "digest", "type": "select", "default": "sha256",
+             "options": ["md5", "sha1", "sha256", "sha512"], "label": "Digest"}
+        ]},
+        {"name": "crc32_checksum", "label": "CRC32", "params": []},
+    ],
+    "Encryption": [
+        {"name": "rot_13", "label": "ROT13", "params": []},
+        {"name": "xor", "label": "XOR", "params": [
+            {"name": "key", "type": "string", "default": "", "label": "Key"}
+        ]},
+        {"name": "jwt_decode", "label": "JWT Decode", "params": []},
+    ],
+    "Compression": [
+        {"name": "zlib_compress", "label": "Zlib Compress", "params": []},
+        {"name": "zlib_decompress", "label": "Zlib Decompress", "params": []},
+        {"name": "gzip_compress", "label": "Gzip Compress", "params": []},
+        {"name": "gzip_decompress", "label": "Gzip Decompress", "params": []},
+    ],
+    "Data Format": [
+        {"name": "str_to_json", "label": "Parse JSON", "params": []},
+        {"name": "json_to_yaml", "label": "JSON to YAML", "params": []},
+        {"name": "yaml_to_json", "label": "YAML to JSON", "params": []},
+    ],
+    "String": [
+        {"name": "reverse", "label": "Reverse", "params": []},
+        {"name": "upper_case", "label": "Uppercase", "params": []},
+        {"name": "lower_case", "label": "Lowercase", "params": []},
+        {"name": "trim", "label": "Trim", "params": []},
+        {"name": "count_occurances", "label": "Count Occurrences", "params": [
+            {"name": "pattern", "type": "string", "default": "", "label": "Pattern"}
+        ]},
+        {"name": "find_replace", "label": "Find / Replace", "params": [
+            {"name": "pattern", "type": "string", "default": "", "label": "Find"},
+            {"name": "repl", "type": "string", "default": "", "label": "Replace"},
+        ]},
+        {"name": "regex_search", "label": "Regex Search", "params": [
+            {"name": "pattern", "type": "string", "default": "", "label": "Pattern"}
+        ]},
+        {"name": "length", "label": "Length", "params": []},
+        {"name": "escape_string", "label": "Escape String", "params": []},
+        {"name": "unescape_string", "label": "Unescape String", "params": []},
+    ],
+}
+
 
 def get_project_path(name: str) -> Path:
     return PROJECTS_DIR / name
@@ -188,6 +288,15 @@ async def init_db(name: str):
             id INTEGER PRIMARY KEY AUTOINCREMENT, token_id TEXT NOT NULL, request_id TEXT NOT NULL UNIQUE,
             method TEXT, url TEXT, ip TEXT, user_agent TEXT, content TEXT, headers TEXT,
             query TEXT, created_at TEXT, raw_json TEXT)""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS collections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+            description TEXT DEFAULT '', created_at TEXT NOT NULL)""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS collection_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, collection_id INTEGER NOT NULL,
+            position INTEGER NOT NULL, method TEXT NOT NULL, url TEXT NOT NULL,
+            headers TEXT NOT NULL DEFAULT '{}', body TEXT, var_extracts TEXT DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE)""")
         await db.commit()
 
 async def get_db():
@@ -835,6 +944,21 @@ async def create_repeater(req: RepeaterRequest):
         await db.commit()
         return {"status": "created"}
 
+@app.put("/api/repeater/{item_id}")
+async def update_repeater(item_id: int, data: dict = Body(...)):
+    async with await get_db() as db:
+        if "name" in data:
+            await db.execute("UPDATE repeater SET name = ? WHERE id = ?", (data["name"], item_id))
+            await db.commit()
+        return {"status": "updated"}
+
+@app.delete("/api/repeater/{item_id}")
+async def delete_repeater(item_id: int):
+    async with await get_db() as db:
+        await db.execute("DELETE FROM repeater WHERE id = ?", (item_id,))
+        await db.commit()
+        return {"status": "deleted"}
+
 @app.post("/api/repeater/send-raw")
 async def send_raw(data: dict = Body(...)):
     try:
@@ -844,6 +968,261 @@ async def send_raw(data: dict = Body(...)):
                 headers=data.get("headers", {}), content=data.get("body", "").encode() if data.get("body") else None)
             return {"status_code": resp.status_code, "headers": dict(resp.headers), "body": resp.text,
                 "elapsed": (datetime.now() - start).total_seconds(), "size": len(resp.content)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# --- Chepy ---
+@app.get("/api/chepy/operations")
+async def get_chepy_operations():
+    return {"operations": CHEPY_OPERATIONS}
+
+@app.post("/api/chepy/bake")
+async def bake_chepy(recipe: ChepyRecipe):
+    from chepy_compat import run_operation
+    try:
+        value = recipe.input
+        for op in recipe.operations:
+            if op.name.startswith("_"):
+                return {"error": f"Unknown operation: {op.name}"}
+            allowed = False
+            for cat_ops in CHEPY_OPERATIONS.values():
+                if any(o["name"] == op.name for o in cat_ops):
+                    allowed = True
+                    break
+            if not allowed:
+                return {"error": f"Operation not allowed: {op.name}"}
+            args = {k: v for k, v in op.args.items() if v != ""}
+            value = run_operation(op.name, value, args)
+        return {"output": value}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# --- WebSocket Viewer ---
+@app.get("/api/websocket/connections")
+async def get_ws_connections(limit: int = 500):
+    async with await get_db() as db:
+        cursor = await db.execute(
+            """SELECT url, COUNT(*) as frame_count,
+               MIN(timestamp) as first_seen, MAX(timestamp) as last_seen
+               FROM requests WHERE request_type = 'websocket'
+               GROUP BY url ORDER BY last_seen DESC LIMIT ?""", (limit,))
+        rows = await cursor.fetchall()
+        return [{"url": r[0], "frame_count": r[1],
+                 "first_seen": r[2], "last_seen": r[3]} for r in rows]
+
+@app.get("/api/websocket/frames")
+async def get_ws_frames(url: str, limit: int = 500):
+    async with await get_db() as db:
+        cursor = await db.execute(
+            """SELECT id, body, response_body, timestamp
+               FROM requests WHERE request_type = 'websocket' AND url = ?
+               ORDER BY id ASC LIMIT ?""", (url, limit))
+        rows = await cursor.fetchall()
+        return [{"id": r[0], "content": r[1],
+                 "direction": "up" if "\u2191" in (r[2] or "") else "down",
+                 "timestamp": r[3]} for r in rows]
+
+@app.post("/api/websocket/resend")
+async def resend_ws_frame(data: WsResendRequest):
+    import websockets
+    try:
+        extra_headers = data.headers or {}
+        async with websockets.connect(data.url,
+                additional_headers=extra_headers,
+                open_timeout=10, close_timeout=5) as ws:
+            await ws.send(data.message)
+            try:
+                response = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                return {"status": "sent", "response": str(response)}
+            except asyncio.TimeoutError:
+                return {"status": "sent", "response": None,
+                        "note": "No response within 5s"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# --- Collections ---
+def resolve_jsonpath(data, path):
+    """Simple dot-notation path resolver: $.key.subkey.0.field"""
+    if not path.startswith('$.'):
+        return None
+    keys = path[2:].split('.')
+    current = data
+    for key in keys:
+        if isinstance(current, dict):
+            current = current.get(key)
+        elif isinstance(current, list):
+            try:
+                current = current[int(key)]
+            except (ValueError, IndexError):
+                return None
+        else:
+            return None
+        if current is None:
+            return None
+    return current
+
+def substitute_variables(text, variables):
+    """Replace {{varname}} placeholders with variable values."""
+    if not text:
+        return text
+    for name, value in variables.items():
+        text = text.replace('{{' + name + '}}', str(value))
+    return text
+
+@app.get("/api/collections")
+async def list_collections():
+    async with await get_db() as db:
+        cursor = await db.execute(
+            "SELECT id, name, description, created_at FROM collections ORDER BY id DESC")
+        rows = await cursor.fetchall()
+        result = []
+        for r in rows:
+            cnt = await db.execute(
+                "SELECT COUNT(*) FROM collection_items WHERE collection_id = ?", (r[0],))
+            count = (await cnt.fetchone())[0]
+            result.append({"id": r[0], "name": r[1], "description": r[2],
+                           "created_at": r[3], "item_count": count})
+        return result
+
+@app.post("/api/collections")
+async def create_collection(data: CollectionCreate):
+    async with await get_db() as db:
+        await db.execute(
+            "INSERT INTO collections (name, description, created_at) VALUES (?,?,?)",
+            (data.name, data.description, datetime.now().isoformat()))
+        await db.commit()
+        cursor = await db.execute("SELECT last_insert_rowid()")
+        cid = (await cursor.fetchone())[0]
+        return {"status": "created", "id": cid}
+
+@app.put("/api/collections/{cid}")
+async def update_collection(cid: int, data: dict = Body(...)):
+    async with await get_db() as db:
+        fields, params = [], []
+        if "name" in data:
+            fields.append("name = ?"); params.append(data["name"])
+        if "description" in data:
+            fields.append("description = ?"); params.append(data["description"])
+        if fields:
+            params.append(cid)
+            await db.execute(f"UPDATE collections SET {', '.join(fields)} WHERE id = ?", params)
+            await db.commit()
+        return {"status": "updated"}
+
+@app.delete("/api/collections/{cid}")
+async def delete_collection(cid: int):
+    async with await get_db() as db:
+        await db.execute("DELETE FROM collection_items WHERE collection_id = ?", (cid,))
+        await db.execute("DELETE FROM collections WHERE id = ?", (cid,))
+        await db.commit()
+        return {"status": "deleted"}
+
+@app.get("/api/collections/{cid}/items")
+async def get_collection_items(cid: int):
+    async with await get_db() as db:
+        cursor = await db.execute(
+            """SELECT id, collection_id, position, method, url, headers, body, var_extracts, created_at
+               FROM collection_items WHERE collection_id = ? ORDER BY position ASC""", (cid,))
+        rows = await cursor.fetchall()
+        return [{"id": r[0], "collection_id": r[1], "position": r[2], "method": r[3],
+                 "url": r[4], "headers": json.loads(r[5]), "body": r[6],
+                 "var_extracts": json.loads(r[7]), "created_at": r[8]} for r in rows]
+
+@app.post("/api/collections/{cid}/items")
+async def add_collection_item(cid: int, data: CollectionItemCreate):
+    async with await get_db() as db:
+        if data.position is None:
+            cursor = await db.execute(
+                "SELECT COALESCE(MAX(position), 0) + 1 FROM collection_items WHERE collection_id = ?", (cid,))
+            data.position = (await cursor.fetchone())[0]
+        await db.execute(
+            """INSERT INTO collection_items (collection_id, position, method, url, headers, body, var_extracts, created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (cid, data.position, data.method, data.url, json.dumps(data.headers),
+             data.body, json.dumps(data.var_extracts), datetime.now().isoformat()))
+        await db.commit()
+        return {"status": "created"}
+
+@app.put("/api/collections/{cid}/items/{iid}")
+async def update_collection_item(cid: int, iid: int, data: dict = Body(...)):
+    async with await get_db() as db:
+        fields, params = [], []
+        for key in ["method", "url", "body"]:
+            if key in data:
+                fields.append(f"{key} = ?"); params.append(data[key])
+        if "headers" in data:
+            fields.append("headers = ?"); params.append(json.dumps(data["headers"]))
+        if "var_extracts" in data:
+            fields.append("var_extracts = ?"); params.append(json.dumps(data["var_extracts"]))
+        if "position" in data:
+            fields.append("position = ?"); params.append(data["position"])
+        if fields:
+            params.append(iid)
+            await db.execute(f"UPDATE collection_items SET {', '.join(fields)} WHERE id = ?", params)
+            await db.commit()
+        return {"status": "updated"}
+
+@app.delete("/api/collections/{cid}/items/{iid}")
+async def delete_collection_item(cid: int, iid: int):
+    async with await get_db() as db:
+        await db.execute("DELETE FROM collection_items WHERE id = ?", (iid,))
+        await db.commit()
+        return {"status": "deleted"}
+
+@app.post("/api/collections/{cid}/items/{iid}/execute")
+async def execute_collection_item(cid: int, iid: int, data: CollectionItemExecute):
+    async with await get_db() as db:
+        cursor = await db.execute(
+            """SELECT method, url, headers, body, var_extracts
+               FROM collection_items WHERE id = ? AND collection_id = ?""", (iid, cid))
+        row = await cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Item not found")
+
+    method = substitute_variables(row[0], data.variables)
+    url = substitute_variables(row[1], data.variables)
+    headers = json.loads(row[2])
+    headers = {k: substitute_variables(v, data.variables) for k, v in headers.items()}
+    body = substitute_variables(row[3], data.variables)
+    var_extracts = json.loads(row[4])
+
+    try:
+        async with httpx.AsyncClient(verify=False, timeout=30) as client:
+            start = datetime.now()
+            resp = await client.request(method=method, url=url, headers=headers,
+                content=body.encode() if body else None)
+            elapsed = (datetime.now() - start).total_seconds()
+
+            extracted = {}
+            resp_body_text = resp.text
+            for ve in var_extracts:
+                vname = ve.get("name")
+                source = ve.get("source", "body")
+                path = ve.get("path", "")
+                if not vname or not path:
+                    continue
+                if source == "body":
+                    try:
+                        parsed = json.loads(resp_body_text)
+                        val = resolve_jsonpath(parsed, path)
+                        if val is not None:
+                            extracted[vname] = val
+                    except json.JSONDecodeError:
+                        pass
+                elif source == "header":
+                    extracted[vname] = resp.headers.get(path, "")
+
+            return {
+                "status_code": resp.status_code,
+                "headers": dict(resp.headers),
+                "body": resp_body_text,
+                "elapsed": elapsed,
+                "size": len(resp.content),
+                "extracted_variables": extracted
+            }
     except Exception as e:
         return {"error": str(e)}
 

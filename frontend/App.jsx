@@ -83,6 +83,34 @@ function Blackwire() {
   // NUEVA FUNCIONALIDAD: Menú contextual
   const [contextMenu, setContextMenu] = useState(null);
 
+  // Chepy
+  const [chepyIn, setChepyIn] = useState('');
+  const [chepyOps, setChepyOps] = useState([]);
+  const [chepyOut, setChepyOut] = useState('');
+  const [chepyErr, setChepyErr] = useState('');
+  const [chepyCat, setChepyCat] = useState({});
+  const [chepySelCat, setChepySelCat] = useState('');
+  const [chepyBaking, setChepyBaking] = useState(false);
+
+  // WebSocket Viewer
+  const [wsConns, setWsConns] = useState([]);
+  const [selWsConn, setSelWsConn] = useState(null);
+  const [wsFrames, setWsFrames] = useState([]);
+  const [selWsFrame, setSelWsFrame] = useState(null);
+  const [wsResendMsg, setWsResendMsg] = useState('');
+  const [wsResendResp, setWsResendResp] = useState(null);
+  const [wsSending, setWsSending] = useState(false);
+
+  // Collections
+  const [colls, setColls] = useState([]);
+  const [selColl, setSelColl] = useState(null);
+  const [collItems, setCollItems] = useState([]);
+  const [collVars, setCollVars] = useState({});
+  const [collStep, setCollStep] = useState(0);
+  const [collResps, setCollResps] = useState({});
+  const [collRunning, setCollRunning] = useState(false);
+  const [showCollPick, setShowCollPick] = useState(null);
+
   const wsRef = useRef(null);
   const webhookExt = extensions.find(e => e.name === 'webhook_site');
 
@@ -120,6 +148,7 @@ function Blackwire() {
       loadRep();
       loadGit();
       loadScope();
+      loadColls();
       loadExts();
       checkPx();
     }
@@ -146,6 +175,12 @@ function Blackwire() {
       return () => window.removeEventListener('click', handleClick);
     }
   }, [contextMenu]);
+
+  useEffect(() => {
+    if (tab === 'chepy' && Object.keys(chepyCat).length === 0) {
+      loadChepyOps();
+    }
+  }, [tab]);
 
   useEffect(() => {
     setWhkApiKey(webhookExt?.config?.api_key || '');
@@ -271,34 +306,7 @@ function Blackwire() {
     toast('Sent to Repeater', 'success');
   };
 
-  const whkContextAction = async (action, req) => {
-    setContextMenu(null);
-    switch (action) {
-      case 'repeater':
-        whkToRepeater(req);
-        break;
-      case 'copy-url':
-        navigator.clipboard.writeText(req.url || '');
-        toast('URL copied', 'success');
-        break;
-      case 'copy-curl': {
-        let curl = 'curl -X ' + (req.method || 'GET') + " '" + (req.url || '') + "'";
-        if (req.headers) {
-          Object.entries(req.headers).forEach(([k, v]) => { curl += " -H '" + k + ': ' + v + "'"; });
-        }
-        if (req.content) {
-          curl += " -d '" + req.content.replace(/'/g, "'\\''") + "'";
-        }
-        navigator.clipboard.writeText(curl);
-        toast('cURL copied', 'success');
-        break;
-      }
-      case 'copy-content':
-        navigator.clipboard.writeText(req.content || '');
-        toast('Content copied', 'success');
-        break;
-    }
-  };
+  // whkContextAction removed - unified into handleContextAction
 
   const filteredWhk = whkReqs.filter(r => {
     if (whkSearch && !(r.url || '').toLowerCase().includes(whkSearch.toLowerCase()) &&
@@ -308,18 +316,31 @@ function Blackwire() {
   });
 
   const selectPrj = async n => {
-    await api.post('/api/projects/' + n + '/select');
-    setCurPrj(n);
-    await loadCur();
-    setTab('history');
-    toast('Project: ' + n, 'success');
+    const r = await api.post('/api/projects/' + encodeURIComponent(n) + '/select');
+    if (r && r.status === 'selected') {
+      setCurPrj(n);
+      await loadCur();
+      setTab('history');
+      toast('Project: ' + n, 'success');
+    } else {
+      toast(r?.detail || 'Failed to select project', 'error');
+    }
   };
 
   const createPrj = async () => {
-    if (!newName.trim()) return;
-    await api.post('/api/projects', { name: newName, description: newDesc });
+    const name = newName.trim();
+    if (!name) return;
+    if (/[\\/]/.test(name)) {
+      toast('Project name cannot contain / or \\', 'error');
+      return;
+    }
+    const r = await api.post('/api/projects', { name, description: newDesc });
+    if (!r || r.status !== 'created') {
+      toast(r?.detail || 'Failed to create project', 'error');
+      return;
+    }
     await loadPrjs();
-    await selectPrj(newName);
+    await selectPrj(name);
     setShowNew(false);
     setNewName('');
     setNewDesc('');
@@ -328,10 +349,14 @@ function Blackwire() {
 
   const delPrj = async n => {
     if (!confirm('Delete ' + n + '?')) return;
-    await api.del('/api/projects/' + n);
-    if (curPrj === n) setCurPrj(null);
-    await loadPrjs();
-    toast('Deleted', 'success');
+    const r = await api.del('/api/projects/' + encodeURIComponent(n));
+    if (r && (r.status === 'deleted' || r.status === 'ok')) {
+      if (curPrj === n) setCurPrj(null);
+      await loadPrjs();
+      toast('Deleted', 'success');
+    } else {
+      toast(r?.detail || 'Failed to delete project', 'error');
+    }
   };
 
   const startPx = async () => {
@@ -450,6 +475,186 @@ function Blackwire() {
     }).join('\n');
   };
 
+  // Chepy functions
+  const loadChepyOps = async () => {
+    const data = await api.get('/api/chepy/operations');
+    if (data.operations) {
+      setChepyCat(data.operations);
+      const cats = Object.keys(data.operations);
+      if (cats.length > 0 && !chepySelCat) setChepySelCat(cats[0]);
+    }
+  };
+
+  const addChepyOp = op => {
+    setChepyOps(prev => [...prev, {
+      name: op.name,
+      label: op.label,
+      args: Object.fromEntries((op.params || []).map(p => [p.name, p.default || ''])),
+      params: op.params || []
+    }]);
+  };
+
+  const removeChepyOp = index => {
+    setChepyOps(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const updateChepyArg = (index, argName, value) => {
+    setChepyOps(prev => prev.map((op, i) =>
+      i === index ? { ...op, args: { ...op.args, [argName]: value } } : op
+    ));
+  };
+
+  const moveChepyOp = (index, direction) => {
+    setChepyOps(prev => {
+      const arr = [...prev];
+      const target = index + direction;
+      if (target < 0 || target >= arr.length) return arr;
+      [arr[index], arr[target]] = [arr[target], arr[index]];
+      return arr;
+    });
+  };
+
+  const bakeChepy = async () => {
+    if (!chepyIn && chepyOps.length === 0) return;
+    setChepyBaking(true);
+    setChepyErr('');
+    try {
+      const data = await api.post('/api/chepy/bake', {
+        input: chepyIn,
+        operations: chepyOps.map(op => ({ name: op.name, args: op.args }))
+      });
+      if (data.error) {
+        setChepyErr(data.error);
+        setChepyOut('');
+      } else {
+        setChepyOut(data.output || '');
+      }
+    } catch (e) {
+      setChepyErr(String(e));
+    }
+    setChepyBaking(false);
+  };
+
+  const clearChepyRecipe = () => {
+    setChepyOps([]);
+    setChepyOut('');
+    setChepyErr('');
+  };
+
+  // WebSocket Viewer functions
+  const loadWsConns = async () => {
+    const data = await api.get('/api/websocket/connections');
+    setWsConns(Array.isArray(data) ? data : []);
+  };
+
+  const loadWsFrames = async url => {
+    setSelWsConn(url);
+    const data = await api.get('/api/websocket/frames?url=' + encodeURIComponent(url));
+    setWsFrames(Array.isArray(data) ? data : []);
+    setSelWsFrame(null);
+    setWsResendResp(null);
+  };
+
+  const selectWsFrame = f => {
+    setSelWsFrame(f);
+    setWsResendMsg(f.content || '');
+    setWsResendResp(null);
+  };
+
+  const resendWsFrame = async () => {
+    if (!selWsConn || !wsResendMsg) return;
+    setWsSending(true);
+    setWsResendResp(null);
+    const r = await api.post('/api/websocket/resend', { url: selWsConn, message: wsResendMsg });
+    setWsResendResp(r);
+    setWsSending(false);
+    if (r.error) toast('WS Error: ' + r.error, 'error');
+    else toast('Frame sent', 'success');
+  };
+
+  // Collections functions
+  const loadColls = async () => {
+    const data = await api.get('/api/collections');
+    setColls(Array.isArray(data) ? data : []);
+  };
+
+  const createColl = async () => {
+    const n = prompt('Collection name:');
+    if (!n) return;
+    const r = await api.post('/api/collections', { name: n });
+    await loadColls();
+    if (r.id) { setSelColl(r.id); loadCollItems(r.id); }
+    toast('Collection created', 'success');
+  };
+
+  const deleteColl = async id => {
+    if (!confirm('Delete collection?')) return;
+    await api.del('/api/collections/' + id);
+    if (selColl === id) { setSelColl(null); setCollItems([]); }
+    loadColls();
+    toast('Deleted', 'success');
+  };
+
+  const loadCollItems = async cid => {
+    setSelColl(cid);
+    const data = await api.get('/api/collections/' + cid + '/items');
+    setCollItems(Array.isArray(data) ? data : []);
+    setCollStep(0);
+    setCollVars({});
+    setCollResps({});
+  };
+
+  const addToCollection = async (collId, req) => {
+    const headers = req.headers || {};
+    await api.post('/api/collections/' + collId + '/items', {
+      method: req.method || 'GET',
+      url: req.url || '',
+      headers: typeof headers === 'string' ? {} : headers,
+      body: req.body || req.content || null,
+      var_extracts: []
+    });
+    if (selColl === collId) loadCollItems(collId);
+    toast('Added to collection', 'success');
+    setShowCollPick(null);
+  };
+
+  const deleteCollItem = async (cid, iid) => {
+    await api.del('/api/collections/' + cid + '/items/' + iid);
+    loadCollItems(cid);
+  };
+
+  const updateCollItemExtracts = async (cid, iid, extracts) => {
+    await api.put('/api/collections/' + cid + '/items/' + iid, { var_extracts: extracts });
+    loadCollItems(cid);
+  };
+
+  const executeCollStep = async () => {
+    if (!selColl || collStep >= collItems.length) return;
+    const item = collItems[collStep];
+    setCollRunning(true);
+    const r = await api.post('/api/collections/' + selColl + '/items/' + item.id + '/execute', { variables: collVars });
+    setCollRunning(false);
+    if (r.error) {
+      toast('Step failed: ' + r.error, 'error');
+      setCollResps(prev => ({ ...prev, [item.id]: r }));
+      return;
+    }
+    if (r.extracted_variables) {
+      setCollVars(prev => ({ ...prev, ...r.extracted_variables }));
+    }
+    setCollResps(prev => ({ ...prev, [item.id]: r }));
+    if (collStep < collItems.length - 1) {
+      setCollStep(prev => prev + 1);
+    }
+    toast('Step ' + (collStep + 1) + ' complete', 'success');
+  };
+
+  const resetCollRun = () => {
+    setCollStep(0);
+    setCollVars({});
+    setCollResps({});
+  };
+
   // NUEVA FUNCIONALIDAD: Historial de navegación en Repeater
   const saveToHistory = (request, response) => {
     const historyItem = {
@@ -498,6 +703,17 @@ function Blackwire() {
 
     // Guardar en historial
     saveToHistory(requestData, r);
+
+    // Auto-save: si no hay item seleccionado, crear uno nuevo
+    if (!selRep) {
+      let host = repU;
+      try { host = new URL(repU).host; } catch (e) {}
+      const autoName = repM + ' ' + host;
+      await api.post('/api/repeater', { name: autoName, method: repM, url: repU, headers: h, body: repB });
+      const items = await api.get('/api/repeater');
+      setRepReqs(items);
+      if (items.length > 0) setSelRep(items[0].id);
+    }
   };
 
   const toRep = r => {
@@ -531,6 +747,23 @@ function Blackwire() {
     setRepH(Object.entries(r.headers || {}).map(([k, v]) => k + ': ' + v).join('\n'));
     setRepB(r.body || '');
     if (r.last_response) setRepResp(r.last_response);
+  };
+
+  const renameRepItem = async id => {
+    const item = repReqs.find(r => r.id === id);
+    if (!item) return;
+    const n = prompt('Rename:', item.name);
+    if (!n || n === item.name) return;
+    await api.put('/api/repeater/' + id, { name: n });
+    loadRep();
+    toast('Renamed', 'success');
+  };
+
+  const delRepItem = async id => {
+    await api.del('/api/repeater/' + id);
+    if (selRep === id) setSelRep(null);
+    loadRep();
+    toast('Deleted', 'success');
   };
 
   const commit = async () => {
@@ -601,7 +834,7 @@ function Blackwire() {
   };
 
   const save_project_config = async (name, config) => {
-    await api.put('/api/projects/' + name, config);
+    await api.put('/api/projects/' + encodeURIComponent(name), config);
   };
 
   // ===== EXTENSION UI COMPONENTS =====
@@ -808,48 +1041,85 @@ function Blackwire() {
   };
 
   // NUEVA FUNCIONALIDAD: Menú contextual
-  const showContextMenu = (e, req) => {
-    e.preventDefault();
-    setContextMenu({
-      x: e.clientX,
-      y: e.clientY,
-      request: req
-    });
+  // Unified context menu
+  const normalizeRequest = (req, source) => {
+    if (source === 'webhook') {
+      return { id: req.request_id, method: req.method || 'GET', url: req.url || '',
+        headers: req.headers || {}, body: req.content || null, source: 'webhook' };
+    }
+    if (source === 'repeater') {
+      return { id: req.id, method: req.method, url: req.url,
+        headers: req.headers || {}, body: req.body || null, name: req.name, source: 'repeater' };
+    }
+    if (source === 'websocket') {
+      return { id: req.id, method: 'WS', url: req.url || '',
+        headers: {}, body: req.content || req.body || null, source: 'websocket' };
+    }
+    if (source === 'collection') {
+      return { id: req.id, method: req.method, url: req.url,
+        headers: req.headers || {}, body: req.body || null, source: 'collection' };
+    }
+    if (source === 'intercept') {
+      return { id: req.id, method: req.method, url: req.url,
+        headers: req.headers || {}, body: req.body || null, source: 'intercept' };
+    }
+    return { id: req.id, method: req.method, url: req.url,
+      headers: req.headers || {}, body: req.body || null, saved: req.saved, source: 'history' };
   };
 
-  const handleContextAction = async (action, req) => {
+  const showContextMenu = (e, req, source) => {
+    e.preventDefault();
+    const norm = normalizeRequest(req, source || 'history');
+    setContextMenu({ x: e.clientX, y: e.clientY, request: req, source: source || 'history', normalized: norm });
+  };
+
+  const handleContextAction = async action => {
+    if (!contextMenu) return;
+    const norm = contextMenu.normalized;
+    const req = contextMenu.request;
+    const source = contextMenu.source;
     setContextMenu(null);
     switch (action) {
       case 'repeater':
-        toRep(req);
+        toRep({ method: norm.method, url: norm.url, headers: norm.headers, body: norm.body });
         break;
       case 'favorite':
-        await togSave(req.id);
+        if (source === 'history' && req.id) await togSave(req.id);
         break;
       case 'copy-url':
-        navigator.clipboard.writeText(req.url);
+        navigator.clipboard.writeText(norm.url);
         toast('URL copied', 'success');
         break;
       case 'copy-curl':
-        const curl = generateCurl(req);
-        navigator.clipboard.writeText(curl);
+        navigator.clipboard.writeText(generateCurl(norm));
         toast('cURL copied', 'success');
         break;
+      case 'copy-body':
+        navigator.clipboard.writeText(norm.body || '');
+        toast('Body copied', 'success');
+        break;
+      case 'add-to-collection':
+        setShowCollPick(norm);
+        break;
+      case 'rename':
+        if (source === 'repeater') renameRepItem(req.id);
+        break;
       case 'delete':
-        await delReq(req.id);
+        if (source === 'history') await delReq(req.id);
+        else if (source === 'repeater') await delRepItem(req.id);
         break;
     }
   };
 
   const generateCurl = req => {
-    let curl = `curl -X ${req.method} '${req.url}'`;
+    let curl = 'curl -X ' + req.method + " '" + req.url + "'";
     if (req.headers) {
       Object.entries(req.headers).forEach(([k, v]) => {
-        curl += ` -H '${k}: ${v}'`;
+        curl += " -H '" + k + ': ' + v + "'";
       });
     }
     if (req.body) {
-      curl += ` -d '${req.body.replace(/'/g, "'\\''")}'`;
+      curl += " -d '" + req.body.replace(/'/g, "'\\''") + "'";
     }
     return curl;
   };
@@ -949,6 +1219,47 @@ function Blackwire() {
 .context-menu-item{padding:8px 12px;font-size:12px;color:var(--txt);cursor:pointer;border-radius:4px;transition:all .15s ease}
 .context-menu-item:hover{background:var(--bgh)}
 .context-menu-divider{height:1px;background:var(--brd);margin:4px 0}
+.chepy-cnt{display:flex;width:100%;height:100%}.chepy-col{display:flex;flex-direction:column;overflow:hidden}
+.chepy-in-col{width:30%;border-right:1px solid var(--brd)}.chepy-recipe-col{width:30%;border-right:1px solid var(--brd)}.chepy-out-col{flex:1}
+.chepy-add{display:flex;flex-direction:column;border-bottom:1px solid var(--brd);max-height:40%}.chepy-ops-list{flex:1;overflow:auto;padding:0 8px 8px}
+.chepy-avail-op{padding:5px 10px;font-size:11px;cursor:pointer;border-radius:4px;color:var(--txt2);font-family:'JetBrains Mono'}.chepy-avail-op:hover{background:var(--bg3);color:var(--cyan)}
+.chepy-steps{flex:1;overflow:auto;padding:8px}
+.chepy-step{background:var(--bg2);border:1px solid var(--brd);border-radius:6px;margin-bottom:6px}
+.chepy-step-hdr{display:flex;align-items:center;gap:8px;padding:8px 10px}
+.chepy-step-num{width:20px;height:20px;border-radius:50%;background:var(--purple);color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;flex-shrink:0}
+.chepy-step-name{flex:1;font-size:12px;font-weight:500}.chepy-step-acts{display:flex;gap:3px}
+.chepy-step-params{padding:6px 10px 10px;border-top:1px solid var(--brd);display:flex;flex-direction:column;gap:6px}
+.chepy-param{display:flex;align-items:center;gap:8px}.chepy-param-lbl{font-size:10px;color:var(--txt2);min-width:60px}
+.ws-cnt{display:flex;width:100%;height:100%}
+.ws-conns{width:220px;border-right:1px solid var(--brd)}.ws-frames{width:300px;border-right:1px solid var(--brd)}.ws-detail{flex:1;display:flex;flex-direction:column}
+.ws-conn-item{padding:10px 14px;border-bottom:1px solid var(--brd);cursor:pointer;font-size:11px}
+.ws-conn-item:hover{background:var(--bgh)}.ws-conn-item.sel{background:var(--bg3);border-left:3px solid var(--cyan)}
+.ws-conn-url{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:'JetBrains Mono';font-size:11px}
+.ws-conn-count{font-size:10px;color:var(--txt3)}
+.ws-frame-item{display:flex;gap:8px;padding:8px 14px;border-bottom:1px solid var(--brd);cursor:pointer;align-items:center;font-size:11px}
+.ws-frame-item:hover{background:var(--bgh)}.ws-frame-item.sel{background:var(--bg3);border-left:3px solid var(--cyan)}
+.ws-dir{font-weight:700;font-size:14px;width:20px;text-align:center}.ws-dir-up{color:var(--green)}.ws-dir-down{color:var(--orange)}
+.ws-frame-body{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:'JetBrains Mono'}
+.coll-cnt{display:flex;width:100%;height:100%}
+.coll-side{width:200px;border-right:1px solid var(--brd)}.coll-steps{width:350px;border-right:1px solid var(--brd)}.coll-exec{flex:1;display:flex;flex-direction:column}
+.coll-item{display:flex;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--brd);cursor:pointer;font-size:12px}
+.coll-item:hover{background:var(--bgh)}.coll-item.sel{background:var(--bg3);border-left:3px solid var(--purple)}
+.coll-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.coll-count{color:var(--txt3);font-size:10px;background:var(--bg);padding:1px 6px;border-radius:8px}
+.coll-step-item{display:flex;gap:8px;padding:8px 14px;border-bottom:1px solid var(--brd);align-items:center;font-size:11px;cursor:pointer}
+.coll-step-item:hover{background:var(--bgh)}
+.coll-step-item.active{background:rgba(88,166,255,.1);border-left:3px solid var(--blue)}
+.coll-step-item.done{background:rgba(63,185,80,.05)}.coll-step-item.err{background:rgba(248,81,73,.05)}
+.coll-step-num{width:20px;height:20px;border-radius:50%;background:var(--bg3);color:var(--txt2);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;flex-shrink:0}
+.coll-step-item.active .coll-step-num{background:var(--blue);color:#fff}
+.coll-vars{padding:10px 14px;border-top:1px solid var(--brd);background:var(--bg2)}
+.coll-vars-hdr{font-size:10px;color:var(--txt3);font-weight:600;margin-bottom:6px;text-transform:uppercase}
+.coll-var{display:flex;gap:8px;font-size:11px;font-family:'JetBrains Mono';padding:2px 0}
+.coll-var-name{color:var(--purple);font-weight:500}.coll-var-val{color:var(--green);flex:1;overflow:hidden;text-overflow:ellipsis}
+.coll-extract{display:flex;gap:6px;align-items:center;padding:4px 0;font-size:11px}
+.coll-extract-name{color:var(--cyan);font-weight:500}
+.coll-pick-item{padding:8px 12px;cursor:pointer;border-radius:4px;font-size:12px;margin-bottom:2px}
+.coll-pick-item:hover{background:var(--bgh)}
       `}} />
 
       <header className="hdr">
@@ -984,21 +1295,14 @@ function Blackwire() {
         <div className={'tab' + (tab === 'projects' ? ' act' : '')} onClick={() => setTab('projects')}>Projects</div>
         {curPrj && (
           <React.Fragment>
-            <div className={'tab' + (tab === 'history' ? ' act' : '')} onClick={() => setTab('history')}>History</div>
-            <div className={'tab' + (tab === 'intercept' ? ' act' : '')} onClick={() => setTab('intercept')}>
-              Intercept
-              {pending.length > 0 && <span className="tab-badge">{pending.length}</span>}
-            </div>
-            <div className={'tab' + (tab === 'repeater' ? ' act' : '')} onClick={() => setTab('repeater')}>Repeater</div>
             <div className={'tab' + (tab === 'scope' ? ' act' : '')} onClick={() => setTab('scope')}>Scope</div>
-            <div className={'tab' + (tab === 'extensions' ? ' act' : '')} onClick={() => setTab('extensions')}>Extensions</div>
-            {webhookExt?.enabled && webhookExt?.config?.token_id && (
-              <div className={'tab' + (tab === 'webhook' ? ' act' : '')} onClick={() => setTab('webhook')}>
-                Webhook
-                {whkReqs.length > 0 && <span className="tab-badge">{whkReqs.length}</span>}
-              </div>
-            )}
+            <div className={'tab' + (tab === 'history' ? ' act' : '')} onClick={() => setTab('history')}>History</div>
+            <div className={'tab' + (tab === 'wsviewer' ? ' act' : '')} onClick={() => { setTab('wsviewer'); loadWsConns(); }}>WS</div>
+            <div className={'tab' + (tab === 'collections' ? ' act' : '')} onClick={() => { setTab('collections'); loadColls(); }}>Collections</div>
+            <div className={'tab' + (tab === 'repeater' ? ' act' : '')} onClick={() => setTab('repeater')}>Repeater</div>
             <div className={'tab' + (tab === 'git' ? ' act' : '')} onClick={() => setTab('git')}>Git</div>
+            <div className={'tab' + (tab === 'chepy' ? ' act' : '')} onClick={() => setTab('chepy')}>Cipher</div>
+            <div className={'tab' + (tab === 'extensions' ? ' act' : '')} onClick={() => setTab('extensions')}>Extensions</div>
           </React.Fragment>
         )}
       </nav>
@@ -1157,7 +1461,8 @@ function Blackwire() {
                   <span>Pending ({pending.length})</span>
                 </div>
                 {pending.map(r => (
-                  <div key={r.id} className={'pend-item' + (selPend?.id === r.id ? ' sel' : '')} onClick={() => { setSelPend(r); setEditReq({ ...r }); }}>
+                  <div key={r.id} className={'pend-item' + (selPend?.id === r.id ? ' sel' : '')} onClick={() => { setSelPend(r); setEditReq({ ...r }); }}
+                       onContextMenu={e => showContextMenu(e, r, 'intercept')}>
                     <span className={'mth mth-' + r.method}>{r.method}</span>
                     <span className="url">{r.url}</span>
                   </div>
@@ -1171,7 +1476,7 @@ function Blackwire() {
               <div className="int-edit">
                 {selPend && editReq ? (
                   <React.Fragment>
-                    <div className="pnl-hdr">
+                    <div className="pnl-hdr" onContextMenu={e => showContextMenu(e, editReq, 'intercept')}>
                       <span>Edit</span>
                       <div className="acts">
                         <button className="btn btn-g" onClick={() => fwdReq(selPend.id, editReq)}>▶ Forward</button>
@@ -1250,9 +1555,16 @@ function Blackwire() {
               </div>
               <div className="rep-list">
                 {repReqs.map(r => (
-                  <div key={r.id} className={'rep-item' + (selRep === r.id ? ' sel' : '')} onClick={() => loadRepItem(r)}>
+                  <div key={r.id} className={'rep-item' + (selRep === r.id ? ' sel' : '')} onClick={() => loadRepItem(r)}
+                    onContextMenu={e => showContextMenu(e, r, 'repeater')}>
                     <span className={'mth mth-' + r.method}>{r.method}</span>
-                    <span className="name">{r.name}</span>
+                    <span className="name" onDoubleClick={e => { e.stopPropagation(); renameRepItem(r.id); }}>{r.name}</span>
+                    {selRep === r.id && (
+                      <div style={{ marginLeft: 'auto', display: 'flex', gap: '2px' }} onClick={e => e.stopPropagation()}>
+                        <button className="btn btn-sm btn-s" onClick={() => renameRepItem(r.id)} title="Rename" style={{ padding: '2px 5px', fontSize: '10px' }}>✎</button>
+                        <button className="btn btn-sm btn-d" onClick={() => delRepItem(r.id)} title="Delete" style={{ padding: '2px 5px', fontSize: '10px' }}>✕</button>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -1356,10 +1668,7 @@ function Blackwire() {
                       key={r.request_id}
                       className={'req-item' + (selWhkReq?.request_id === r.request_id ? ' sel' : '')}
                       onClick={() => { setSelWhkReq(r); setWhkDetTab('request'); }}
-                      onContextMenu={e => {
-                        e.preventDefault();
-                        setContextMenu({ x: e.clientX, y: e.clientY, request: r, source: 'webhook' });
-                      }}
+                      onContextMenu={e => showContextMenu(e, r, 'webhook')}
                     >
                       <span className={'mth mth-' + (r.method || 'GET')}>{r.method || 'GET'}</span>
                       <span className="url" title={r.url}>{r.url || r.path || '-'}</span>
@@ -1516,6 +1825,367 @@ function Blackwire() {
             ))}
           </div>
         )}
+
+        {tab === 'wsviewer' && curPrj && (
+          <div className="ws-cnt">
+            <div className="ws-conns panel">
+              <div className="pnl-hdr">
+                <span>Connections ({wsConns.length})</span>
+                <button className="btn btn-sm btn-s" onClick={loadWsConns}>&#8635;</button>
+              </div>
+              <div className="pnl-cnt">
+                {wsConns.map(c => (
+                  <div key={c.url} className={'ws-conn-item' + (selWsConn === c.url ? ' sel' : '')}
+                       onClick={() => loadWsFrames(c.url)}>
+                    <span className="ws-conn-url">{c.url}</span>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px' }}>
+                      <span className="ws-conn-count">{c.frame_count} frames</span>
+                      <span className="ts">{fmtTime(c.last_seen)}</span>
+                    </div>
+                  </div>
+                ))}
+                {wsConns.length === 0 && (
+                  <div className="empty" style={{ padding: 30 }}>
+                    <span>No WebSocket connections captured</span>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="ws-frames panel">
+              <div className="pnl-hdr">
+                <span>Frames {selWsConn ? '(' + wsFrames.length + ')' : ''}</span>
+              </div>
+              <div className="pnl-cnt">
+                {wsFrames.map(f => (
+                  <div key={f.id} className={'ws-frame-item' + (selWsFrame?.id === f.id ? ' sel' : '')}
+                       onClick={() => selectWsFrame(f)}
+                       onContextMenu={e => showContextMenu(e, { ...f, url: selWsConn, method: 'WS', body: f.content }, 'websocket')}>
+                    <span className={'ws-dir ws-dir-' + f.direction}>
+                      {f.direction === 'up' ? '\u2191' : '\u2193'}
+                    </span>
+                    <span className="ws-frame-body">{(f.content || '').substring(0, 80)}</span>
+                    <span className="ts">{fmtTime(f.timestamp)}</span>
+                  </div>
+                ))}
+                {selWsConn && wsFrames.length === 0 && (
+                  <div className="empty" style={{ padding: 30 }}><span>No frames</span></div>
+                )}
+                {!selWsConn && (
+                  <div className="empty" style={{ padding: 30 }}><span>Select a connection</span></div>
+                )}
+              </div>
+            </div>
+            <div className="ws-detail panel">
+              {selWsFrame ? (
+                <React.Fragment>
+                  <div className="pnl-hdr">
+                    <span>{selWsFrame.direction === 'up' ? 'Client \u2192 Server' : 'Server \u2192 Client'}</span>
+                    <span className="ts">{fmtTime(selWsFrame.timestamp)}</span>
+                  </div>
+                  <div className="code" style={{ maxHeight: '40%', borderBottom: '1px solid var(--brd)' }}>{selWsFrame.content}</div>
+                  <div className="pnl-hdr"><span>Resend Frame</span></div>
+                  <textarea className="ed-ta" style={{ flex: 1 }} value={wsResendMsg}
+                            onChange={e => setWsResendMsg(e.target.value)} placeholder="Edit frame content..." />
+                  <div style={{ padding: '10px 14px', display: 'flex', gap: '10px', background: 'var(--bg2)', borderTop: '1px solid var(--brd)' }}>
+                    <button className="btn btn-p" onClick={resendWsFrame}
+                            disabled={wsSending || !wsResendMsg}>
+                      {wsSending ? '...' : '\u25B6 Resend'}
+                    </button>
+                  </div>
+                  {wsResendResp && (
+                    <div className="code" style={{ maxHeight: '30%', borderTop: '1px solid var(--brd)' }}>
+                      {wsResendResp.error
+                        ? 'Error: ' + wsResendResp.error
+                        : wsResendResp.response
+                          ? 'Response: ' + wsResendResp.response
+                          : wsResendResp.note || 'Sent (no response)'}
+                    </div>
+                  )}
+                </React.Fragment>
+              ) : (
+                <div className="empty"><span>Select a frame</span></div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {tab === 'collections' && curPrj && (
+          <div className="coll-cnt">
+            <div className="coll-side panel">
+              <div className="pnl-hdr">
+                <span>Collections</span>
+                <button className="btn btn-sm btn-p" onClick={createColl}>+</button>
+              </div>
+              <div className="pnl-cnt">
+                {colls.map(c => (
+                  <div key={c.id} className={'coll-item' + (selColl === c.id ? ' sel' : '')}
+                       onClick={() => loadCollItems(c.id)}
+                       onContextMenu={e => { e.preventDefault(); if (confirm('Delete "' + c.name + '"?')) deleteColl(c.id); }}>
+                    <span className="coll-name">{c.name}</span>
+                    <span className="coll-count">{c.item_count}</span>
+                  </div>
+                ))}
+                {colls.length === 0 && (
+                  <div className="empty" style={{ padding: 20, fontSize: 11 }}>
+                    <span>No collections yet</span>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="coll-steps panel">
+              <div className="pnl-hdr">
+                <span>Steps {selColl ? '(' + collItems.length + ')' : ''}</span>
+              </div>
+              <div className="pnl-cnt">
+                {collItems.map((item, idx) => (
+                  <div key={item.id} className={'coll-step-item' + (collStep === idx ? ' active' : '') + (collResps[item.id] ? (collResps[item.id].error ? ' err' : ' done') : '')}
+                       onClick={() => setCollStep(idx)}
+                       onContextMenu={e => showContextMenu(e, item, 'collection')}>
+                    <span className="coll-step-num">{idx + 1}</span>
+                    <span className={'mth mth-' + item.method}>{item.method}</span>
+                    <span className="url" style={{ flex: 1 }}>{item.url.length > 45 ? item.url.substring(0, 45) + '...' : item.url}</span>
+                    {collResps[item.id] && !collResps[item.id].error && (
+                      <span className={'sts ' + stCls(collResps[item.id].status_code)}>{collResps[item.id].status_code}</span>
+                    )}
+                    {collResps[item.id] && collResps[item.id].error && (
+                      <span className="sts st5">ERR</span>
+                    )}
+                    <button className="btn btn-sm btn-d" onClick={e => { e.stopPropagation(); deleteCollItem(selColl, item.id); }} style={{ padding: '2px 5px', fontSize: '10px' }}>&#10005;</button>
+                  </div>
+                ))}
+                {selColl && collItems.length === 0 && (
+                  <div className="empty" style={{ padding: 20, fontSize: 11 }}>
+                    <span>Add requests via right-click in History</span>
+                  </div>
+                )}
+                {!selColl && (
+                  <div className="empty" style={{ padding: 20, fontSize: 11 }}>
+                    <span>Select a collection</span>
+                  </div>
+                )}
+                {Object.keys(collVars).length > 0 && (
+                  <div className="coll-vars">
+                    <div className="coll-vars-hdr">Variables</div>
+                    {Object.entries(collVars).map(([k, v]) => (
+                      <div key={k} className="coll-var">
+                        <span className="coll-var-name">{k}</span>
+                        <span className="coll-var-val">{String(v).substring(0, 60)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="coll-exec panel">
+              {selColl && collItems.length > 0 ? (
+                <React.Fragment>
+                  <div className="pnl-hdr">
+                    <span>Step {Math.min(collStep + 1, collItems.length)} of {collItems.length}</span>
+                    <div className="acts">
+                      <button className="btn btn-sm btn-p" onClick={executeCollStep}
+                              disabled={collRunning || collStep >= collItems.length}>
+                        {collRunning ? '...' : '\u25B6 Send Next'}
+                      </button>
+                      <button className="btn btn-sm btn-s" onClick={resetCollRun}>Reset</button>
+                    </div>
+                  </div>
+                  {(() => {
+                    const item = collItems[Math.min(collStep, collItems.length - 1)];
+                    if (!item) return null;
+                    const resp = collResps[item.id];
+                    return (
+                      <React.Fragment>
+                        <div style={{ padding: '10px 14px', background: 'var(--bg2)', borderBottom: '1px solid var(--brd)', fontSize: '12px' }}>
+                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '6px' }}>
+                            <span className={'mth mth-' + item.method}>{item.method}</span>
+                            <span style={{ fontFamily: 'JetBrains Mono', fontSize: '11px', flex: 1 }}>{item.url}</span>
+                          </div>
+                          {item.headers && Object.keys(item.headers).length > 0 && (
+                            <div style={{ fontSize: '10px', color: 'var(--txt3)', marginBottom: '4px' }}>
+                              {Object.entries(item.headers).map(([k, v]) => k + ': ' + v).join(' | ')}
+                            </div>
+                          )}
+                          {item.body && (
+                            <div style={{ fontSize: '10px', color: 'var(--txt3)' }}>Body: {item.body.substring(0, 100)}</div>
+                          )}
+                        </div>
+                        <div style={{ padding: '8px 14px', background: 'var(--bg3)', borderBottom: '1px solid var(--brd)' }}>
+                          <div style={{ fontSize: '10px', color: 'var(--txt2)', fontWeight: '600', marginBottom: '6px' }}>Variable Extractions</div>
+                          {(item.var_extracts || []).map((ve, vi) => (
+                            <div key={vi} className="coll-extract">
+                              <span className="coll-extract-name">{ve.name}</span>
+                              <span style={{ color: 'var(--txt3)', fontSize: '10px' }}>from {ve.source} at</span>
+                              <span style={{ fontFamily: 'JetBrains Mono', fontSize: '10px', color: 'var(--cyan)' }}>{ve.path}</span>
+                              <button className="btn btn-sm btn-d" style={{ padding: '1px 4px', fontSize: '9px' }}
+                                onClick={() => {
+                                  const newExtracts = item.var_extracts.filter((_, i) => i !== vi);
+                                  updateCollItemExtracts(selColl, item.id, newExtracts);
+                                }}>&#10005;</button>
+                            </div>
+                          ))}
+                          <div style={{ display: 'flex', gap: '6px', marginTop: '6px' }}>
+                            <input className="inp" placeholder="var name" id="ve-name" style={{ flex: 1, fontSize: '10px', padding: '4px 6px' }} />
+                            <select className="sel" id="ve-source" style={{ fontSize: '10px', padding: '4px' }}>
+                              <option value="body">body</option>
+                              <option value="header">header</option>
+                            </select>
+                            <input className="inp" placeholder="$.path.to.value" id="ve-path" style={{ flex: 1, fontSize: '10px', padding: '4px 6px' }} />
+                            <button className="btn btn-sm btn-s" onClick={() => {
+                              const name = document.getElementById('ve-name').value;
+                              const source = document.getElementById('ve-source').value;
+                              const path = document.getElementById('ve-path').value;
+                              if (!name || !path) return;
+                              const newExtracts = [...(item.var_extracts || []), { name, source, path }];
+                              updateCollItemExtracts(selColl, item.id, newExtracts);
+                              document.getElementById('ve-name').value = '';
+                              document.getElementById('ve-path').value = '';
+                            }}>+ Add</button>
+                          </div>
+                        </div>
+                        {resp && (
+                          <React.Fragment>
+                            <div className="pnl-hdr">
+                              <span>Response</span>
+                              {!resp.error && (
+                                <span style={{ color: 'var(--txt3)', fontSize: '10px' }}>
+                                  {resp.status_code} &#8226; {resp.elapsed?.toFixed(3)}s
+                                </span>
+                              )}
+                            </div>
+                            <div className="code" style={{ flex: 1 }}>
+                              {resp.error ? resp.error : resp.body || ''}
+                            </div>
+                            {resp.extracted_variables && Object.keys(resp.extracted_variables).length > 0 && (
+                              <div className="coll-vars" style={{ borderTop: '1px solid var(--brd)' }}>
+                                <div className="coll-vars-hdr">Extracted</div>
+                                {Object.entries(resp.extracted_variables).map(([k, v]) => (
+                                  <div key={k} className="coll-var">
+                                    <span className="coll-var-name">{k}</span>
+                                    <span className="coll-var-val">{String(v).substring(0, 60)}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </React.Fragment>
+                        )}
+                        {!resp && (
+                          <div className="empty"><span>Click "Send Next" to execute this step</span></div>
+                        )}
+                      </React.Fragment>
+                    );
+                  })()}
+                </React.Fragment>
+              ) : (
+                <div className="empty"><span>{selColl ? 'No steps - add requests from History' : 'Select a collection'}</span></div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {tab === 'chepy' && curPrj && (
+          <div className="chepy-cnt">
+            <div className="chepy-col chepy-in-col">
+              <div className="pnl-hdr">
+                <span>Input</span>
+                <button className="btn btn-sm btn-s" onClick={() => setChepyIn('')}>Clear</button>
+              </div>
+              <textarea
+                className="ed-ta"
+                style={{ flex: 1 }}
+                value={chepyIn}
+                onChange={e => setChepyIn(e.target.value)}
+                placeholder="Paste or type input text here..."
+              />
+            </div>
+
+            <div className="chepy-col chepy-recipe-col">
+              <div className="pnl-hdr">
+                <span>Recipe</span>
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <button className="btn btn-sm btn-d" onClick={clearChepyRecipe}>Clear</button>
+                  <button className="btn btn-sm btn-p" onClick={bakeChepy} disabled={chepyBaking}>
+                    {chepyBaking ? '...' : 'Bake'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="chepy-add">
+                <select className="sel" value={chepySelCat}
+                  onChange={e => setChepySelCat(e.target.value)}
+                  style={{ margin: '8px', borderRadius: '4px' }}>
+                  {Object.keys(chepyCat).map(cat => (
+                    <option key={cat} value={cat}>{cat}</option>
+                  ))}
+                </select>
+                <div className="chepy-ops-list">
+                  {(chepyCat[chepySelCat] || []).map(op => (
+                    <div key={op.name} className="chepy-avail-op" onClick={() => addChepyOp(op)}>
+                      {op.label}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="chepy-steps">
+                {chepyOps.length === 0 && (
+                  <div className="empty" style={{ padding: 20, fontSize: 11 }}>
+                    <span>Click operations above to build a recipe</span>
+                  </div>
+                )}
+                {chepyOps.map((op, i) => (
+                  <div key={i} className="chepy-step">
+                    <div className="chepy-step-hdr">
+                      <span className="chepy-step-num">{i + 1}</span>
+                      <span className="chepy-step-name">{op.label}</span>
+                      <div className="chepy-step-acts">
+                        <button className="btn btn-sm btn-s" onClick={() => moveChepyOp(i, -1)} disabled={i === 0}>&#9650;</button>
+                        <button className="btn btn-sm btn-s" onClick={() => moveChepyOp(i, 1)} disabled={i === chepyOps.length - 1}>&#9660;</button>
+                        <button className="btn btn-sm btn-d" onClick={() => removeChepyOp(i)}>&#10005;</button>
+                      </div>
+                    </div>
+                    {op.params.length > 0 && (
+                      <div className="chepy-step-params">
+                        {op.params.map(p => (
+                          <div key={p.name} className="chepy-param">
+                            <label className="chepy-param-lbl">{p.label}</label>
+                            {p.type === 'select' ? (
+                              <select className="sel" value={op.args[p.name] || p.default}
+                                onChange={e => updateChepyArg(i, p.name, e.target.value)}
+                                style={{ flex: 1, fontSize: '11px', padding: '5px 8px' }}>
+                                {(p.options || []).map(o => <option key={o} value={o}>{o}</option>)}
+                              </select>
+                            ) : (
+                              <input className="inp" value={op.args[p.name] || ''}
+                                onChange={e => updateChepyArg(i, p.name, e.target.value)}
+                                placeholder={p.default || ''}
+                                style={{ flex: 1, fontSize: '11px', padding: '5px 8px' }} />
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="chepy-col chepy-out-col">
+              <div className="pnl-hdr">
+                <span>Output</span>
+                <button className="btn btn-sm btn-s"
+                  onClick={() => { navigator.clipboard.writeText(chepyOut); toast('Copied', 'success'); }}
+                  disabled={!chepyOut}>
+                  Copy
+                </button>
+              </div>
+              {chepyErr ? (
+                <div className="code" style={{ color: 'var(--red)' }}>{chepyErr}</div>
+              ) : (
+                <div className="code">{chepyOut || 'Output will appear here after baking'}</div>
+              )}
+            </div>
+          </div>
+        )}
       </main>
 
       <div className="toast-c">
@@ -1526,41 +2196,65 @@ function Blackwire() {
 
       {contextMenu && (
         <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={e => e.stopPropagation()}>
-          {contextMenu.source === 'webhook' ? (
+          {contextMenu.source !== 'websocket' && (
+            <div className="context-menu-item" onClick={() => handleContextAction('repeater')}>
+              Send to Repeater
+            </div>
+          )}
+          <div className="context-menu-item" onClick={() => handleContextAction('add-to-collection')}>
+            Add to Collection
+          </div>
+          <div className="context-menu-divider" />
+          <div className="context-menu-item" onClick={() => handleContextAction('copy-url')}>
+            Copy URL
+          </div>
+          {contextMenu.source !== 'websocket' && (
+            <div className="context-menu-item" onClick={() => handleContextAction('copy-curl')}>
+              Copy as cURL
+            </div>
+          )}
+          <div className="context-menu-item" onClick={() => handleContextAction('copy-body')}>
+            Copy Body
+          </div>
+          {contextMenu.source === 'history' && (
             <React.Fragment>
-              <div className="context-menu-item" onClick={() => whkContextAction('repeater', contextMenu.request)}>
-                Send to Repeater
-              </div>
-              <div className="context-menu-item" onClick={() => whkContextAction('copy-url', contextMenu.request)}>
-                Copy URL
-              </div>
-              <div className="context-menu-item" onClick={() => whkContextAction('copy-curl', contextMenu.request)}>
-                Copy as cURL
-              </div>
-              <div className="context-menu-item" onClick={() => whkContextAction('copy-content', contextMenu.request)}>
-                Copy Body
-              </div>
-            </React.Fragment>
-          ) : (
-            <React.Fragment>
-              <div className="context-menu-item" onClick={() => handleContextAction('repeater', contextMenu.request)}>
-                Send to Repeater
-              </div>
-              <div className="context-menu-item" onClick={() => handleContextAction('favorite', contextMenu.request)}>
+              <div className="context-menu-divider" />
+              <div className="context-menu-item" onClick={() => handleContextAction('favorite')}>
                 {contextMenu.request.saved ? 'Unmark' : 'Mark'} as Favorite
               </div>
-              <div className="context-menu-item" onClick={() => handleContextAction('copy-url', contextMenu.request)}>
-                Copy URL
-              </div>
-              <div className="context-menu-item" onClick={() => handleContextAction('copy-curl', contextMenu.request)}>
-                Copy as cURL
-              </div>
-              <div className="context-menu-divider" />
-              <div className="context-menu-item" onClick={() => handleContextAction('delete', contextMenu.request)}>
+              <div className="context-menu-item" onClick={() => handleContextAction('delete')}>
                 Delete
               </div>
             </React.Fragment>
           )}
+          {contextMenu.source === 'repeater' && (
+            <React.Fragment>
+              <div className="context-menu-divider" />
+              <div className="context-menu-item" onClick={() => handleContextAction('rename')}>
+                Rename
+              </div>
+              <div className="context-menu-item" onClick={() => handleContextAction('delete')}>
+                Delete
+              </div>
+            </React.Fragment>
+          )}
+        </div>
+      )}
+
+      {showCollPick && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1001 }}
+             onClick={() => setShowCollPick(null)}>
+          <div style={{ background: 'var(--bg2)', border: '1px solid var(--brd)', borderRadius: '8px', padding: '20px', minWidth: '300px' }}
+               onClick={e => e.stopPropagation()}>
+            <h3 style={{ fontSize: '14px', marginBottom: '12px' }}>Add to Collection</h3>
+            {colls.length === 0 && <div style={{ color: 'var(--txt3)', fontSize: '12px', marginBottom: '10px' }}>No collections yet. Create one in the Collections tab.</div>}
+            {colls.map(c => (
+              <div key={c.id} className="coll-pick-item" onClick={() => addToCollection(c.id, showCollPick)}>
+                {c.name} <span style={{ color: 'var(--txt3)', fontSize: '10px' }}>({c.item_count} items)</span>
+              </div>
+            ))}
+            <button className="btn btn-sm btn-s" style={{ marginTop: '10px' }} onClick={() => setShowCollPick(null)}>Cancel</button>
+          </div>
         </div>
       )}
 
