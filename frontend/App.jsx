@@ -5,6 +5,201 @@ const WS_URL = 'ws://' + location.host + '/ws';
 
 const THEMES = window.BW_THEMES || {};
 
+// --- HTTPQL Parser ---
+const HTTPQL_REQ_FIELDS = ['method','host','path','port','ext','query','raw','len','tls'];
+const HTTPQL_RESP_FIELDS = ['code','raw','len'];
+const HTTPQL_STR_OPS = ['eq','ne','cont','ncont','like','nlike','regex','nregex'];
+const HTTPQL_NUM_OPS = ['eq','ne','gt','gte','lt','lte'];
+const HTTPQL_BOOL_OPS = ['eq','ne'];
+
+function httpqlTokenize(input) {
+  const tokens = [];
+  let i = 0;
+  while (i < input.length) {
+    if (/\s/.test(input[i])) { i++; continue; }
+    if (input[i] === '(') { tokens.push({ type: 'LPAREN', pos: i }); i++; continue; }
+    if (input[i] === ')') { tokens.push({ type: 'RPAREN', pos: i }); i++; continue; }
+    if (input[i] === ':') { tokens.push({ type: 'COLON', pos: i }); i++; continue; }
+    if (input[i] === '"') {
+      let s = '', j = i + 1, esc = false;
+      while (j < input.length) {
+        if (esc) { s += input[j]; esc = false; }
+        else if (input[j] === '\\') esc = true;
+        else if (input[j] === '"') break;
+        else s += input[j];
+        j++;
+      }
+      if (j >= input.length) return { tokens, error: 'Unterminated string at position ' + i };
+      tokens.push({ type: 'STRING', value: s, pos: i });
+      i = j + 1;
+      continue;
+    }
+    // Word: identifiers, dotted paths, numbers
+    const wordRe = /^[a-zA-Z0-9_.%*?\-\/&+=@:]+/;
+    const rest = input.slice(i);
+    const m = rest.match(wordRe);
+    if (m) {
+      const w = m[0];
+      // Check if it's a dotted comparison like req.method.eq:value — split on last colon
+      // Actually, handle colon as separate token if it separates field.op from value
+      // Parse word up to a colon that looks like operator:value
+      const colonIdx = w.indexOf(':');
+      let word = w;
+      if (colonIdx > 0) {
+        word = w.slice(0, colonIdx);
+        tokens.push({ type: 'IDENT', value: word, pos: i });
+        i += colonIdx;
+        continue; // colon will be picked up next iteration
+      }
+      const upper = word.toUpperCase();
+      if (upper === 'AND') tokens.push({ type: 'AND', pos: i });
+      else if (upper === 'OR') tokens.push({ type: 'OR', pos: i });
+      else tokens.push({ type: 'IDENT', value: word, pos: i });
+      i += word.length;
+      continue;
+    }
+    return { tokens, error: 'Unexpected character \'' + input[i] + '\' at position ' + i };
+  }
+  tokens.push({ type: 'EOF', pos: i });
+  return { tokens, error: null };
+}
+
+function httpqlParse(input) {
+  input = input.trim();
+  if (!input) return { ast: null, error: null };
+  const { tokens, error: tokErr } = httpqlTokenize(input);
+  if (tokErr) return { ast: null, error: tokErr };
+  let pos = 0;
+  const peek = () => tokens[pos] || { type: 'EOF' };
+  const advance = () => tokens[pos++];
+
+  function parseOr() {
+    let left = parseAnd();
+    while (peek().type === 'OR') {
+      advance();
+      const right = parseAnd();
+      if (left.type === 'or') { left.children.push(right); }
+      else { left = { type: 'or', children: [left, right] }; }
+    }
+    return left;
+  }
+
+  function parseAnd() {
+    let left = parseAtom();
+    while (true) {
+      const p = peek();
+      if (p.type === 'AND') { advance(); left = mergeAnd(left, parseAtom()); continue; }
+      // Implicit AND: next token starts a new clause
+      if (p.type === 'IDENT' || p.type === 'STRING' || p.type === 'LPAREN') {
+        left = mergeAnd(left, parseAtom());
+        continue;
+      }
+      break;
+    }
+    return left;
+  }
+
+  function mergeAnd(left, right) {
+    if (left.type === 'and') { left.children.push(right); return left; }
+    return { type: 'and', children: [left, right] };
+  }
+
+  function parseAtom() {
+    const tok = peek();
+    if (tok.type === 'LPAREN') {
+      advance();
+      const expr = parseOr();
+      if (peek().type !== 'RPAREN') throw new Error('Expected ) at position ' + peek().pos);
+      advance();
+      return expr;
+    }
+    if (tok.type === 'STRING') {
+      advance();
+      return { type: 'shorthand', value: tok.value };
+    }
+    if (tok.type === 'IDENT') {
+      const ident = tok.value;
+      advance();
+      // preset:value
+      if (ident === 'preset' && peek().type === 'COLON') {
+        advance();
+        const val = parseValue();
+        return { type: 'preset', name: val };
+      }
+      // namespace.field.operator:value
+      const parts = ident.split('.');
+      if (parts.length !== 3) throw new Error('Expected namespace.field.operator at position ' + tok.pos + ', got "' + ident + '"');
+      const [ns, field, op] = parts;
+      if (ns !== 'req' && ns !== 'resp') throw new Error('Unknown namespace "' + ns + '" at position ' + tok.pos);
+      const validFields = ns === 'req' ? HTTPQL_REQ_FIELDS : HTTPQL_RESP_FIELDS;
+      if (!validFields.includes(field)) throw new Error('Unknown field "' + ns + '.' + field + '" at position ' + tok.pos);
+      const isNum = ['port','len','code'].includes(field);
+      const isBool = field === 'tls';
+      const validOps = isBool ? HTTPQL_BOOL_OPS : isNum ? HTTPQL_NUM_OPS : HTTPQL_STR_OPS;
+      if (!validOps.includes(op)) throw new Error('Operator "' + op + '" not valid for ' + ns + '.' + field);
+      if (peek().type !== 'COLON') throw new Error('Expected : after ' + ident + ' at position ' + peek().pos);
+      advance();
+      const val = parseValue();
+      return { type: 'comparison', namespace: ns, field, operator: op, value: val };
+    }
+    throw new Error('Unexpected token at position ' + tok.pos);
+  }
+
+  function parseValue() {
+    const tok = peek();
+    if (tok.type === 'STRING') { advance(); return tok.value; }
+    if (tok.type === 'IDENT') { advance(); return tok.value; }
+    throw new Error('Expected value at position ' + tok.pos);
+  }
+
+  try {
+    const ast = parseOr();
+    if (peek().type !== 'EOF') throw new Error('Unexpected input at position ' + peek().pos);
+    return { ast, error: null };
+  } catch (e) {
+    return { ast: null, error: e.message };
+  }
+}
+
+// --- Diff Algorithm (LCS-based) ---
+function diffLines(textA, textB) {
+  const a = (textA || '').split('\n');
+  const b = (textB || '').split('\n');
+  const m = a.length, n = b.length;
+  // Fallback for very large texts
+  if (m > 5000 || n > 5000) {
+    const max = Math.max(m, n);
+    const result = [];
+    for (let i = 0; i < max; i++) {
+      const la = i < m ? a[i] : null;
+      const lb = i < n ? b[i] : null;
+      if (la === lb) result.push({ type: 'equal', lineA: la, lineB: lb });
+      else {
+        if (la !== null) result.push({ type: 'removed', lineA: la, lineB: null });
+        if (lb !== null) result.push({ type: 'added', lineA: null, lineB: lb });
+      }
+    }
+    return result;
+  }
+  const dp = Array.from({ length: m + 1 }, () => new Uint16Array(n + 1));
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]);
+  const result = [];
+  let i = m, j = n;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) {
+      result.push({ type: 'equal', lineA: a[i - 1], lineB: b[j - 1] });
+      i--; j--;
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      result.push({ type: 'added', lineA: null, lineB: b[--j] });
+    } else {
+      result.push({ type: 'removed', lineA: a[--i], lineB: null });
+    }
+  }
+  return result.reverse();
+}
+
 function Blackwire() {
   // Estado principal
   const [tab, setTab] = useState('projects');
@@ -40,16 +235,22 @@ function Blackwire() {
   const [repFollowRedirects, setRepFollowRedirects] = useState(false);
 
   // Estado general
+  const [appReady, setAppReady] = useState(false);
   const [loading, setLoading] = useState(false);
   const [commits, setCommits] = useState([]);
   const [cmtMsg, setCmtMsg] = useState('');
   const [toasts, setToasts] = useState([]);
   const [themeId, setThemeId] = useState('midnight');
 
-  // Filtros
+  // Filtros / HTTPQL
   const [search, setSearch] = useState('');
   const [savedOnly, setSavedOnly] = useState(false);
   const [scopeOnly, setScopeOnly] = useState(false);
+  const [httpqlError, setHttpqlError] = useState(null);
+  const [presets, setPresets] = useState([]);
+  const [showPresets, setShowPresets] = useState(false);
+  const [presetName, setPresetName] = useState('');
+  const searchTimer = useRef(null);
 
   // Intercept
   const [intOn, setIntOn] = useState(false);
@@ -118,6 +319,11 @@ function Blackwire() {
   const [collRunning, setCollRunning] = useState(false);
   const [showCollPick, setShowCollPick] = useState(null);
 
+  // Compare
+  const [cmpA, setCmpA] = useState(null);
+  const [cmpB, setCmpB] = useState(null);
+  const [cmpView, setCmpView] = useState('request');
+
   const wsRef = useRef(null);
   const repBodyEditRef = useRef(null);
   const repBodyCaretRef = useRef(null);
@@ -155,8 +361,7 @@ function Blackwire() {
   };
 
   useEffect(() => {
-    loadPrjs();
-    loadCur();
+    Promise.all([loadPrjs(), loadCur()]).finally(() => setAppReady(true));
     connectWs();
     return () => wsRef.current?.close();
   }, []);
@@ -199,15 +404,14 @@ function Blackwire() {
   }, []);
 
   useEffect(() => {
-    if (curPrj) {
-      loadReqs();
-      loadRep();
+    if (!curPrj) return;
+    // Critical data first (parallel) — what the user sees immediately
+    Promise.all([loadReqs(), loadRep(), loadScope(), checkPx()]).then(() => {
+      // Non-critical data after UI is usable
       loadGit();
-      loadScope();
       loadColls();
       loadExts();
-      checkPx();
-    }
+    });
   }, [curPrj]);
 
   // Ctrl+S para auto-commits
@@ -248,6 +452,14 @@ function Blackwire() {
     }
   }, [contextMenu]);
 
+  // Close preset dropdown on outside click
+  useEffect(() => {
+    if (!showPresets) return;
+    const h = (e) => { if (!e.target.closest('.flt-preset-wrap')) setShowPresets(false); };
+    window.addEventListener('click', h, true);
+    return () => window.removeEventListener('click', h, true);
+  }, [showPresets]);
+
   useEffect(() => {
     if (tab === 'chepy' && Object.keys(chepyCat).length === 0) {
       loadChepyOps();
@@ -258,19 +470,73 @@ function Blackwire() {
     setWhkApiKey(webhookExt?.config?.api_key || '');
   }, [webhookExt?.config?.api_key]);
 
+  // Cargar webhook requests desde DB cuando el token esté disponible (persiste entre reinicios)
+  useEffect(() => {
+    if (!webhookExt?.enabled || !webhookExt?.config?.token_id) return;
+    loadWebhookLocal();
+  }, [webhookExt?.enabled, webhookExt?.config?.token_id]);
+
+  // Auto-refresh desde webhook.site cuando estemos en las pestañas relevantes
   useEffect(() => {
     if (tab !== 'extensions' && tab !== 'webhook') return;
     if (!webhookExt?.enabled || !webhookExt?.config?.token_id) return;
-    loadWebhookLocal();
     const id = setInterval(() => refreshWebhook(true), 15000);
     return () => clearInterval(id);
   }, [tab, webhookExt?.enabled, webhookExt?.config?.token_id]);
+
+  // Debounced HTTPQL search
+  useEffect(() => {
+    if (!curPrj) return;
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    searchTimer.current = setTimeout(() => loadReqs(), 300);
+    return () => { if (searchTimer.current) clearTimeout(searchTimer.current); };
+  }, [search, savedOnly, scopeOnly]);
+
+  // Load presets when project changes
+  useEffect(() => {
+    if (curPrj) loadPresets();
+  }, [curPrj]);
+
+  const loadPresets = async () => {
+    try {
+      const r = await api.get('/api/filter-presets');
+      setPresets(Array.isArray(r) ? r : []);
+    } catch (e) { setPresets([]); }
+  };
+
+  const savePreset = async () => {
+    if (!presetName.trim() || !search.trim()) { toast('Enter a name and query', 'error'); return; }
+    const { ast, error } = httpqlParse(search);
+    if (error) { toast('Fix query errors first', 'error'); return; }
+    try {
+      const r = await api.post('/api/filter-presets', { name: presetName.trim(), query: search, ast });
+      if (r.error) { toast(r.error, 'error'); return; }
+      toast('Preset saved', 'success');
+      setPresetName('');
+      await loadPresets();
+    } catch (e) { toast('Failed to save preset', 'error'); }
+  };
+
+  const delPreset = async (id) => {
+    await api.del('/api/filter-presets/' + id);
+    await loadPresets();
+    toast('Preset deleted', 'success');
+  };
+
+  const applyPreset = (p) => {
+    setSearch(p.query);
+    setShowPresets(false);
+  };
 
   const connectWs = () => {
     const ws = new WebSocket(WS_URL);
     ws.onmessage = e => {
       const m = JSON.parse(e.data);
-      if (m.type === 'new_request') setReqs(p => [m.data, ...p]);
+      if (m.type === 'new_request') {
+        // If no active filter, prepend directly; otherwise re-fetch with current filters
+        if (!search && !savedOnly && !scopeOnly) setReqs(p => [m.data, ...p]);
+        else loadReqs();
+      }
       if (m.type === 'intercept_new') setPending(p => [...p, m.data]);
       if (m.type === 'intercept_status') setIntOn(m.enabled);
       if (m.type === 'intercept_forwarded' || m.type === 'intercept_dropped')
@@ -297,7 +563,21 @@ function Blackwire() {
     }
   };
 
-  const loadReqs = async () => setReqs(await api.get('/api/requests?limit=500'));
+  const loadReqs = async (query, ast) => {
+    const q = query !== undefined ? query : search;
+    const parsed = ast !== undefined ? ast : (q ? httpqlParse(q) : { ast: null, error: null });
+    if (parsed.error) { setHttpqlError(parsed.error); return; }
+    setHttpqlError(null);
+    try {
+      const body = { limit: 500, saved_only: savedOnly, in_scope_only: scopeOnly };
+      if (parsed.ast) { body.query = q; body.ast = parsed.ast; }
+      const r = await api.post('/api/requests/search', body);
+      if (r.error) { setHttpqlError(r.error); return; }
+      setReqs(Array.isArray(r) ? r : []);
+    } catch (e) {
+      setHttpqlError('Search failed');
+    }
+  };
   const loadRep = async () => setRepReqs(await api.get('/api/repeater'));
   const loadGit = async () => setCommits(await api.get('/api/git/history'));
   const loadScope = async () => {
@@ -1405,7 +1685,28 @@ function Blackwire() {
     setContextMenu({ x: e.clientX, y: e.clientY, request: req, source: source || 'history', normalized: norm });
   };
 
-  
+  const addScopeFromRequest = async ruleType => {
+    const norm = contextMenu?.normalized;
+    if (!norm || !norm.url) {
+      toast('No URL', 'error');
+      return;
+    }
+    let host = '';
+    try {
+      host = new URL(norm.url).host;
+    } catch (e) {
+      try {
+        host = new URL('http://' + norm.url).host;
+      } catch (e2) {}
+    }
+    if (!host) {
+      toast('Invalid URL', 'error');
+      return;
+    }
+    await api.post('/api/scope/rules', { pattern: host, rule_type: ruleType });
+    await loadScope();
+    toast((ruleType === 'include' ? 'Included ' : 'Excluded ') + host, 'success');
+  };
 
   const handleContextAction = async action => {
     if (!contextMenu) return;
@@ -1444,12 +1745,30 @@ function Blackwire() {
       case 'add-to-collection':
         setShowCollPick(norm);
         break;
+      case 'scope-include':
+        await addScopeFromRequest('include');
+        break;
+      case 'scope-exclude':
+        await addScopeFromRequest('exclude');
+        break;
       case 'rename':
         if (source === 'repeater') renameRepItem(req.id);
         break;
       case 'delete':
         if (source === 'history') await delReq(req.id);
         else if (source === 'repeater') await delRepItem(req.id);
+        break;
+      case 'compare-a':
+        setCmpA({ method: norm.method, url: norm.url, headers: norm.headers, body: norm.body,
+          response_status: req.response_status || null, response_headers: req.response_headers || null, response_body: req.response_body || null });
+        setTab('compare');
+        toast('Loaded into Compare A', 'success');
+        break;
+      case 'compare-b':
+        setCmpB({ method: norm.method, url: norm.url, headers: norm.headers, body: norm.body,
+          response_status: req.response_status || null, response_headers: req.response_headers || null, response_body: req.response_body || null });
+        setTab('compare');
+        toast('Loaded into Compare B', 'success');
         break;
     }
   };
@@ -1467,16 +1786,24 @@ function Blackwire() {
     return curl;
   };
 
-  const filtered = reqs.filter(r => {
-    if (search && !r.url.toLowerCase().includes(search.toLowerCase())) return false;
-    if (scopeOnly && !r.in_scope) return false;
-    if (savedOnly && !r.saved) return false;
-    return true;
-  });
+  const filtered = reqs;
 
   const stCls = s => !s ? '' : s < 300 ? 'st2' : s < 400 ? 'st3' : s < 500 ? 'st4' : 'st5';
   const fmtTime = t => t ? new Date(t).toLocaleTimeString('en-US', { hour12: false }) : '';
   const fmtH = h => h ? Object.entries(h).map(([k, v]) => k + ': ' + (Array.isArray(v) ? v.join(', ') : v)).join('\n') : '';
+
+  const buildCmpText = (req, view) => {
+    if (!req) return '';
+    if (view === 'request') {
+      return req.method + ' ' + req.url + '\n' + fmtH(req.headers) + (req.body ? '\n\n' + req.body : '');
+    }
+    return 'HTTP ' + (req.response_status || '(no response)') + '\n' + fmtH(req.response_headers) + '\n\n' + (req.response_body || '');
+  };
+
+  const cmpDiff = React.useMemo(() => {
+    if (!cmpA && !cmpB) return [];
+    return diffLines(buildCmpText(cmpA, cmpView), buildCmpText(cmpB, cmpView));
+  }, [cmpA, cmpB, cmpView]);
   const themeVars = (THEMES[themeId] && THEMES[themeId].vars)
     ? THEMES[themeId].vars
     : (THEMES.midnight && THEMES.midnight.vars) ? THEMES.midnight.vars : {};
@@ -1526,8 +1853,18 @@ function Blackwire() {
 .code{flex:1;padding:14px;font-family:var(--font-mono);font-size:11px;line-height:1.5;background:var(--bg);overflow:auto;white-space:pre-wrap;word-break:break-all}
 .json-key{color:var(--cyan)}.json-string{color:var(--green)}.json-number{color:var(--orange)}.json-bool{color:var(--purple)}.json-null{color:var(--txt3)}
 .flt-bar{display:flex;align-items:center;gap:6px;padding:6px 14px;background:var(--bg3);border-bottom:1px solid var(--brd)}
-.flt-in{flex:1;padding:5px 8px;background:var(--bg2);border:1px solid var(--brd);border-radius:4px;color:var(--txt);font-size:11px;outline:none}
-.flt-tog{padding:3px 8px;background:var(--bg2);border:1px solid var(--brd);border-radius:4px;font-size:10px;cursor:pointer}.flt-tog.act{background:var(--blue);border-color:var(--blue)}
+.flt-in-wrap{flex:1;position:relative}
+.flt-in{width:100%;padding:5px 8px;background:var(--bg2);border:1px solid var(--brd);border-radius:4px;color:var(--txt);font-size:11px;font-family:var(--font-mono);outline:none}
+.flt-in:focus{border-color:var(--blue)}.flt-in.flt-err{border-color:var(--red);background:rgba(248,81,73,.08)}
+.flt-err-msg{position:absolute;top:100%;left:0;margin-top:4px;padding:4px 8px;background:var(--bg2);border:1px solid var(--red);border-radius:4px;font-size:10px;color:var(--red);white-space:nowrap;z-index:100}
+.flt-tog{padding:3px 8px;background:var(--bg2);border:1px solid var(--brd);border-radius:4px;font-size:10px;cursor:pointer;user-select:none}.flt-tog.act{background:var(--blue);border-color:var(--blue)}
+.flt-preset-dd{position:absolute;top:100%;right:0;margin-top:4px;min-width:300px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;z-index:200;box-shadow:0 8px 24px rgba(0,0,0,.4);max-height:300px;overflow-y:auto}
+.flt-preset-save{display:flex;gap:4px;padding:8px;border-bottom:1px solid var(--brd)}.flt-preset-save .flt-in{flex:1}
+.flt-preset-empty{padding:12px;text-align:center;color:var(--txt3);font-size:11px}
+.flt-preset-item{display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid var(--brd);cursor:pointer}.flt-preset-item:hover{background:var(--bg3)}
+.flt-preset-name-label{font-weight:600;font-size:11px;color:var(--cyan);white-space:nowrap}
+.flt-preset-q{flex:1;font-size:10px;color:var(--txt3);font-family:var(--font-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.flt-preset-del{padding:1px 5px!important;font-size:10px!important;min-width:auto}
 .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--txt3);font-size:13px;gap:6px}.empty-i{font-size:40px;opacity:.3}
 .acts{display:flex;gap:6px}
 .prj-pnl{padding:24px;max-width:800px;margin:0 auto;width:100%}.prj-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}.prj-hdr h2{font-size:18px}
@@ -1613,8 +1950,28 @@ function Blackwire() {
 .coll-extract-name{color:var(--cyan);font-weight:500}
 .coll-pick-item{padding:8px 12px;cursor:pointer;border-radius:4px;font-size:12px;margin-bottom:2px}
 .coll-pick-item:hover{background:var(--bgh)}
+.cmp-wrap{display:flex;flex:1;overflow:hidden}
+.cmp-side{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.cmp-side:first-child{border-right:1px solid var(--brd)}
+.cmp-body{flex:1;overflow:auto}
+.cmp-line{padding:0 10px;line-height:1.6;min-height:1.6em;font-family:var(--font-mono);font-size:11px;white-space:pre-wrap;word-break:break-all}
+.cmp-eq{}.cmp-rem{background:rgba(248,81,73,.1);color:var(--red);border-left:3px solid var(--red)}
+.cmp-add{background:rgba(63,185,80,.1);color:var(--green);border-left:3px solid var(--green)}
+.cmp-blank{opacity:0.15;background:var(--bg3)}
+.splash{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:16px}
+.splash .logo-i{width:56px;height:56px;font-size:22px;border-radius:10px}
+.splash-spin{width:24px;height:24px;border:2px solid var(--brd);border-top-color:var(--cyan);border-radius:50%;animation:spin .6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
       `}} />
 
+      {!appReady ? (
+        <div className="splash">
+          <div className="logo-i">BW</div>
+          <span className="logo-t">Blackwire</span>
+          <div className="splash-spin" />
+        </div>
+      ) : (
+      <React.Fragment>
       <header className="hdr">
         <div className="logo">
           <div className="logo-i">BW</div>
@@ -1659,6 +2016,7 @@ function Blackwire() {
             <div className={'tab' + (tab === 'repeater' ? ' act' : '')} onClick={() => setTab('repeater')}>Repeater</div>
             <div className={'tab' + (tab === 'git' ? ' act' : '')} onClick={() => setTab('git')}>Git</div>
             <div className={'tab' + (tab === 'chepy' ? ' act' : '')} onClick={() => setTab('chepy')}>Cipher</div>
+            <div className={'tab' + (tab === 'compare' ? ' act' : '')} onClick={() => setTab('compare')}>Compare</div>
             <div className={'tab' + (tab === 'extensions' ? ' act' : '')} onClick={() => setTab('extensions')}>Extensions</div>
           </React.Fragment>
         )}
@@ -1718,7 +2076,29 @@ function Blackwire() {
               <div className="hist-content">
                 <div className="panel hist-pnl">
                   <div className="flt-bar">
-                    <input className="flt-in" placeholder="Filter..." value={search} onChange={e => setSearch(e.target.value)} />
+                    <div className="flt-in-wrap">
+                      <input className={'flt-in' + (httpqlError ? ' flt-err' : '')} placeholder='HTTPQL: req.method.eq:"GET" AND resp.code.lt:400' value={search} onChange={e => setSearch(e.target.value)} />
+                      {httpqlError && <div className="flt-err-msg">{httpqlError}</div>}
+                    </div>
+                    <div className="flt-preset-wrap" style={{position:'relative'}}>
+                      <div className="flt-tog" onClick={() => setShowPresets(!showPresets)} title="Filter presets">▼</div>
+                      {showPresets && (
+                        <div className="flt-preset-dd">
+                          <div className="flt-preset-save">
+                            <input className="flt-in flt-preset-name" placeholder="Preset name..." value={presetName} onChange={e => setPresetName(e.target.value)} onKeyDown={e => e.key === 'Enter' && savePreset()} />
+                            <button className="btn btn-sm btn-p" onClick={savePreset} disabled={!presetName.trim() || !search.trim()}>Save</button>
+                          </div>
+                          {presets.length === 0 && <div className="flt-preset-empty">No presets saved</div>}
+                          {presets.map(p => (
+                            <div key={p.id} className="flt-preset-item">
+                              <span className="flt-preset-name-label" onClick={() => applyPreset(p)} title={p.query}>{p.name}</span>
+                              <span className="flt-preset-q">{p.query}</span>
+                              <button className="btn btn-sm btn-d flt-preset-del" onClick={() => delPreset(p.id)}>×</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                     <div className={'flt-tog' + (scopeOnly ? ' act' : '')} onClick={() => setScopeOnly(!scopeOnly)}>Scope</div>
                     <div className={'flt-tog' + (savedOnly ? ' act' : '')} onClick={() => setSavedOnly(!savedOnly)}>★</div>
                   </div>
@@ -2601,6 +2981,52 @@ function Blackwire() {
             </div>
           </div>
         )}
+
+        {tab === 'compare' && curPrj && (
+          <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%' }}>
+            <div className="det-tabs" style={{ justifyContent: 'flex-start', gap: 0 }}>
+              <div className={'det-tab' + (cmpView === 'request' ? ' act' : '')} onClick={() => setCmpView('request')}>Request</div>
+              <div className={'det-tab' + (cmpView === 'response' ? ' act' : '')} onClick={() => setCmpView('response')}>Response</div>
+              <div style={{ flex: 1 }} />
+              <button className="btn btn-sm btn-s" style={{ margin: '4px 10px' }} onClick={() => { setCmpA(null); setCmpB(null); }}>Clear All</button>
+            </div>
+            {!cmpA && !cmpB ? (
+              <div className="empty">
+                <div className="empty-i">&#8596;</div>
+                <span>Right-click a request and choose "Send to Compare (A/B)"</span>
+              </div>
+            ) : (
+              <div className="cmp-wrap">
+                <div className="cmp-side">
+                  <div className="pnl-hdr">
+                    <span style={{ fontWeight: 600, color: 'var(--red)' }}>A {cmpA ? <span style={{ fontWeight: 400, color: 'var(--txt2)' }}>{cmpA.method} {cmpA.url}</span> : '(empty)'}</span>
+                    <button className="btn btn-sm btn-s" onClick={() => setCmpA(null)}>Clear</button>
+                  </div>
+                  <div className="cmp-body">
+                    {cmpDiff.map((d, i) => (
+                      <div key={i} className={'cmp-line ' + (d.type === 'equal' ? 'cmp-eq' : d.type === 'removed' ? 'cmp-rem' : 'cmp-blank')}>
+                        {d.type === 'added' ? '\u00A0' : (d.lineA ?? '')}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="cmp-side">
+                  <div className="pnl-hdr">
+                    <span style={{ fontWeight: 600, color: 'var(--green)' }}>B {cmpB ? <span style={{ fontWeight: 400, color: 'var(--txt2)' }}>{cmpB.method} {cmpB.url}</span> : '(empty)'}</span>
+                    <button className="btn btn-sm btn-s" onClick={() => setCmpB(null)}>Clear</button>
+                  </div>
+                  <div className="cmp-body">
+                    {cmpDiff.map((d, i) => (
+                      <div key={i} className={'cmp-line ' + (d.type === 'equal' ? 'cmp-eq' : d.type === 'added' ? 'cmp-add' : 'cmp-blank')}>
+                        {d.type === 'removed' ? '\u00A0' : (d.lineB ?? '')}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </main>
 
       <div className="toast-c">
@@ -2624,6 +3050,16 @@ function Blackwire() {
           <div className="context-menu-item" onClick={() => handleContextAction('add-to-collection')}>
             Add to Collection
           </div>
+          {contextMenu.source !== 'websocket' && contextMenu.source !== 'selection' && (
+            <React.Fragment>
+              <div className="context-menu-item" onClick={() => handleContextAction('compare-a')}>
+                Send to Compare (A)
+              </div>
+              <div className="context-menu-item" onClick={() => handleContextAction('compare-b')}>
+                Send to Compare (B)
+              </div>
+            </React.Fragment>
+          )}
           <div className="context-menu-divider" />
           <div className="context-menu-item" onClick={() => handleContextAction('copy-url')}>
             Copy URL
@@ -2636,6 +3072,17 @@ function Blackwire() {
           <div className="context-menu-item" onClick={() => handleContextAction('copy-body')}>
             Copy Body
           </div>
+          {contextMenu.normalized?.url && (
+            <React.Fragment>
+              <div className="context-menu-divider" />
+              <div className="context-menu-item" onClick={() => handleContextAction('scope-include')}>
+                Add host to Scope
+              </div>
+              <div className="context-menu-item" onClick={() => handleContextAction('scope-exclude')}>
+                Exclude host to Scope
+              </div>
+            </React.Fragment>
+          )}
           {contextMenu.source === 'history' && (
             <React.Fragment>
               <div className="context-menu-divider" />
@@ -2716,6 +3163,8 @@ function Blackwire() {
             </div>
           </div>
         </div>
+      )}
+      </React.Fragment>
       )}
     </div>
   );

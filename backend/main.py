@@ -298,6 +298,9 @@ async def init_db(name: str):
             headers TEXT NOT NULL DEFAULT '{}', body TEXT, var_extracts TEXT DEFAULT '[]',
             created_at TEXT NOT NULL,
             FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE)""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS filter_presets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
+            query TEXT NOT NULL, ast_json TEXT NOT NULL, created_at TEXT NOT NULL)""")
         await db.commit()
 
 async def get_db():
@@ -330,6 +333,127 @@ def match_scope(url: str, rules: List[dict]) -> bool:
         except:
             continue
     return in_scope if has_include else True
+
+
+# --- HTTPQL Compiler (AST → SQL) ---
+
+HTTPQL_FIELD_MAP = {
+    ("req", "method"):  "method",
+    ("req", "host"):    "SUBSTR(url, INSTR(url, '://') + 3, CASE WHEN INSTR(SUBSTR(url, INSTR(url, '://') + 3), '/') > 0 THEN INSTR(SUBSTR(url, INSTR(url, '://') + 3), '/') - 1 ELSE LENGTH(SUBSTR(url, INSTR(url, '://') + 3)) END)",
+    ("req", "path"):    "CASE WHEN INSTR(SUBSTR(url, INSTR(url, '://') + 3), '/') > 0 THEN SUBSTR(url, INSTR(url, '://') + 3 + INSTR(SUBSTR(url, INSTR(url, '://') + 3), '/') - 1) ELSE '/' END",
+    ("req", "port"):    "CAST(CASE WHEN INSTR(SUBSTR(url, INSTR(url, '://') + 3), ':') > 0 AND INSTR(SUBSTR(url, INSTR(url, '://') + 3), ':') < COALESCE(NULLIF(INSTR(SUBSTR(url, INSTR(url, '://') + 3), '/'), 0), 9999) THEN SUBSTR(SUBSTR(url, INSTR(url, '://') + 3), INSTR(SUBSTR(url, INSTR(url, '://') + 3), ':') + 1, COALESCE(NULLIF(INSTR(SUBSTR(url, INSTR(url, '://') + 3 + INSTR(SUBSTR(url, INSTR(url, '://') + 3), ':')), '/'), 0), 5) - 1) WHEN url LIKE 'https%' THEN '443' ELSE '80' END AS INTEGER)",
+    ("req", "ext"):     None,  # special-cased in compiler
+    ("req", "query"):   "CASE WHEN INSTR(url, '?') > 0 THEN SUBSTR(url, INSTR(url, '?') + 1) ELSE '' END",
+    ("req", "raw"):     "(COALESCE(headers, '') || ' ' || COALESCE(body, ''))",
+    ("req", "len"):     "LENGTH(COALESCE(headers, '') || COALESCE(body, ''))",
+    ("req", "tls"):     None,  # special-cased
+    ("resp", "code"):   "response_status",
+    ("resp", "raw"):    "(COALESCE(response_headers, '') || ' ' || COALESCE(response_body, ''))",
+    ("resp", "len"):    "LENGTH(COALESCE(response_headers, '') || COALESCE(response_body, ''))",
+}
+
+HTTPQL_NUMERIC = {("req", "len"), ("req", "port"), ("resp", "code"), ("resp", "len")}
+HTTPQL_STRING_OPS = {"eq", "ne", "cont", "ncont", "like", "nlike", "regex", "nregex"}
+HTTPQL_NUMERIC_OPS = {"eq", "ne", "gt", "gte", "lt", "lte"}
+
+def _httpql_compile_comparison(ns: str, field: str, op: str, value: str):
+    """Compile a single HTTPQL comparison to (sql_fragment, params)."""
+    # Special: req.tls
+    if (ns, field) == ("req", "tls"):
+        bval = 1 if value.lower() in ("true", "1", "yes") else 0
+        if op == "eq":
+            return ("(url LIKE 'https%') = ?", [bval])
+        elif op == "ne":
+            return ("(url LIKE 'https%') != ?", [bval])
+        raise ValueError(f"Operator '{op}' not valid for req.tls")
+
+    # Special: req.ext
+    if (ns, field) == ("req", "ext"):
+        ext_v = value if value.startswith(".") else "." + value
+        if op == "eq":
+            return ("(url LIKE ? OR url LIKE ?)", [f"%{ext_v}", f"%{ext_v}?%"])
+        elif op == "ne":
+            return ("(url NOT LIKE ? AND url NOT LIKE ?)", [f"%{ext_v}", f"%{ext_v}?%"])
+        elif op == "cont":
+            return ("url LIKE ?", [f"%{ext_v}%"])
+        elif op == "ncont":
+            return ("url NOT LIKE ?", [f"%{ext_v}%"])
+        raise ValueError(f"Operator '{op}' not valid for req.ext")
+
+    col = HTTPQL_FIELD_MAP.get((ns, field))
+    if col is None:
+        raise ValueError(f"Unknown field: {ns}.{field}")
+
+    is_numeric = (ns, field) in HTTPQL_NUMERIC
+
+    if op == "eq":
+        return (f"CAST({col} AS INTEGER) = CAST(? AS INTEGER)", [value]) if is_numeric else (f"{col} = ?", [value])
+    elif op == "ne":
+        return (f"CAST({col} AS INTEGER) != CAST(? AS INTEGER)", [value]) if is_numeric else (f"{col} != ?", [value])
+    elif op == "gt":
+        return (f"CAST({col} AS INTEGER) > CAST(? AS INTEGER)", [value])
+    elif op == "gte":
+        return (f"CAST({col} AS INTEGER) >= CAST(? AS INTEGER)", [value])
+    elif op == "lt":
+        return (f"CAST({col} AS INTEGER) < CAST(? AS INTEGER)", [value])
+    elif op == "lte":
+        return (f"CAST({col} AS INTEGER) <= CAST(? AS INTEGER)", [value])
+    elif op == "cont":
+        return (f"{col} LIKE '%' || ? || '%'", [value])
+    elif op == "ncont":
+        return (f"{col} NOT LIKE '%' || ? || '%'", [value])
+    elif op == "like":
+        return (f"{col} LIKE ?", [value])
+    elif op == "nlike":
+        return (f"{col} NOT LIKE ?", [value])
+    elif op == "regex":
+        return (f"HTTPQL_REGEX({col}, ?)", [value])
+    elif op == "nregex":
+        return (f"NOT HTTPQL_REGEX({col}, ?)", [value])
+    raise ValueError(f"Unknown operator: {op}")
+
+
+def compile_httpql_ast(node: dict, presets_map: dict = None):
+    """Recursively compile an HTTPQL AST node to (sql, params)."""
+    t = node.get("type")
+    if t == "comparison":
+        return _httpql_compile_comparison(node["namespace"], node["field"], node["operator"], node["value"])
+    elif t in ("and", "or"):
+        parts, params = [], []
+        for child in node["children"]:
+            sql, p = compile_httpql_ast(child, presets_map)
+            parts.append(f"({sql})")
+            params.extend(p)
+        joiner = " AND " if t == "and" else " OR "
+        return (joiner.join(parts), params)
+    elif t == "shorthand":
+        expanded = {"type": "or", "children": [
+            {"type": "comparison", "namespace": "req", "field": "raw", "operator": "cont", "value": node["value"]},
+            {"type": "comparison", "namespace": "resp", "field": "raw", "operator": "cont", "value": node["value"]},
+        ]}
+        return compile_httpql_ast(expanded, presets_map)
+    elif t == "preset":
+        if presets_map and node["name"] in presets_map:
+            return compile_httpql_ast(presets_map[node["name"]], presets_map)
+        raise ValueError(f"Unknown preset: '{node['name']}'")
+    raise ValueError(f"Unknown AST node type: {t}")
+
+
+async def get_db_with_regex():
+    """Get DB connection with HTTPQL_REGEX function for regex operator support."""
+    project = get_current_project()
+    if not project:
+        raise HTTPException(status_code=400, detail="No project selected")
+    db = await aiosqlite.connect(get_project_db(project))
+    def _regex_fn(value, pattern):
+        if value is None:
+            return False
+        try:
+            return bool(re.search(pattern, str(value)))
+        except re.error:
+            return False
+    await db.create_function("HTTPQL_REGEX", 2, _regex_fn)
+    return db
 
 
 class GitManager:
@@ -905,6 +1029,74 @@ async def get_requests(limit: int = 500, saved_only: bool = False, in_scope_only
             "response_status": r[5], "response_headers": json.loads(r[6]) if r[6] else None,
             "response_body": r[7], "timestamp": r[8], "request_type": r[9],
             "saved": bool(r[12]), "in_scope": bool(r[13]) if len(r) > 13 else True} for r in rows]
+
+@app.post("/api/requests/search")
+async def search_requests(body: dict = Body(...)):
+    ast = body.get("ast")
+    saved_only = body.get("saved_only", False)
+    in_scope_only = body.get("in_scope_only", False)
+    limit = body.get("limit", 500)
+    db = await get_db_with_regex()
+    try:
+        query = "SELECT * FROM requests WHERE 1=1"
+        params = []
+        if saved_only:
+            query += " AND saved = 1"
+        if in_scope_only:
+            query += " AND in_scope = 1"
+        if ast:
+            presets_map = {}
+            cursor = await db.execute("SELECT name, ast_json FROM filter_presets")
+            for row in await cursor.fetchall():
+                try:
+                    presets_map[row[0]] = json.loads(row[1])
+                except Exception:
+                    pass
+            try:
+                where_sql, where_params = compile_httpql_ast(ast, presets_map)
+                query += f" AND ({where_sql})"
+                params.extend(where_params)
+            except ValueError as e:
+                return {"error": str(e)}
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        cursor = await db.execute(query, params)
+        rows = await cursor.fetchall()
+        return [{"id": r[0], "method": r[1], "url": r[2], "headers": json.loads(r[3]), "body": r[4],
+            "response_status": r[5], "response_headers": json.loads(r[6]) if r[6] else None,
+            "response_body": r[7], "timestamp": r[8], "request_type": r[9],
+            "saved": bool(r[12]), "in_scope": bool(r[13]) if len(r) > 13 else True} for r in rows]
+    finally:
+        await db.close()
+
+
+# --- Filter Presets ---
+@app.get("/api/filter-presets")
+async def list_filter_presets():
+    async with await get_db() as db:
+        cursor = await db.execute("SELECT id, name, query, created_at FROM filter_presets ORDER BY name ASC")
+        rows = await cursor.fetchall()
+        return [{"id": r[0], "name": r[1], "query": r[2], "created_at": r[3]} for r in rows]
+
+@app.post("/api/filter-presets")
+async def create_filter_preset(body: dict = Body(...)):
+    async with await get_db() as db:
+        try:
+            await db.execute(
+                "INSERT INTO filter_presets (name, query, ast_json, created_at) VALUES (?,?,?,?)",
+                (body["name"], body["query"], json.dumps(body["ast"]), datetime.now().isoformat()))
+            await db.commit()
+            return {"status": "created", "name": body["name"]}
+        except Exception:
+            return {"error": "Preset name already exists"}
+
+@app.delete("/api/filter-presets/{preset_id}")
+async def delete_filter_preset(preset_id: int):
+    async with await get_db() as db:
+        await db.execute("DELETE FROM filter_presets WHERE id = ?", (preset_id,))
+        await db.commit()
+        return {"status": "deleted"}
+
 
 @app.put("/api/requests/{rid}/save")
 async def toggle_save(rid: int):

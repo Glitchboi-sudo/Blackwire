@@ -1,1 +1,1 @@
-{"intercept_enabled": false, "scope_rules": [], "project": "Test", "extensions": {"match_replace": {"enabled": false, "rules": []}}}
+{"intercept_enabled": false, "scope_rules": [{"pattern": "www.startpage.com", "rule_type": "exclude", "enabled": true, "id": "85297ea5"}, {"pattern": "www.startpage.com", "rule_type": "exclude", "enabled": true, "id": "0364bb1d"}, {"pattern": "www.google.com", "rule_type": "include", "enabled": true, "id": "dda741d4"}], "project": "Test", "extensions": {"match_replace": {"enabled": false, "rules": []}, "webhook_site": {"enabled": false}}}
