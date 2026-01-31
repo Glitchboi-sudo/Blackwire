@@ -3,6 +3,72 @@ const { useState, useEffect, useRef } = React;
 const API = '';
 const WS_URL = 'ws://' + location.host + '/ws';
 
+const THEMES = {
+  midnight: {
+    label: 'Midnight',
+    vars: {
+      '--bg': '#0a0e14',
+      '--bg2': '#0d1117',
+      '--bg3': '#161b22',
+      '--bgh': '#1f262d',
+      '--brd': '#30363d',
+      '--txt': '#e6edf3',
+      '--txt2': '#8b949e',
+      '--txt3': '#6e7681',
+      '--blue': '#58a6ff',
+      '--green': '#3fb950',
+      '--red': '#f85149',
+      '--orange': '#d29922',
+      '--purple': '#a371f7',
+      '--cyan': '#39c5cf',
+      '--font-main': '"Inter", system-ui, sans-serif',
+      '--font-mono': '"JetBrains Mono", ui-monospace, monospace'
+    }
+  },
+  dusk: {
+    label: 'Dusk',
+    vars: {
+      '--bg': '#11101a',
+      '--bg2': '#161525',
+      '--bg3': '#1d1c2e',
+      '--bgh': '#25233a',
+      '--brd': '#34324a',
+      '--txt': '#f0e9ff',
+      '--txt2': '#b9b2d6',
+      '--txt3': '#8a83a8',
+      '--blue': '#7aa2ff',
+      '--green': '#8bd49c',
+      '--red': '#ff7a7a',
+      '--orange': '#ffb86c',
+      '--purple': '#c792ff',
+      '--cyan': '#7fe7ff',
+      '--font-main': '"Space Grotesk", "Inter", system-ui, sans-serif',
+      '--font-mono': '"JetBrains Mono", ui-monospace, monospace'
+    }
+  },
+  paper: {
+    label: 'Paper',
+    vars: {
+      '--bg': '#f5f4f0',
+      '--bg2': '#ffffff',
+      '--bg3': '#f0eee9',
+      '--bgh': '#e7e4dd',
+      '--brd': '#d7d3c9',
+      '--txt': '#1f2328',
+      '--txt2': '#5b636e',
+      '--txt3': '#7a828c',
+      '--blue': '#255cbb',
+      '--green': '#1a7f37',
+      '--red': '#c43c3c',
+      '--orange': '#b96b00',
+      '--purple': '#6b4bb6',
+      '--cyan': '#0f7f7a',
+      '--font-main': '"IBM Plex Sans", "Inter", system-ui, sans-serif',
+      '--font-mono': '"IBM Plex Mono", "JetBrains Mono", ui-monospace, monospace'
+    }
+  }
+};
+
 function Blackwire() {
   // Estado principal
   const [tab, setTab] = useState('projects');
@@ -39,6 +105,7 @@ function Blackwire() {
   const [commits, setCommits] = useState([]);
   const [cmtMsg, setCmtMsg] = useState('');
   const [toasts, setToasts] = useState([]);
+  const [themeId, setThemeId] = useState('midnight');
 
   // Filtros
   const [search, setSearch] = useState('');
@@ -114,6 +181,16 @@ function Blackwire() {
   const wsRef = useRef(null);
   const webhookExt = extensions.find(e => e.name === 'webhook_site');
 
+  const getSelectedText = () => {
+    try {
+      const sel = window.getSelection();
+      if (!sel) return '';
+      return sel.toString().trim();
+    } catch (e) {
+      return '';
+    }
+  };
+
   const toast = (m, t = 'info') => {
     const id = Date.now();
     setToasts(p => [...p, { id, message: m, type: t }]);
@@ -140,6 +217,43 @@ function Blackwire() {
     loadCur();
     connectWs();
     return () => wsRef.current?.close();
+  }, []);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('bw_theme');
+      if (saved && THEMES[saved]) setThemeId(saved);
+    } catch (e) {
+      // ignore storage errors
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('bw_theme', themeId);
+    } catch (e) {
+      // ignore storage errors
+    }
+  }, [themeId]);
+
+  useEffect(() => {
+    const handler = e => {
+      const selected = getSelectedText();
+      if (!selected) return;
+      if (e.defaultPrevented) return;
+      const target = e.target;
+      if (target && target.closest('input, textarea, [contenteditable="true"]')) return;
+      e.preventDefault();
+      setContextMenu({
+        x: e.clientX,
+        y: e.clientY,
+        source: 'selection',
+        request: { body: selected },
+        normalized: { id: 'selection', method: 'TEXT', url: '', headers: {}, body: selected, source: 'selection' }
+      });
+    };
+    document.addEventListener('contextmenu', handler);
+    return () => document.removeEventListener('contextmenu', handler);
   }, []);
 
   useEffect(() => {
@@ -870,8 +984,8 @@ function Blackwire() {
       row: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px' },
       lastRow: { display: 'flex', gap: '8px', alignItems: 'center' },
       label: { fontSize: '10px', color: 'var(--txt3)', marginBottom: '3px', display: 'block' },
-      sel: { background: 'var(--bg)', color: 'var(--txt)', border: '1px solid var(--brd)', borderRadius: '4px', padding: '4px 6px', fontSize: '11px', fontFamily: 'JetBrains Mono', outline: 'none' },
-      inp: { background: 'var(--bg)', color: 'var(--txt)', border: '1px solid var(--brd)', borderRadius: '4px', padding: '4px 8px', fontSize: '11px', fontFamily: 'JetBrains Mono', flex: 1, outline: 'none', width: '100%' },
+      sel: { background: 'var(--bg)', color: 'var(--txt)', border: '1px solid var(--brd)', borderRadius: '4px', padding: '4px 6px', fontSize: '11px', fontFamily: 'var(--font-mono)', outline: 'none' },
+      inp: { background: 'var(--bg)', color: 'var(--txt)', border: '1px solid var(--brd)', borderRadius: '4px', padding: '4px 8px', fontSize: '11px', fontFamily: 'var(--font-mono)', flex: 1, outline: 'none', width: '100%' },
       badge: (color) => ({ fontSize: '9px', padding: '2px 6px', borderRadius: '3px', background: color, color: '#fff', fontWeight: '600', textTransform: 'uppercase' }),
     };
 
@@ -936,9 +1050,9 @@ function Blackwire() {
               </div>
               <div style={{ display: 'flex', gap: '6px', marginTop: '14px' }}>
                 <button className={'btn btn-sm ' + (rule.regex ? 'btn-p' : 'btn-s')} onClick={() => updateRule(idx, 'regex', !rule.regex)}
-                  title="Regular expression" style={{ fontFamily: 'JetBrains Mono', fontSize: '10px' }}>.*</button>
+                  title="Regular expression" style={{ fontFamily: 'var(--font-mono)', fontSize: '10px' }}>.*</button>
                 <button className={'btn btn-sm ' + (rule.ignore_case ? 'btn-p' : 'btn-s')} onClick={() => updateRule(idx, 'ignore_case', !rule.ignore_case)}
-                  title="Ignore case" style={{ fontFamily: 'JetBrains Mono', fontSize: '10px' }}>Aa</button>
+                  title="Ignore case" style={{ fontFamily: 'var(--font-mono)', fontSize: '10px' }}>Aa</button>
               </div>
             </div>
           </div>
@@ -987,7 +1101,7 @@ function Blackwire() {
                 </div>
               )}
               {whkReqs.map(r => (
-                <div key={r.request_id} style={{ display: 'grid', gridTemplateColumns: '60px 1fr 120px 140px', gap: '8px', padding: '8px 10px', borderBottom: '1px solid var(--brd)', fontSize: '11px', fontFamily: 'JetBrains Mono' }}>
+                <div key={r.request_id} style={{ display: 'grid', gridTemplateColumns: '60px 1fr 120px 140px', gap: '8px', padding: '8px 10px', borderBottom: '1px solid var(--brd)', fontSize: '11px', fontFamily: 'var(--font-mono)' }}>
                   <span className={'mth mth-' + (r.method || 'GET')}>{r.method || 'GET'}</span>
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.url || r.path || '-'}</span>
                   <span style={{ color: 'var(--txt2)' }}>{r.ip || '-'}</span>
@@ -1063,6 +1177,9 @@ function Blackwire() {
       return { id: req.id, method: req.method, url: req.url,
         headers: req.headers || {}, body: req.body || null, source: 'intercept' };
     }
+    if (source === 'selection') {
+      return { id: 'selection', method: 'TEXT', url: '', headers: {}, body: req.body || '', source: 'selection' };
+    }
     return { id: req.id, method: req.method, url: req.url,
       headers: req.headers || {}, body: req.body || null, saved: req.saved, source: 'history' };
   };
@@ -1097,6 +1214,15 @@ function Blackwire() {
       case 'copy-body':
         navigator.clipboard.writeText(norm.body || '');
         toast('Body copied', 'success');
+        break;
+      case 'send-to-cipher':
+        if (norm.body) {
+          setChepyIn(norm.body);
+          setTab('chepy');
+          toast('Sent to Cipher', 'success');
+        } else {
+          toast('No text selected', 'error');
+        }
         break;
       case 'add-to-collection':
         setShowCollPick(norm);
@@ -1134,22 +1260,23 @@ function Blackwire() {
   const stCls = s => !s ? '' : s < 300 ? 'st2' : s < 400 ? 'st3' : s < 500 ? 'st4' : 'st5';
   const fmtTime = t => t ? new Date(t).toLocaleTimeString('en-US', { hour12: false }) : '';
   const fmtH = h => h ? Object.entries(h).map(([k, v]) => k + ': ' + (Array.isArray(v) ? v.join(', ') : v)).join('\n') : '';
+  const themeVars = (THEMES[themeId] && THEMES[themeId].vars) ? THEMES[themeId].vars : THEMES.midnight.vars;
 
   return (
-    <div className="app">
+    <div className="app" style={themeVars}>
       <style dangerouslySetInnerHTML={{ __html: `
-:root{--bg:#0a0e14;--bg2:#0d1117;--bg3:#161b22;--bgh:#1f262d;--brd:#30363d;--txt:#e6edf3;--txt2:#8b949e;--txt3:#6e7681;--blue:#58a6ff;--green:#3fb950;--red:#f85149;--orange:#d29922;--purple:#a371f7;--cyan:#39c5cf}
-*{margin:0;padding:0;box-sizing:border-box}body{font-family:Inter,sans-serif;background:var(--bg);color:var(--txt);overflow:hidden}
+:root{--bg:#0a0e14;--bg2:#0d1117;--bg3:#161b22;--bgh:#1f262d;--brd:#30363d;--txt:#e6edf3;--txt2:#8b949e;--txt3:#6e7681;--blue:#58a6ff;--green:#3fb950;--red:#f85149;--orange:#d29922;--purple:#a371f7;--cyan:#39c5cf;--font-main:"Inter",sans-serif;--font-mono:"JetBrains Mono",monospace}
+*{margin:0;padding:0;box-sizing:border-box}body{font-family:var(--font-main);background:var(--bg);color:var(--txt);overflow:hidden}
 .app{display:flex;flex-direction:column;height:100vh}
 .hdr{display:flex;align-items:center;justify-content:space-between;padding:10px 20px;background:var(--bg2);border-bottom:1px solid var(--brd)}
 .logo{display:flex;align-items:center;gap:10px}.logo-i{width:32px;height:32px;background:linear-gradient(135deg,var(--cyan),var(--purple));border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:700}
-.logo-t{font-family:'JetBrains Mono';font-size:18px;font-weight:600;background:linear-gradient(90deg,var(--cyan),var(--purple));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.logo-t{font-family:var(--font-mono);font-size:18px;font-weight:600;background:linear-gradient(90deg,var(--cyan),var(--purple));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
 .prj-badge{background:var(--bg3);padding:4px 10px;border-radius:4px;font-size:11px;color:var(--cyan);border:1px solid var(--brd);margin-left:12px}
 .hdr-ctrl{display:flex;align-items:center;gap:10px}
 .int-tog{display:flex;align-items:center;gap:6px;padding:6px 12px;background:var(--bg3);border:1px solid var(--brd);border-radius:6px;font-size:11px;cursor:pointer}
 .int-tog.on{background:rgba(248,81,73,.2);border-color:var(--red)}.int-dot{width:8px;height:8px;border-radius:50%;background:var(--txt3)}
 .int-tog.on .int-dot{background:var(--red);animation:pulse 1s infinite}.pend-badge{background:var(--red);color:#fff;padding:1px 6px;border-radius:10px;font-size:10px;margin-left:4px}
-.prx-st{display:flex;align-items:center;gap:6px;padding:5px 10px;background:var(--bg3);border-radius:6px;font-family:'JetBrains Mono';font-size:11px}
+.prx-st{display:flex;align-items:center;gap:6px;padding:5px 10px;background:var(--bg3);border-radius:6px;font-family:var(--font-mono);font-size:11px}
 .st-dot{width:8px;height:8px;border-radius:50%}.st-dot.run{background:var(--green);animation:pulse 2s infinite}.st-dot.stop{background:var(--red)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
 .btn{padding:6px 14px;border:none;border-radius:5px;font-size:12px;font-weight:500;cursor:pointer;display:inline-flex;align-items:center;gap:5px}
@@ -1162,7 +1289,7 @@ function Blackwire() {
 .main{flex:1;display:flex;overflow:hidden}
 .panel{display:flex;flex-direction:column;overflow:hidden}.pnl-hdr{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--bg2);border-bottom:1px solid var(--brd);font-size:12px;font-weight:500}
 .pnl-cnt{flex:1;overflow:auto}.hist-pnl{width:44%;border-right:1px solid var(--brd)}.det-pnl{flex:1;display:flex;flex-direction:column}
-.req-list{font-family:'JetBrains Mono';font-size:11px}.req-item{display:grid;grid-template-columns:60px 1fr 60px 55px;gap:10px;padding:8px 14px;border-bottom:1px solid var(--brd);cursor:pointer;align-items:center}
+.req-list{font-family:var(--font-mono);font-size:11px}.req-item{display:grid;grid-template-columns:60px 1fr 60px 55px;gap:10px;padding:8px 14px;border-bottom:1px solid var(--brd);cursor:pointer;align-items:center}
 .req-item:hover{background:var(--bgh)}.req-item.sel{background:var(--bg3);border-left:3px solid var(--blue)}.req-item.out{opacity:.4}
 .mth{font-weight:600;padding:2px 6px;border-radius:3px;text-align:center;font-size:10px}
 .mth-GET{background:rgba(63,185,80,.15);color:var(--green)}.mth-POST{background:rgba(88,166,255,.15);color:var(--blue)}
@@ -1172,7 +1299,7 @@ function Blackwire() {
 .det-tabs{display:flex;background:var(--bg2);border-bottom:1px solid var(--brd);padding:0 10px}
 .det-tab{padding:8px 14px;font-size:11px;color:var(--txt2);cursor:pointer;border-bottom:2px solid transparent}
 .det-tab.act{color:var(--cyan);border-bottom-color:var(--cyan)}
-.code{flex:1;padding:14px;font-family:'JetBrains Mono';font-size:11px;line-height:1.5;background:var(--bg);overflow:auto;white-space:pre-wrap;word-break:break-all}
+.code{flex:1;padding:14px;font-family:var(--font-mono);font-size:11px;line-height:1.5;background:var(--bg);overflow:auto;white-space:pre-wrap;word-break:break-all}
 .json-key{color:var(--cyan)}.json-string{color:var(--green)}.json-number{color:var(--orange)}.json-bool{color:var(--purple)}.json-null{color:var(--txt3)}
 .flt-bar{display:flex;align-items:center;gap:6px;padding:6px 14px;background:var(--bg3);border-bottom:1px solid var(--brd)}
 .flt-in{flex:1;padding:5px 8px;background:var(--bg2);border:1px solid var(--brd);border-radius:4px;color:var(--txt);font-size:11px;outline:none}
@@ -1192,25 +1319,25 @@ function Blackwire() {
 .pend-item{display:flex;gap:10px;padding:10px 14px;border-bottom:1px solid var(--brd);cursor:pointer;align-items:center}
 .pend-item:hover{background:var(--bgh)}.pend-item.sel{background:var(--bg3);border-left:3px solid var(--orange)}
 .int-edit{flex:1;display:flex;flex-direction:column;overflow:hidden}.ed-row{display:flex;gap:10px;padding:10px 14px;background:var(--bg2);border-bottom:1px solid var(--brd)}
-.ed-ta{width:100%;padding:14px;background:var(--bg);border:none;border-bottom:1px solid var(--brd);color:var(--txt);font-family:'JetBrains Mono';font-size:11px;resize:none;outline:none}
+.ed-ta{width:100%;padding:14px;background:var(--bg);border:none;border-bottom:1px solid var(--brd);color:var(--txt);font-family:var(--font-mono);font-size:11px;resize:none;outline:none}
 .scp-pnl{padding:24px;max-width:700px;margin:0 auto;width:100%}.scp-hdr{margin-bottom:20px}.scp-hdr h3{font-size:16px;margin-bottom:6px}.scp-hdr p{color:var(--txt2);font-size:12px}
 .scp-form{display:flex;gap:10px;margin-bottom:20px}.sel{padding:8px 12px;background:var(--bg3);border:1px solid var(--brd);border-radius:5px;color:var(--txt);font-size:12px}
 .scp-rules{display:flex;flex-direction:column;gap:6px}.scp-rule{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px}
 .scp-rule.dis{opacity:.4}.rul-type{padding:3px 8px;border-radius:3px;font-size:10px;font-weight:600}
 .rul-inc{background:rgba(63,185,80,.15);color:var(--green)}.rul-exc{background:rgba(248,81,73,.15);color:var(--red)}
-.rul-pat{flex:1;font-family:'JetBrains Mono';font-size:12px}.rul-acts{display:flex;gap:6px}
+.rul-pat{flex:1;font-family:var(--font-mono);font-size:12px}.rul-acts{display:flex;gap:6px}
 .rep-cnt{display:flex;width:100%;height:100%}.rep-side{width:200px;border-right:1px solid var(--brd);display:flex;flex-direction:column}
 .rep-list{flex:1;overflow:auto}.rep-item{display:flex;gap:6px;padding:10px 14px;border-bottom:1px solid var(--brd);cursor:pointer;align-items:center}
 .rep-item:hover{background:var(--bgh)}.rep-item.sel{background:var(--bg3);border-left:3px solid var(--purple)}.rep-item .name{font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rep-main{flex:1;display:flex;flex-direction:column}.req-bar{display:flex;gap:10px;padding:10px 14px;background:var(--bg2);border-bottom:1px solid var(--brd)}
-.mth-sel{padding:6px 10px;background:var(--bg3);border:1px solid var(--brd);border-radius:5px;color:var(--txt);font-family:'JetBrains Mono';font-size:12px;font-weight:600}
-.url-in{flex:1;padding:6px 10px;background:var(--bg3);border:1px solid var(--brd);border-radius:5px;color:var(--txt);font-family:'JetBrains Mono';font-size:12px;outline:none}
+.mth-sel{padding:6px 10px;background:var(--bg3);border:1px solid var(--brd);border-radius:5px;color:var(--txt);font-family:var(--font-mono);font-size:12px;font-weight:600}
+.url-in{flex:1;padding:6px 10px;background:var(--bg3);border:1px solid var(--brd);border-radius:5px;color:var(--txt);font-family:var(--font-mono);font-size:12px;outline:none}
 .rep-edit{display:grid;grid-template-columns:1fr 1fr;flex:1;gap:1px;background:var(--brd)}.ed-pane{display:flex;flex-direction:column;background:var(--bg)}
 .ed-hdr{padding:6px 14px;background:var(--bg2);border-bottom:1px solid var(--brd);font-size:11px;font-weight:500;display:flex;justify-content:space-between}
 .git-pnl{padding:24px;max-width:700px;margin:0 auto;width:100%}.git-sec{margin-bottom:20px}
 .git-ttl{font-size:13px;font-weight:600;margin-bottom:10px;color:var(--txt2)}.cmt-form{display:flex;gap:10px}
 .cmt-in{flex:1;padding:8px 12px;background:var(--bg3);border:1px solid var(--brd);border-radius:5px;color:var(--txt);outline:none}
-.cmt-list{background:var(--bg2);border-radius:8px;border:1px solid var(--brd)}.cmt-item{display:flex;gap:14px;padding:12px 14px;border-bottom:1px solid var(--brd);font-family:'JetBrains Mono';font-size:11px;align-items:center}
+.cmt-list{background:var(--bg2);border-radius:8px;border:1px solid var(--brd)}.cmt-item{display:flex;gap:14px;padding:12px 14px;border-bottom:1px solid var(--brd);font-family:var(--font-mono);font-size:11px;align-items:center}
 .cmt-item:last-child{border-bottom:none}.cmt-hash{color:var(--purple);font-weight:500}.cmt-msg{flex:1}.cmt-date{color:var(--txt3);font-size:10px}
 .toast-c{position:fixed;bottom:20px;right:20px;z-index:1000}.toast{padding:10px 18px;background:var(--bg3);border:1px solid var(--brd);border-radius:6px;font-size:12px;margin-top:6px;animation:slideIn .2s}
 .toast.success{border-color:var(--green)}.toast.error{border-color:var(--red)}@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
@@ -1222,7 +1349,7 @@ function Blackwire() {
 .chepy-cnt{display:flex;width:100%;height:100%}.chepy-col{display:flex;flex-direction:column;overflow:hidden}
 .chepy-in-col{width:30%;border-right:1px solid var(--brd)}.chepy-recipe-col{width:30%;border-right:1px solid var(--brd)}.chepy-out-col{flex:1}
 .chepy-add{display:flex;flex-direction:column;border-bottom:1px solid var(--brd);max-height:40%}.chepy-ops-list{flex:1;overflow:auto;padding:0 8px 8px}
-.chepy-avail-op{padding:5px 10px;font-size:11px;cursor:pointer;border-radius:4px;color:var(--txt2);font-family:'JetBrains Mono'}.chepy-avail-op:hover{background:var(--bg3);color:var(--cyan)}
+.chepy-avail-op{padding:5px 10px;font-size:11px;cursor:pointer;border-radius:4px;color:var(--txt2);font-family:var(--font-mono)}.chepy-avail-op:hover{background:var(--bg3);color:var(--cyan)}
 .chepy-steps{flex:1;overflow:auto;padding:8px}
 .chepy-step{background:var(--bg2);border:1px solid var(--brd);border-radius:6px;margin-bottom:6px}
 .chepy-step-hdr{display:flex;align-items:center;gap:8px;padding:8px 10px}
@@ -1234,12 +1361,12 @@ function Blackwire() {
 .ws-conns{width:220px;border-right:1px solid var(--brd)}.ws-frames{width:300px;border-right:1px solid var(--brd)}.ws-detail{flex:1;display:flex;flex-direction:column}
 .ws-conn-item{padding:10px 14px;border-bottom:1px solid var(--brd);cursor:pointer;font-size:11px}
 .ws-conn-item:hover{background:var(--bgh)}.ws-conn-item.sel{background:var(--bg3);border-left:3px solid var(--cyan)}
-.ws-conn-url{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:'JetBrains Mono';font-size:11px}
+.ws-conn-url{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono);font-size:11px}
 .ws-conn-count{font-size:10px;color:var(--txt3)}
 .ws-frame-item{display:flex;gap:8px;padding:8px 14px;border-bottom:1px solid var(--brd);cursor:pointer;align-items:center;font-size:11px}
 .ws-frame-item:hover{background:var(--bgh)}.ws-frame-item.sel{background:var(--bg3);border-left:3px solid var(--cyan)}
 .ws-dir{font-weight:700;font-size:14px;width:20px;text-align:center}.ws-dir-up{color:var(--green)}.ws-dir-down{color:var(--orange)}
-.ws-frame-body{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:'JetBrains Mono'}
+.ws-frame-body{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono)}
 .coll-cnt{display:flex;width:100%;height:100%}
 .coll-side{width:200px;border-right:1px solid var(--brd)}.coll-steps{width:350px;border-right:1px solid var(--brd)}.coll-exec{flex:1;display:flex;flex-direction:column}
 .coll-item{display:flex;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--brd);cursor:pointer;font-size:12px}
@@ -1254,7 +1381,7 @@ function Blackwire() {
 .coll-step-item.active .coll-step-num{background:var(--blue);color:#fff}
 .coll-vars{padding:10px 14px;border-top:1px solid var(--brd);background:var(--bg2)}
 .coll-vars-hdr{font-size:10px;color:var(--txt3);font-weight:600;margin-bottom:6px;text-transform:uppercase}
-.coll-var{display:flex;gap:8px;font-size:11px;font-family:'JetBrains Mono';padding:2px 0}
+.coll-var{display:flex;gap:8px;font-size:11px;font-family:var(--font-mono);padding:2px 0}
 .coll-var-name{color:var(--purple);font-weight:500}.coll-var-val{color:var(--green);flex:1;overflow:hidden;text-overflow:ellipsis}
 .coll-extract{display:flex;gap:6px;align-items:center;padding:4px 0;font-size:11px}
 .coll-extract-name{color:var(--cyan);font-weight:500}
@@ -1269,6 +1396,11 @@ function Blackwire() {
           {curPrj && <span className="prj-badge">{curPrj}</span>}
         </div>
         <div className="hdr-ctrl">
+          <select className="sel" value={themeId} onChange={e => setThemeId(e.target.value)} title="Theme">
+            {Object.entries(THEMES).map(([id, t]) => (
+              <option key={id} value={id}>{t.label}</option>
+            ))}
+          </select>
           {curPrj && (
             <React.Fragment>
               <div className={'int-tog' + (intOn ? ' on' : '')} onClick={togInt}>
@@ -1998,7 +2130,7 @@ function Blackwire() {
                         <div style={{ padding: '10px 14px', background: 'var(--bg2)', borderBottom: '1px solid var(--brd)', fontSize: '12px' }}>
                           <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '6px' }}>
                             <span className={'mth mth-' + item.method}>{item.method}</span>
-                            <span style={{ fontFamily: 'JetBrains Mono', fontSize: '11px', flex: 1 }}>{item.url}</span>
+                            <span style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', flex: 1 }}>{item.url}</span>
                           </div>
                           {item.headers && Object.keys(item.headers).length > 0 && (
                             <div style={{ fontSize: '10px', color: 'var(--txt3)', marginBottom: '4px' }}>
@@ -2015,7 +2147,7 @@ function Blackwire() {
                             <div key={vi} className="coll-extract">
                               <span className="coll-extract-name">{ve.name}</span>
                               <span style={{ color: 'var(--txt3)', fontSize: '10px' }}>from {ve.source} at</span>
-                              <span style={{ fontFamily: 'JetBrains Mono', fontSize: '10px', color: 'var(--cyan)' }}>{ve.path}</span>
+                              <span style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: 'var(--cyan)' }}>{ve.path}</span>
                               <button className="btn btn-sm btn-d" style={{ padding: '1px 4px', fontSize: '9px' }}
                                 onClick={() => {
                                   const newExtracts = item.var_extracts.filter((_, i) => i !== vi);
@@ -2196,6 +2328,11 @@ function Blackwire() {
 
       {contextMenu && (
         <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={e => e.stopPropagation()}>
+          {(contextMenu.normalized?.body || contextMenu.source === 'selection') && (
+            <div className="context-menu-item" onClick={() => handleContextAction('send-to-cipher')}>
+              Send to Cipher
+            </div>
+          )}
           {contextMenu.source !== 'websocket' && (
             <div className="context-menu-item" onClick={() => handleContextAction('repeater')}>
               Send to Repeater
