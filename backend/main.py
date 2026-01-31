@@ -949,7 +949,17 @@ async def update_repeater(item_id: int, data: dict = Body(...)):
     async with await get_db() as db:
         if "name" in data:
             await db.execute("UPDATE repeater SET name = ? WHERE id = ?", (data["name"], item_id))
-            await db.commit()
+        if "method" in data:
+            await db.execute("UPDATE repeater SET method = ? WHERE id = ?", (data["method"], item_id))
+        if "url" in data:
+            await db.execute("UPDATE repeater SET url = ? WHERE id = ?", (data["url"], item_id))
+        if "headers" in data:
+            await db.execute("UPDATE repeater SET headers = ? WHERE id = ?", (json.dumps(data["headers"]), item_id))
+        if "body" in data:
+            await db.execute("UPDATE repeater SET body = ? WHERE id = ?", (data["body"], item_id))
+        if "last_response" in data:
+            await db.execute("UPDATE repeater SET last_response = ? WHERE id = ?", (json.dumps(data["last_response"]), item_id))
+        await db.commit()
         return {"status": "updated"}
 
 @app.delete("/api/repeater/{item_id}")
@@ -962,12 +972,30 @@ async def delete_repeater(item_id: int):
 @app.post("/api/repeater/send-raw")
 async def send_raw(data: dict = Body(...)):
     try:
-        async with httpx.AsyncClient(verify=False, timeout=30) as client:
+        follow = data.get("follow_redirects", False)
+        async with httpx.AsyncClient(verify=False, timeout=30, follow_redirects=follow, max_redirects=30) as client:
             start = datetime.now()
             resp = await client.request(method=data.get("method", "GET"), url=data.get("url", ""),
                 headers=data.get("headers", {}), content=data.get("body", "").encode() if data.get("body") else None)
-            return {"status_code": resp.status_code, "headers": dict(resp.headers), "body": resp.text,
-                "elapsed": (datetime.now() - start).total_seconds(), "size": len(resp.content)}
+            elapsed = (datetime.now() - start).total_seconds()
+            # Detectar si es una redirección (3xx con Location header)
+            is_redirect = 300 <= resp.status_code < 400
+            redirect_url = resp.headers.get("location", None) if is_redirect else None
+            # Si se siguieron redirects, incluir la cadena
+            redirect_chain = []
+            if follow and resp.history:
+                for hr in resp.history:
+                    redirect_chain.append({
+                        "status_code": hr.status_code,
+                        "url": str(hr.url),
+                        "location": hr.headers.get("location", "")
+                    })
+            return {
+                "status_code": resp.status_code, "headers": dict(resp.headers), "body": resp.text,
+                "elapsed": elapsed, "size": len(resp.content),
+                "is_redirect": is_redirect, "redirect_url": redirect_url,
+                "redirect_chain": redirect_chain, "final_url": str(resp.url)
+            }
     except Exception as e:
         return {"error": str(e)}
 

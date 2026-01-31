@@ -3,71 +3,7 @@ const { useState, useEffect, useRef } = React;
 const API = '';
 const WS_URL = 'ws://' + location.host + '/ws';
 
-const THEMES = {
-  midnight: {
-    label: 'Midnight',
-    vars: {
-      '--bg': '#0a0e14',
-      '--bg2': '#0d1117',
-      '--bg3': '#161b22',
-      '--bgh': '#1f262d',
-      '--brd': '#30363d',
-      '--txt': '#e6edf3',
-      '--txt2': '#8b949e',
-      '--txt3': '#6e7681',
-      '--blue': '#58a6ff',
-      '--green': '#3fb950',
-      '--red': '#f85149',
-      '--orange': '#d29922',
-      '--purple': '#a371f7',
-      '--cyan': '#39c5cf',
-      '--font-main': '"Inter", system-ui, sans-serif',
-      '--font-mono': '"JetBrains Mono", ui-monospace, monospace'
-    }
-  },
-  dusk: {
-    label: 'Dusk',
-    vars: {
-      '--bg': '#11101a',
-      '--bg2': '#161525',
-      '--bg3': '#1d1c2e',
-      '--bgh': '#25233a',
-      '--brd': '#34324a',
-      '--txt': '#f0e9ff',
-      '--txt2': '#b9b2d6',
-      '--txt3': '#8a83a8',
-      '--blue': '#7aa2ff',
-      '--green': '#8bd49c',
-      '--red': '#ff7a7a',
-      '--orange': '#ffb86c',
-      '--purple': '#c792ff',
-      '--cyan': '#7fe7ff',
-      '--font-main': '"Space Grotesk", "Inter", system-ui, sans-serif',
-      '--font-mono': '"JetBrains Mono", ui-monospace, monospace'
-    }
-  },
-  paper: {
-    label: 'Paper',
-    vars: {
-      '--bg': '#f5f4f0',
-      '--bg2': '#ffffff',
-      '--bg3': '#f0eee9',
-      '--bgh': '#e7e4dd',
-      '--brd': '#d7d3c9',
-      '--txt': '#1f2328',
-      '--txt2': '#5b636e',
-      '--txt3': '#7a828c',
-      '--blue': '#255cbb',
-      '--green': '#1a7f37',
-      '--red': '#c43c3c',
-      '--orange': '#b96b00',
-      '--purple': '#6b4bb6',
-      '--cyan': '#0f7f7a',
-      '--font-main': '"IBM Plex Sans", "Inter", system-ui, sans-serif',
-      '--font-mono': '"IBM Plex Mono", "JetBrains Mono", ui-monospace, monospace'
-    }
-  }
-};
+const THEMES = window.BW_THEMES || {};
 
 function Blackwire() {
   // Estado principal
@@ -85,6 +21,7 @@ function Blackwire() {
   const [reqs, setReqs] = useState([]);
   const [selReq, setSelReq] = useState(null);
   const [detTab, setDetTab] = useState('request');
+  const [histSubTab, setHistSubTab] = useState('http'); // 'http' | 'ws'
 
   // Estado del Repeater
   const [repReqs, setRepReqs] = useState([]);
@@ -99,6 +36,7 @@ function Blackwire() {
   // NUEVA FUNCIONALIDAD: Historial de navegación en Repeater
   const [repHistory, setRepHistory] = useState([]);
   const [repHistoryIndex, setRepHistoryIndex] = useState(-1);
+  const [repFollowRedirects, setRepFollowRedirects] = useState(false);
 
   // Estado general
   const [loading, setLoading] = useState(false);
@@ -149,6 +87,7 @@ function Blackwire() {
 
   // NUEVA FUNCIONALIDAD: Menú contextual
   const [contextMenu, setContextMenu] = useState(null);
+  const ctxMenuRef = useRef(null);
 
   // Chepy
   const [chepyIn, setChepyIn] = useState('');
@@ -286,6 +225,22 @@ function Blackwire() {
     const handleClick = () => setContextMenu(null);
     if (contextMenu) {
       window.addEventListener('click', handleClick);
+      // Reposicionar si el menú se sale del viewport
+      requestAnimationFrame(() => {
+        const el = ctxMenuRef.current;
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        let x = contextMenu.x;
+        let y = contextMenu.y;
+        if (x + rect.width > window.innerWidth) x = window.innerWidth - rect.width - 8;
+        if (y + rect.height > window.innerHeight) y = window.innerHeight - rect.height - 8;
+        if (x < 0) x = 8;
+        if (y < 0) y = 8;
+        if (x !== contextMenu.x || y !== contextMenu.y) {
+          el.style.left = x + 'px';
+          el.style.top = y + 'px';
+        }
+      });
       return () => window.removeEventListener('click', handleClick);
     }
   }, [contextMenu]);
@@ -545,6 +500,100 @@ function Blackwire() {
   };
 
   // NUEVA FUNCIONALIDAD: Pretty Print/Minify en Repeater
+  // Protobuf best-effort decoder (sin esquema)
+  const tryDecodeProtobuf = raw => {
+    try {
+      const bytes = typeof raw === 'string'
+        ? new Uint8Array([...raw].map(c => c.charCodeAt(0)))
+        : new Uint8Array(raw);
+      if (bytes.length < 2) return null;
+
+      const readVarint = (buf, offset) => {
+        let result = 0, shift = 0;
+        while (offset < buf.length) {
+          const b = buf[offset++];
+          result |= (b & 0x7f) << shift;
+          if ((b & 0x80) === 0) return { value: result, offset };
+          shift += 7;
+          if (shift > 35) return null;
+        }
+        return null;
+      };
+
+      const decodeFields = (buf, start, end) => {
+        const fields = [];
+        let pos = start;
+        while (pos < end) {
+          const tag = readVarint(buf, pos);
+          if (!tag || tag.value === 0) return null;
+          pos = tag.offset;
+          const fieldNum = tag.value >>> 3;
+          const wireType = tag.value & 0x7;
+          if (fieldNum < 1 || fieldNum > 536870911) return null;
+
+          if (wireType === 0) { // varint
+            const v = readVarint(buf, pos);
+            if (!v) return null;
+            pos = v.offset;
+            fields.push({ field: fieldNum, type: 'varint', value: v.value });
+          } else if (wireType === 2) { // length-delimited
+            const len = readVarint(buf, pos);
+            if (!len || len.value < 0 || pos + len.value > end) return null;
+            pos = len.offset;
+            const chunk = buf.slice(pos, pos + len.value);
+            pos += len.value;
+            // Intentar decodificar recursivamente como submensaje
+            const sub = decodeFields(buf, pos - len.value, pos);
+            if (sub && sub.length > 0) {
+              fields.push({ field: fieldNum, type: 'message', value: sub });
+            } else {
+              // Intentar como string UTF-8
+              try {
+                const str = new TextDecoder('utf-8', { fatal: true }).decode(chunk);
+                if (/^[\x20-\x7e\n\r\t]*$/.test(str) && str.length > 0) {
+                  fields.push({ field: fieldNum, type: 'string', value: str });
+                } else {
+                  fields.push({ field: fieldNum, type: 'bytes', value: Array.from(chunk).map(b => b.toString(16).padStart(2, '0')).join(' ') });
+                }
+              } catch {
+                fields.push({ field: fieldNum, type: 'bytes', value: Array.from(chunk).map(b => b.toString(16).padStart(2, '0')).join(' ') });
+              }
+            }
+          } else if (wireType === 5) { // 32-bit
+            if (pos + 4 > end) return null;
+            const v = new DataView(buf.buffer, buf.byteOffset + pos, 4);
+            fields.push({ field: fieldNum, type: 'fixed32', value: v.getFloat32(0, true) });
+            pos += 4;
+          } else if (wireType === 1) { // 64-bit
+            if (pos + 8 > end) return null;
+            const v = new DataView(buf.buffer, buf.byteOffset + pos, 8);
+            fields.push({ field: fieldNum, type: 'fixed64', value: v.getFloat64(0, true) });
+            pos += 8;
+          } else {
+            return null; // wire type desconocido
+          }
+        }
+        return fields.length > 0 ? fields : null;
+      };
+
+      const formatFields = (fields, indent = 0) => {
+        const pad = '  '.repeat(indent);
+        return fields.map(f => {
+          if (f.type === 'message') {
+            return pad + 'field ' + f.field + ' {' + '\n' + formatFields(f.value, indent + 1) + '\n' + pad + '}';
+          }
+          return pad + 'field ' + f.field + ' (' + f.type + '): ' + f.value;
+        }).join('\n');
+      };
+
+      const fields = decodeFields(bytes, 0, bytes.length);
+      if (fields && fields.length > 0) {
+        return '// Protobuf (best-effort decode)\n' + formatFields(fields);
+      }
+    } catch (e) {}
+    return null;
+  };
+
   const prettyPrint = text => {
     try {
       const obj = JSON.parse(text);
@@ -558,6 +607,9 @@ function Blackwire() {
         }
       } catch (e2) {}
     }
+    // Protobuf best-effort: intentar decodificar datos binarios
+    const proto = tryDecodeProtobuf(text);
+    if (proto) return proto;
     return text;
   };
 
@@ -809,17 +861,34 @@ function Blackwire() {
       });
     } catch (e) {}
 
+    // Auto-calcular Content-Length si hay body
+    if (repB) {
+      const len = new TextEncoder().encode(repB).length;
+      const clKey = Object.keys(h).find(k => k.toLowerCase() === 'content-length');
+      if (clKey) h[clKey] = String(len);
+      else h['Content-Length'] = String(len);
+    } else {
+      // Eliminar Content-Length si no hay body
+      const clKey = Object.keys(h).find(k => k.toLowerCase() === 'content-length');
+      if (clKey) delete h[clKey];
+    }
+
     const requestData = { method: repM, url: repU, headers: h, body: repB };
-    const r = await api.post('/api/repeater/send-raw', { ...requestData, body: repB || null });
+    const r = await api.post('/api/repeater/send-raw', { ...requestData, body: repB || null, follow_redirects: repFollowRedirects });
     setRepResp(r);
     setRepRespBody(r.body || '');
     setLoading(false);
 
-    // Guardar en historial
+    // Guardar en historial de navegación
     saveToHistory(requestData, r);
 
-    // Auto-save: si no hay item seleccionado, crear uno nuevo
-    if (!selRep) {
+    // Auto-save: siempre guardar automáticamente
+    if (selRep) {
+      // Actualizar item existente con datos actuales y última respuesta
+      await api.put('/api/repeater/' + selRep, { method: repM, url: repU, headers: h, body: repB, last_response: r });
+      loadRep();
+    } else {
+      // Crear nuevo item automáticamente
       let host = repU;
       try { host = new URL(repU).host; } catch (e) {}
       const autoName = repM + ' ' + host;
@@ -828,6 +897,32 @@ function Blackwire() {
       setRepReqs(items);
       if (items.length > 0) setSelRep(items[0].id);
     }
+  };
+
+  const followRedirect = async () => {
+    if (!repResp || !repResp.is_redirect || !repResp.redirect_url) return;
+    let nextUrl = repResp.redirect_url;
+    // Resolver URL relativa
+    try {
+      nextUrl = new URL(nextUrl, repU).href;
+    } catch (e) {}
+    setRepU(nextUrl);
+    setRepM('GET');
+    setLoading(true);
+    setRepResp(null);
+    let h = {};
+    try {
+      repH.split('\n').forEach(l => {
+        const [k, ...v] = l.split(':');
+        if (k && v.length) h[k.trim()] = v.join(':').trim();
+      });
+    } catch (e) {}
+    const requestData = { method: 'GET', url: nextUrl, headers: h, body: null };
+    const r = await api.post('/api/repeater/send-raw', { ...requestData, follow_redirects: false });
+    setRepResp(r);
+    setRepRespBody(r.body || '');
+    setLoading(false);
+    saveToHistory(requestData, r);
   };
 
   const toRep = r => {
@@ -860,7 +955,13 @@ function Blackwire() {
     setRepU(r.url);
     setRepH(Object.entries(r.headers || {}).map(([k, v]) => k + ': ' + v).join('\n'));
     setRepB(r.body || '');
-    if (r.last_response) setRepResp(r.last_response);
+    if (r.last_response) {
+      setRepResp(r.last_response);
+      setRepRespBody(r.last_response.body || '');
+    } else {
+      setRepResp(null);
+      setRepRespBody('');
+    }
   };
 
   const renameRepItem = async id => {
@@ -1121,7 +1222,7 @@ function Blackwire() {
     'webhook_site': WebhookSiteUI,
   };
 
-  const syntaxHighlight = json => {
+  const syntaxHighlightJSON = json => {
     json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, match => {
       let cls = 'json-number';
@@ -1140,18 +1241,74 @@ function Blackwire() {
     });
   };
 
+  const syntaxHighlightXML = xml => {
+    const esc = xml.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return esc
+      .replace(/(&lt;\/?)([\w:.-]+)/g, '$1<span class="json-key">$2</span>')
+      .replace(/([\w:.-]+)(=)(&quot;|")/g, '<span class="json-bool">$1</span>$2$3')
+      .replace(/(&quot;|")(.*?)(&quot;|")/g, '$1<span class="json-string">$2</span>$3')
+      .replace(/(&lt;!--.*?--&gt;)/g, '<span class="json-null">$1</span>');
+  };
+
+  const syntaxHighlightProto = text => {
+    const esc = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return esc
+      .replace(/^(\/\/.*)/gm, '<span class="json-null">$1</span>')
+      .replace(/(field \d+)/g, '<span class="json-key">$1</span>')
+      .replace(/\((varint|string|bytes|message|fixed32|fixed64)\)/g, '(<span class="json-bool">$1</span>)')
+      .replace(/: (.+)$/gm, (m, val) => {
+        if (/^\d+(\.\d+)?$/.test(val)) return ': <span class="json-number">' + val + '</span>';
+        return ': <span class="json-string">' + val + '</span>';
+      });
+  };
+
+  // Colorea cualquier body inteligentemente (JSON, XML, protobuf, texto plano)
+  const colorizeBody = text => {
+    if (!text) return { text: text, html: false };
+    // JSON
+    try {
+      JSON.parse(text);
+      return { text: syntaxHighlightJSON(text), html: true };
+    } catch (e) {}
+    // XML
+    try {
+      const parser = new DOMParser();
+      const xml = parser.parseFromString(text, 'text/xml');
+      if (xml.getElementsByTagName('parsererror').length === 0 && text.trim().startsWith('<')) {
+        return { text: syntaxHighlightXML(text), html: true };
+      }
+    } catch (e) {}
+    // Protobuf best-effort output
+    if (text.includes('// Protobuf') && text.includes('field ')) {
+      return { text: syntaxHighlightProto(text), html: true };
+    }
+    return { text: text, html: false };
+  };
+
   const formatBody = (body, format) => {
     if (!body) return { text: body, html: false };
     if (format === 'pretty') {
       try {
         const obj = JSON.parse(body);
         const formatted = JSON.stringify(obj, null, 2);
-        return { text: syntaxHighlight(formatted), html: true };
+        return { text: syntaxHighlightJSON(formatted), html: true };
       } catch (e) {
-        return { text: body, html: false };
+        // XML pretty
+        try {
+          const parser = new DOMParser();
+          const xml = parser.parseFromString(body, 'text/xml');
+          if (xml.getElementsByTagName('parsererror').length === 0 && body.trim().startsWith('<')) {
+            const formatted = formatXml(new XMLSerializer().serializeToString(xml));
+            return { text: syntaxHighlightXML(formatted), html: true };
+          }
+        } catch (e2) {}
+        // Protobuf best-effort
+        const proto = tryDecodeProtobuf(body);
+        if (proto) return { text: syntaxHighlightProto(proto), html: true };
       }
     }
-    return { text: body, html: false };
+    // Siempre intentar colorear, incluso en raw
+    return colorizeBody(body);
   };
 
   // NUEVA FUNCIONALIDAD: Menú contextual
@@ -1299,6 +1456,11 @@ function Blackwire() {
 .det-tabs{display:flex;background:var(--bg2);border-bottom:1px solid var(--brd);padding:0 10px}
 .det-tab{padding:8px 14px;font-size:11px;color:var(--txt2);cursor:pointer;border-bottom:2px solid transparent}
 .det-tab.act{color:var(--cyan);border-bottom-color:var(--cyan)}
+.hist-wrap{display:flex;flex-direction:column;width:100%;height:100%}
+.hist-content{display:flex;flex:1;overflow:hidden}
+.hist-sub-tabs{display:flex;width:100%;background:var(--bg2);border-bottom:1px solid var(--brd);padding:0 16px;flex-shrink:0}
+.hist-sub-tab{padding:7px 16px;font-size:11px;font-weight:600;color:var(--txt3);cursor:pointer;border-bottom:2px solid transparent;text-transform:uppercase;letter-spacing:.5px}
+.hist-sub-tab:hover{color:var(--txt);background:var(--bg3)}.hist-sub-tab.act{color:var(--cyan);border-bottom-color:var(--cyan)}
 .code{flex:1;padding:14px;font-family:var(--font-mono);font-size:11px;line-height:1.5;background:var(--bg);overflow:auto;white-space:pre-wrap;word-break:break-all}
 .json-key{color:var(--cyan)}.json-string{color:var(--green)}.json-number{color:var(--orange)}.json-bool{color:var(--purple)}.json-null{color:var(--txt3)}
 .flt-bar{display:flex;align-items:center;gap:6px;padding:6px 14px;background:var(--bg3);border-bottom:1px solid var(--brd)}
@@ -1319,21 +1481,21 @@ function Blackwire() {
 .pend-item{display:flex;gap:10px;padding:10px 14px;border-bottom:1px solid var(--brd);cursor:pointer;align-items:center}
 .pend-item:hover{background:var(--bgh)}.pend-item.sel{background:var(--bg3);border-left:3px solid var(--orange)}
 .int-edit{flex:1;display:flex;flex-direction:column;overflow:hidden}.ed-row{display:flex;gap:10px;padding:10px 14px;background:var(--bg2);border-bottom:1px solid var(--brd)}
-.ed-ta{width:100%;padding:14px;background:var(--bg);border:none;border-bottom:1px solid var(--brd);color:var(--txt);font-family:var(--font-mono);font-size:11px;resize:none;outline:none}
+.ed-ta{width:100%;padding:14px;background:var(--bg);border:none;border-bottom:1px solid var(--brd);color:var(--txt);font-family:var(--font-mono);font-size:11px;resize:none;outline:none;overflow:auto;min-height:0}
 .scp-pnl{padding:24px;max-width:700px;margin:0 auto;width:100%}.scp-hdr{margin-bottom:20px}.scp-hdr h3{font-size:16px;margin-bottom:6px}.scp-hdr p{color:var(--txt2);font-size:12px}
 .scp-form{display:flex;gap:10px;margin-bottom:20px}.sel{padding:8px 12px;background:var(--bg3);border:1px solid var(--brd);border-radius:5px;color:var(--txt);font-size:12px}
 .scp-rules{display:flex;flex-direction:column;gap:6px}.scp-rule{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px}
 .scp-rule.dis{opacity:.4}.rul-type{padding:3px 8px;border-radius:3px;font-size:10px;font-weight:600}
 .rul-inc{background:rgba(63,185,80,.15);color:var(--green)}.rul-exc{background:rgba(248,81,73,.15);color:var(--red)}
 .rul-pat{flex:1;font-family:var(--font-mono);font-size:12px}.rul-acts{display:flex;gap:6px}
-.rep-cnt{display:flex;width:100%;height:100%}.rep-side{width:200px;border-right:1px solid var(--brd);display:flex;flex-direction:column}
-.rep-list{flex:1;overflow:auto}.rep-item{display:flex;gap:6px;padding:10px 14px;border-bottom:1px solid var(--brd);cursor:pointer;align-items:center}
+.rep-cnt{display:flex;width:100%;height:100%;overflow:hidden}.rep-side{width:200px;border-right:1px solid var(--brd);display:flex;flex-direction:column;overflow:hidden}
+.rep-list{flex:1;overflow-y:auto;overflow-x:hidden}.rep-item{display:flex;gap:6px;padding:10px 14px;border-bottom:1px solid var(--brd);cursor:pointer;align-items:center}
 .rep-item:hover{background:var(--bgh)}.rep-item.sel{background:var(--bg3);border-left:3px solid var(--purple)}.rep-item .name{font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.rep-main{flex:1;display:flex;flex-direction:column}.req-bar{display:flex;gap:10px;padding:10px 14px;background:var(--bg2);border-bottom:1px solid var(--brd)}
+.rep-main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}.req-bar{display:flex;gap:10px;padding:10px 14px;background:var(--bg2);border-bottom:1px solid var(--brd);flex-shrink:0}
 .mth-sel{padding:6px 10px;background:var(--bg3);border:1px solid var(--brd);border-radius:5px;color:var(--txt);font-family:var(--font-mono);font-size:12px;font-weight:600}
 .url-in{flex:1;padding:6px 10px;background:var(--bg3);border:1px solid var(--brd);border-radius:5px;color:var(--txt);font-family:var(--font-mono);font-size:12px;outline:none}
-.rep-edit{display:grid;grid-template-columns:1fr 1fr;flex:1;gap:1px;background:var(--brd)}.ed-pane{display:flex;flex-direction:column;background:var(--bg)}
-.ed-hdr{padding:6px 14px;background:var(--bg2);border-bottom:1px solid var(--brd);font-size:11px;font-weight:500;display:flex;justify-content:space-between}
+.rep-edit{display:grid;grid-template-columns:1fr 1fr;flex:1;gap:1px;background:var(--brd);overflow:hidden}.ed-pane{display:flex;flex-direction:column;background:var(--bg);overflow:hidden;min-height:0}
+.ed-hdr{padding:6px 14px;background:var(--bg2);border-bottom:1px solid var(--brd);font-size:11px;font-weight:500;display:flex;justify-content:space-between;flex-shrink:0}
 .git-pnl{padding:24px;max-width:700px;margin:0 auto;width:100%}.git-sec{margin-bottom:20px}
 .git-ttl{font-size:13px;font-weight:600;margin-bottom:10px;color:var(--txt2)}.cmt-form{display:flex;gap:10px}
 .cmt-in{flex:1;padding:8px 12px;background:var(--bg3);border:1px solid var(--brd);border-radius:5px;color:var(--txt);outline:none}
@@ -1429,7 +1591,6 @@ function Blackwire() {
           <React.Fragment>
             <div className={'tab' + (tab === 'scope' ? ' act' : '')} onClick={() => setTab('scope')}>Scope</div>
             <div className={'tab' + (tab === 'history' ? ' act' : '')} onClick={() => setTab('history')}>History</div>
-            <div className={'tab' + (tab === 'wsviewer' ? ' act' : '')} onClick={() => { setTab('wsviewer'); loadWsConns(); }}>WS</div>
             <div className={'tab' + (tab === 'collections' ? ' act' : '')} onClick={() => { setTab('collections'); loadColls(); }}>Collections</div>
             <div className={'tab' + (tab === 'repeater' ? ' act' : '')} onClick={() => setTab('repeater')}>Repeater</div>
             <div className={'tab' + (tab === 'git' ? ' act' : '')} onClick={() => setTab('git')}>Git</div>
@@ -1483,95 +1644,187 @@ function Blackwire() {
         )}
 
         {tab === 'history' && curPrj && (
-          <React.Fragment>
-            <div className="panel hist-pnl">
-              <div className="flt-bar">
-                <input className="flt-in" placeholder="Filter..." value={search} onChange={e => setSearch(e.target.value)} />
-                <div className={'flt-tog' + (scopeOnly ? ' act' : '')} onClick={() => setScopeOnly(!scopeOnly)}>Scope</div>
-                <div className={'flt-tog' + (savedOnly ? ' act' : '')} onClick={() => setSavedOnly(!savedOnly)}>★</div>
-              </div>
-              <div className="pnl-hdr">
-                <span>{filtered.length} requests</span>
-                <div className="acts">
-                  <button className="btn btn-sm btn-s" onClick={loadReqs}>↻</button>
-                  <button className="btn btn-sm btn-d" onClick={clearHist}>Clear</button>
-                </div>
-              </div>
-              <div className="pnl-cnt">
-                <div className="req-list">
-                  {filtered.map(r => (
-                    <div
-                      key={r.id}
-                      className={'req-item' + (selReq?.id === r.id ? ' sel' : '') + (!r.in_scope ? ' out' : '')}
-                      onClick={() => setSelReq(r)}
-                      onContextMenu={e => showContextMenu(e, r)}
-                    >
-                      <span className={'mth mth-' + r.method}>{r.method}</span>
-                      <span className="url" title={r.url}>{r.url}</span>
-                      <span className={'sts ' + stCls(r.response_status)}>{r.response_status || '-'}</span>
-                      <span className="ts">{fmtTime(r.timestamp)}</span>
+          <div className="hist-wrap">
+            <div className="hist-sub-tabs">
+              <div className={'hist-sub-tab' + (histSubTab === 'http' ? ' act' : '')} onClick={() => setHistSubTab('http')}>HTTP</div>
+              <div className={'hist-sub-tab' + (histSubTab === 'ws' ? ' act' : '')} onClick={() => { setHistSubTab('ws'); loadWsConns(); }}>WebSocket</div>
+            </div>
+
+            {histSubTab === 'http' && (
+              <div className="hist-content">
+                <div className="panel hist-pnl">
+                  <div className="flt-bar">
+                    <input className="flt-in" placeholder="Filter..." value={search} onChange={e => setSearch(e.target.value)} />
+                    <div className={'flt-tog' + (scopeOnly ? ' act' : '')} onClick={() => setScopeOnly(!scopeOnly)}>Scope</div>
+                    <div className={'flt-tog' + (savedOnly ? ' act' : '')} onClick={() => setSavedOnly(!savedOnly)}>★</div>
+                  </div>
+                  <div className="pnl-hdr">
+                    <span>{filtered.length} requests</span>
+                    <div className="acts">
+                      <button className="btn btn-sm btn-s" onClick={loadReqs}>↻</button>
+                      <button className="btn btn-sm btn-d" onClick={clearHist}>Clear</button>
                     </div>
-                  ))}
-                  {filtered.length === 0 && (
+                  </div>
+                  <div className="pnl-cnt">
+                    <div className="req-list">
+                      {filtered.map(r => (
+                        <div
+                          key={r.id}
+                          className={'req-item' + (selReq?.id === r.id ? ' sel' : '') + (!r.in_scope ? ' out' : '')}
+                          onClick={() => setSelReq(r)}
+                          onContextMenu={e => showContextMenu(e, r)}
+                        >
+                          <span className={'mth mth-' + r.method}>{r.method}</span>
+                          <span className="url" title={r.url}>{r.url}</span>
+                          <span className={'sts ' + stCls(r.response_status)}>{r.response_status || '-'}</span>
+                          <span className="ts">{fmtTime(r.timestamp)}</span>
+                        </div>
+                      ))}
+                      {filtered.length === 0 && (
+                        <div className="empty">
+                          <div className="empty-i">📭</div>
+                          <span>No requests</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="panel det-pnl">
+                  {selReq ? (
+                    <React.Fragment>
+                      <div className="pnl-hdr">
+                        <span>{selReq.method} {selReq.url.substring(0, 50)}</span>
+                        <div className="acts">
+                          <button className="btn btn-sm btn-p" onClick={() => toRep(selReq)}>→ Rep</button>
+                          <button className={'btn btn-sm ' + (selReq.saved ? 'btn-g' : 'btn-s')} onClick={() => togSave(selReq.id)}>
+                            {selReq.saved ? '★' : '☆'}
+                          </button>
+                          <button className="btn btn-sm btn-d" onClick={() => delReq(selReq.id)}>🗑</button>
+                        </div>
+                      </div>
+                      <div className="det-tabs">
+                        <div className={'det-tab' + (detTab === 'request' ? ' act' : '')} onClick={() => setDetTab('request')}>Request</div>
+                        <div className={'det-tab' + (detTab === 'response' ? ' act' : '')} onClick={() => setDetTab('response')}>Response</div>
+                        <div style={{ marginLeft: 'auto', display: 'flex', gap: '6px', alignItems: 'center' }}>
+                          <button className={'btn btn-sm ' + (detTab === 'request' ? (reqFormat === 'raw' ? 'btn-p' : 'btn-s') : (respFormat === 'raw' ? 'btn-p' : 'btn-s'))} onClick={() => detTab === 'request' ? setReqFormat('raw') : setRespFormat('raw')}>
+                            Raw
+                          </button>
+                          <button className={'btn btn-sm ' + (detTab === 'request' ? (reqFormat === 'pretty' ? 'btn-p' : 'btn-s') : (respFormat === 'pretty' ? 'btn-p' : 'btn-s'))} onClick={() => detTab === 'request' ? setReqFormat('pretty') : setRespFormat('pretty')}>
+                            Pretty
+                          </button>
+                        </div>
+                      </div>
+                      <div className="code">
+                        {(() => {
+                          const reqFormatted = selReq.body ? formatBody(selReq.body, reqFormat) : { text: '', html: false };
+                          const respFormatted = formatBody(selReq.response_body || '', respFormat);
+                          const content = detTab === 'request'
+                            ? (selReq.method + ' ' + (() => {
+                                try {
+                                  return new URL(selReq.url).pathname;
+                                } catch (e) {
+                                  return selReq.url;
+                                }
+                              })() + '\n\n' + fmtH(selReq.headers) + (selReq.body ? '\n\n' + reqFormatted.text : ''))
+                            : ('HTTP ' + selReq.response_status + '\n\n' + fmtH(selReq.response_headers) + '\n\n' + respFormatted.text);
+                          const isHtml = detTab === 'request' ? reqFormatted.html : respFormatted.html;
+                          return isHtml ? <div dangerouslySetInnerHTML={{ __html: content }} /> : content;
+                        })()}
+                      </div>
+                    </React.Fragment>
+                  ) : (
                     <div className="empty">
-                      <div className="empty-i">📭</div>
-                      <span>No requests</span>
+                      <span>Select request</span>
                     </div>
                   )}
                 </div>
               </div>
-            </div>
+            )}
 
-            <div className="panel det-pnl">
-              {selReq ? (
-                <React.Fragment>
+            {histSubTab === 'ws' && (
+              <div className="ws-cnt">
+                <div className="ws-conns panel">
                   <div className="pnl-hdr">
-                    <span>{selReq.method} {selReq.url.substring(0, 50)}</span>
-                    <div className="acts">
-                      <button className="btn btn-sm btn-p" onClick={() => toRep(selReq)}>→ Rep</button>
-                      <button className={'btn btn-sm ' + (selReq.saved ? 'btn-g' : 'btn-s')} onClick={() => togSave(selReq.id)}>
-                        {selReq.saved ? '★' : '☆'}
-                      </button>
-                      <button className="btn btn-sm btn-d" onClick={() => delReq(selReq.id)}>🗑</button>
-                    </div>
+                    <span>Connections ({wsConns.length})</span>
+                    <button className="btn btn-sm btn-s" onClick={loadWsConns}>&#8635;</button>
                   </div>
-                  <div className="det-tabs">
-                    <div className={'det-tab' + (detTab === 'request' ? ' act' : '')} onClick={() => setDetTab('request')}>Request</div>
-                    <div className={'det-tab' + (detTab === 'response' ? ' act' : '')} onClick={() => setDetTab('response')}>Response</div>
-                    <div style={{ marginLeft: 'auto', display: 'flex', gap: '6px', alignItems: 'center' }}>
-                      <button className={'btn btn-sm ' + (detTab === 'request' ? (reqFormat === 'raw' ? 'btn-p' : 'btn-s') : (respFormat === 'raw' ? 'btn-p' : 'btn-s'))} onClick={() => detTab === 'request' ? setReqFormat('raw') : setRespFormat('raw')}>
-                        Raw
-                      </button>
-                      <button className={'btn btn-sm ' + (detTab === 'request' ? (reqFormat === 'pretty' ? 'btn-p' : 'btn-s') : (respFormat === 'pretty' ? 'btn-p' : 'btn-s'))} onClick={() => detTab === 'request' ? setReqFormat('pretty') : setRespFormat('pretty')}>
-                        Pretty
-                      </button>
-                    </div>
+                  <div className="pnl-cnt">
+                    {wsConns.map(c => (
+                      <div key={c.url} className={'ws-conn-item' + (selWsConn === c.url ? ' sel' : '')}
+                           onClick={() => loadWsFrames(c.url)}>
+                        <span className="ws-conn-url">{c.url}</span>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px' }}>
+                          <span className="ws-conn-count">{c.frame_count} frames</span>
+                          <span className="ts">{fmtTime(c.last_seen)}</span>
+                        </div>
+                      </div>
+                    ))}
+                    {wsConns.length === 0 && (
+                      <div className="empty" style={{ padding: 30 }}>
+                        <span>No WebSocket connections captured</span>
+                      </div>
+                    )}
                   </div>
-                  <div className="code">
-                    {(() => {
-                      const reqFormatted = selReq.body ? formatBody(selReq.body, reqFormat) : { text: '', html: false };
-                      const respFormatted = formatBody(selReq.response_body || '', respFormat);
-                      const content = detTab === 'request'
-                        ? (selReq.method + ' ' + (() => {
-                            try {
-                              return new URL(selReq.url).pathname;
-                            } catch (e) {
-                              return selReq.url;
-                            }
-                          })() + '\n\n' + fmtH(selReq.headers) + (selReq.body ? '\n\n' + reqFormatted.text : ''))
-                        : ('HTTP ' + selReq.response_status + '\n\n' + fmtH(selReq.response_headers) + '\n\n' + respFormatted.text);
-                      const isHtml = detTab === 'request' ? reqFormatted.html : respFormatted.html;
-                      return isHtml ? <div dangerouslySetInnerHTML={{ __html: content }} /> : content;
-                    })()}
-                  </div>
-                </React.Fragment>
-              ) : (
-                <div className="empty">
-                  <span>Select request</span>
                 </div>
-              )}
-            </div>
-          </React.Fragment>
+                <div className="ws-frames panel">
+                  <div className="pnl-hdr">
+                    <span>Frames {selWsConn ? '(' + wsFrames.length + ')' : ''}</span>
+                  </div>
+                  <div className="pnl-cnt">
+                    {wsFrames.map(f => (
+                      <div key={f.id} className={'ws-frame-item' + (selWsFrame?.id === f.id ? ' sel' : '')}
+                           onClick={() => selectWsFrame(f)}
+                           onContextMenu={e => showContextMenu(e, { ...f, url: selWsConn, method: 'WS', body: f.content }, 'websocket')}>
+                        <span className={'ws-dir ws-dir-' + f.direction}>
+                          {f.direction === 'up' ? '\u2191' : '\u2193'}
+                        </span>
+                        <span className="ws-frame-body">{(f.content || '').substring(0, 80)}</span>
+                        <span className="ts">{fmtTime(f.timestamp)}</span>
+                      </div>
+                    ))}
+                    {selWsConn && wsFrames.length === 0 && (
+                      <div className="empty" style={{ padding: 30 }}><span>No frames</span></div>
+                    )}
+                    {!selWsConn && (
+                      <div className="empty" style={{ padding: 30 }}><span>Select a connection</span></div>
+                    )}
+                  </div>
+                </div>
+                <div className="ws-detail panel">
+                  {selWsFrame ? (
+                    <React.Fragment>
+                      <div className="pnl-hdr">
+                        <span>{selWsFrame.direction === 'up' ? 'Client \u2192 Server' : 'Server \u2192 Client'}</span>
+                        <span className="ts">{fmtTime(selWsFrame.timestamp)}</span>
+                      </div>
+                      <div className="code" style={{ maxHeight: '40%', borderBottom: '1px solid var(--brd)' }}>{selWsFrame.content}</div>
+                      <div className="pnl-hdr"><span>Resend Frame</span></div>
+                      <textarea className="ed-ta" style={{ flex: 1 }} value={wsResendMsg}
+                                onChange={e => setWsResendMsg(e.target.value)} placeholder="Edit frame content..." />
+                      <div style={{ padding: '10px 14px', display: 'flex', gap: '10px', background: 'var(--bg2)', borderTop: '1px solid var(--brd)' }}>
+                        <button className="btn btn-p" onClick={resendWsFrame}
+                                disabled={wsSending || !wsResendMsg}>
+                          {wsSending ? '...' : '\u25B6 Resend'}
+                        </button>
+                      </div>
+                      {wsResendResp && (
+                        <div className="code" style={{ maxHeight: '30%', borderTop: '1px solid var(--brd)' }}>
+                          {wsResendResp.error
+                            ? 'Error: ' + wsResendResp.error
+                            : wsResendResp.response
+                              ? 'Response: ' + wsResendResp.response
+                              : wsResendResp.note || 'Sent (no response)'}
+                        </div>
+                      )}
+                    </React.Fragment>
+                  ) : (
+                    <div className="empty"><span>Select a frame</span></div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
         )}
 
         {tab === 'intercept' && curPrj && (
@@ -1719,6 +1972,11 @@ function Blackwire() {
                 </select>
                 <input className="url-in" placeholder="https://..." value={repU} onChange={e => setRepU(e.target.value)} />
                 <button className="btn btn-p" onClick={sendRep} disabled={loading || !repU}>{loading ? '...' : '▶ Send'}</button>
+                <select className="sel" value={repFollowRedirects ? 'follow' : 'manual'} onChange={e => setRepFollowRedirects(e.target.value === 'follow')}
+                  style={{ fontSize: '10px', padding: '4px 6px', minWidth: '105px' }} title="Redirect mode">
+                  <option value="manual">No Redirect</option>
+                  <option value="follow">Auto Follow</option>
+                </select>
               </div>
               <div className="rep-edit">
                 <div className="ed-pane">
@@ -1756,16 +2014,44 @@ function Blackwire() {
                     <div className="code">{repResp.error}</div>
                   ) : repResp ? (
                     <>
-                      <div className="code" style={{ height: '100px', overflow: 'auto', marginBottom: '8px', borderBottom: '1px solid var(--brd)' }}>
+                      {repResp.redirect_chain && repResp.redirect_chain.length > 0 && (
+                        <div style={{ padding: '6px 10px', background: 'var(--bg3)', borderBottom: '1px solid var(--brd)', fontSize: '10px', fontFamily: 'var(--font-mono)', flexShrink: 0, overflow: 'auto', maxHeight: '120px' }}>
+                          <div style={{ color: 'var(--cyan)', marginBottom: '4px', fontWeight: 600 }}>Redirect chain ({repResp.redirect_chain.length} hops):</div>
+                          {repResp.redirect_chain.map((hop, i) => (
+                            <div key={i} style={{ color: 'var(--txt2)', paddingLeft: '8px' }}>
+                              <span className={'sts ' + stCls(hop.status_code)}>{hop.status_code}</span> {hop.url} → {hop.location}
+                            </div>
+                          ))}
+                          <div style={{ color: 'var(--green)', paddingLeft: '8px' }}>
+                            <span className={'sts ' + stCls(repResp.status_code)}>{repResp.status_code}</span> {repResp.final_url}
+                          </div>
+                        </div>
+                      )}
+                      {repResp.is_redirect && !repFollowRedirects && repResp.redirect_url && (
+                        <div style={{ padding: '6px 10px', background: 'rgba(210,153,34,.1)', borderBottom: '1px solid var(--brd)', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', flexShrink: 0 }}>
+                          <span style={{ color: 'var(--orange)', fontWeight: 600 }}>↪ Redirect</span>
+                          <span style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: 'var(--txt2)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                                title={repResp.redirect_url}>{repResp.redirect_url}</span>
+                          <button className="btn btn-sm btn-p" onClick={followRedirect} disabled={loading} title="Follow this redirect">
+                            Follow →
+                          </button>
+                        </div>
+                      )}
+                      <div className="code" style={{ height: '100px', minHeight: '60px', overflow: 'auto', flexShrink: 0, borderBottom: '1px solid var(--brd)' }}>
                         {fmtH(repResp.headers)}
                       </div>
-                      <textarea
-                        className="ed-ta"
-                        style={{ flex: 1 }}
-                        value={repRespBody}
-                        onChange={e => setRepRespBody(e.target.value)}
-                        placeholder="Response body will appear here"
-                      />
+                      {(() => {
+                        const highlighted = colorizeBody(repRespBody);
+                        return highlighted.html
+                          ? <div className="code" style={{ flex: 1, overflow: 'auto' }} dangerouslySetInnerHTML={{ __html: highlighted.text }} />
+                          : <textarea
+                              className="ed-ta"
+                              style={{ flex: 1 }}
+                              value={repRespBody}
+                              onChange={e => setRepRespBody(e.target.value)}
+                              placeholder="Response body will appear here"
+                            />;
+                      })()}
                     </>
                   ) : (
                     <div className="code">Send a request</div>
@@ -1845,36 +2131,37 @@ function Blackwire() {
                       )}
                     </div>
                   </div>
-                  <div className="code">
-                    {(() => {
-                      if (whkDetTab === 'request') {
-                        const info = (selWhkReq.method || 'GET') + ' ' + (selWhkReq.url || '') + '\n'
-                          + 'IP: ' + (selWhkReq.ip || '-') + '\n'
-                          + 'User-Agent: ' + (selWhkReq.user_agent || '-') + '\n'
-                          + 'Time: ' + (selWhkReq.created_at || '-') + '\n\n'
-                          + '--- Headers ---\n' + fmtH(selWhkReq.headers)
-                          + (selWhkReq.content ? '\n\n--- Body ---\n' + (whkReqFormat === 'pretty' ? formatBody(selWhkReq.content, 'pretty').text : selWhkReq.content) : '');
-                        return info;
-                      }
-                      if (whkDetTab === 'headers') {
-                        return fmtH(selWhkReq.headers) || 'No headers';
-                      }
-                      if (whkDetTab === 'query') {
-                        const q = selWhkReq.query || {};
-                        const entries = Object.entries(q);
-                        if (entries.length === 0) return 'No query parameters';
-                        return entries.map(([k, v]) => k + ' = ' + v).join('\n');
-                      }
-                      if (whkDetTab === 'body') {
-                        if (!selWhkReq.content) return 'No body content';
-                        if (whkReqFormat === 'pretty') {
-                          return formatBody(selWhkReq.content, 'pretty').text;
-                        }
-                        return selWhkReq.content;
-                      }
-                      return '';
-                    })()}
-                  </div>
+                  {(() => {
+                    if (whkDetTab === 'request') {
+                      const bodyFmt = selWhkReq.content ? formatBody(selWhkReq.content, whkReqFormat) : null;
+                      const info = (selWhkReq.method || 'GET') + ' ' + (selWhkReq.url || '') + '\n'
+                        + 'IP: ' + (selWhkReq.ip || '-') + '\n'
+                        + 'User-Agent: ' + (selWhkReq.user_agent || '-') + '\n'
+                        + 'Time: ' + (selWhkReq.created_at || '-') + '\n\n'
+                        + '--- Headers ---\n' + fmtH(selWhkReq.headers)
+                        + (selWhkReq.content ? '\n\n--- Body ---\n' + (bodyFmt ? bodyFmt.text : selWhkReq.content) : '');
+                      const isHtml = bodyFmt && bodyFmt.html;
+                      return isHtml
+                        ? <div className="code" dangerouslySetInnerHTML={{ __html: info }} />
+                        : <div className="code">{info}</div>;
+                    }
+                    if (whkDetTab === 'headers') {
+                      return <div className="code">{fmtH(selWhkReq.headers) || 'No headers'}</div>;
+                    }
+                    if (whkDetTab === 'query') {
+                      const q = selWhkReq.query || {};
+                      const entries = Object.entries(q);
+                      return <div className="code">{entries.length === 0 ? 'No query parameters' : entries.map(([k, v]) => k + ' = ' + v).join('\n')}</div>;
+                    }
+                    if (whkDetTab === 'body') {
+                      if (!selWhkReq.content) return <div className="code">No body content</div>;
+                      const bodyFmt = formatBody(selWhkReq.content, whkReqFormat);
+                      return bodyFmt.html
+                        ? <div className="code" dangerouslySetInnerHTML={{ __html: bodyFmt.text }} />
+                        : <div className="code">{selWhkReq.content}</div>;
+                    }
+                    return <div className="code"></div>;
+                  })()}
                 </React.Fragment>
               ) : (
                 <div className="empty">
@@ -1958,88 +2245,6 @@ function Blackwire() {
           </div>
         )}
 
-        {tab === 'wsviewer' && curPrj && (
-          <div className="ws-cnt">
-            <div className="ws-conns panel">
-              <div className="pnl-hdr">
-                <span>Connections ({wsConns.length})</span>
-                <button className="btn btn-sm btn-s" onClick={loadWsConns}>&#8635;</button>
-              </div>
-              <div className="pnl-cnt">
-                {wsConns.map(c => (
-                  <div key={c.url} className={'ws-conn-item' + (selWsConn === c.url ? ' sel' : '')}
-                       onClick={() => loadWsFrames(c.url)}>
-                    <span className="ws-conn-url">{c.url}</span>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px' }}>
-                      <span className="ws-conn-count">{c.frame_count} frames</span>
-                      <span className="ts">{fmtTime(c.last_seen)}</span>
-                    </div>
-                  </div>
-                ))}
-                {wsConns.length === 0 && (
-                  <div className="empty" style={{ padding: 30 }}>
-                    <span>No WebSocket connections captured</span>
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="ws-frames panel">
-              <div className="pnl-hdr">
-                <span>Frames {selWsConn ? '(' + wsFrames.length + ')' : ''}</span>
-              </div>
-              <div className="pnl-cnt">
-                {wsFrames.map(f => (
-                  <div key={f.id} className={'ws-frame-item' + (selWsFrame?.id === f.id ? ' sel' : '')}
-                       onClick={() => selectWsFrame(f)}
-                       onContextMenu={e => showContextMenu(e, { ...f, url: selWsConn, method: 'WS', body: f.content }, 'websocket')}>
-                    <span className={'ws-dir ws-dir-' + f.direction}>
-                      {f.direction === 'up' ? '\u2191' : '\u2193'}
-                    </span>
-                    <span className="ws-frame-body">{(f.content || '').substring(0, 80)}</span>
-                    <span className="ts">{fmtTime(f.timestamp)}</span>
-                  </div>
-                ))}
-                {selWsConn && wsFrames.length === 0 && (
-                  <div className="empty" style={{ padding: 30 }}><span>No frames</span></div>
-                )}
-                {!selWsConn && (
-                  <div className="empty" style={{ padding: 30 }}><span>Select a connection</span></div>
-                )}
-              </div>
-            </div>
-            <div className="ws-detail panel">
-              {selWsFrame ? (
-                <React.Fragment>
-                  <div className="pnl-hdr">
-                    <span>{selWsFrame.direction === 'up' ? 'Client \u2192 Server' : 'Server \u2192 Client'}</span>
-                    <span className="ts">{fmtTime(selWsFrame.timestamp)}</span>
-                  </div>
-                  <div className="code" style={{ maxHeight: '40%', borderBottom: '1px solid var(--brd)' }}>{selWsFrame.content}</div>
-                  <div className="pnl-hdr"><span>Resend Frame</span></div>
-                  <textarea className="ed-ta" style={{ flex: 1 }} value={wsResendMsg}
-                            onChange={e => setWsResendMsg(e.target.value)} placeholder="Edit frame content..." />
-                  <div style={{ padding: '10px 14px', display: 'flex', gap: '10px', background: 'var(--bg2)', borderTop: '1px solid var(--brd)' }}>
-                    <button className="btn btn-p" onClick={resendWsFrame}
-                            disabled={wsSending || !wsResendMsg}>
-                      {wsSending ? '...' : '\u25B6 Resend'}
-                    </button>
-                  </div>
-                  {wsResendResp && (
-                    <div className="code" style={{ maxHeight: '30%', borderTop: '1px solid var(--brd)' }}>
-                      {wsResendResp.error
-                        ? 'Error: ' + wsResendResp.error
-                        : wsResendResp.response
-                          ? 'Response: ' + wsResendResp.response
-                          : wsResendResp.note || 'Sent (no response)'}
-                    </div>
-                  )}
-                </React.Fragment>
-              ) : (
-                <div className="empty"><span>Select a frame</span></div>
-              )}
-            </div>
-          </div>
-        )}
 
         {tab === 'collections' && curPrj && (
           <div className="coll-cnt">
@@ -2184,9 +2389,13 @@ function Blackwire() {
                                 </span>
                               )}
                             </div>
-                            <div className="code" style={{ flex: 1 }}>
-                              {resp.error ? resp.error : resp.body || ''}
-                            </div>
+                            {(() => {
+                              if (resp.error) return <div className="code" style={{ flex: 1 }}>{resp.error}</div>;
+                              const collBodyFmt = colorizeBody(resp.body || '');
+                              return collBodyFmt.html
+                                ? <div className="code" style={{ flex: 1 }} dangerouslySetInnerHTML={{ __html: collBodyFmt.text }} />
+                                : <div className="code" style={{ flex: 1 }}>{resp.body || ''}</div>;
+                            })()}
                             {resp.extracted_variables && Object.keys(resp.extracted_variables).length > 0 && (
                               <div className="coll-vars" style={{ borderTop: '1px solid var(--brd)' }}>
                                 <div className="coll-vars-hdr">Extracted</div>
@@ -2327,7 +2536,7 @@ function Blackwire() {
       </div>
 
       {contextMenu && (
-        <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={e => e.stopPropagation()}>
+        <div ref={ctxMenuRef} className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={e => e.stopPropagation()}>
           {(contextMenu.normalized?.body || contextMenu.source === 'selection') && (
             <div className="context-menu-item" onClick={() => handleContextAction('send-to-cipher')}>
               Send to Cipher
