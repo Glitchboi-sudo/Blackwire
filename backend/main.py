@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -35,6 +36,7 @@ CURRENT_PROJECT_FILE = BASE_DIR / ".current_project"
 EXTENSIONS_DIR = Path(__file__).parent / "extensions"
 FRONTEND_DIR = BASE_DIR / "frontend"
 APP_JSX_PATH = FRONTEND_DIR / "App.jsx"
+APP_COMPILED_PATH = FRONTEND_DIR / "App.compiled.js"
 THEMES_JS_PATH = FRONTEND_DIR / "themes.js"
 
 WEBHOOKSITE_BASE = "https://webhook.site"
@@ -301,6 +303,13 @@ async def init_db(name: str):
         await db.execute("""CREATE TABLE IF NOT EXISTS filter_presets (
             id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
             query TEXT NOT NULL, ast_json TEXT NOT NULL, created_at TEXT NOT NULL)""")
+        # Performance indexes
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_req_saved ON requests(saved)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_req_scope ON requests(in_scope)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_req_type ON requests(request_type)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_req_ts ON requests(timestamp)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_req_status ON requests(response_status)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_req_id_desc ON requests(id DESC)")
         await db.commit()
 
 async def get_db():
@@ -624,10 +633,35 @@ async def stop_proxy():
     return {"status": "not_running"}
 
 
+def transpile_jsx():
+    """Pre-transpile App.jsx → App.compiled.js using sucrase (fast JSX transform)."""
+    if not APP_JSX_PATH.exists():
+        return
+    node_script = (
+        "const {transform}=require('sucrase'),fs=require('fs');"
+        f"const code=fs.readFileSync({str(APP_JSX_PATH)!r},'utf8');"
+        "const r=transform(code,{transforms:['jsx'],production:true});"
+        "const wrapped='(function(){\\n'+r.code+'\\n})();';"
+        f"fs.writeFileSync({str(APP_COMPILED_PATH)!r},wrapped,'utf8');"
+        "console.log('OK:'+r.code.length)"
+    )
+    try:
+        result = subprocess.run(
+            ["node", "-e", node_script],
+            capture_output=True, text=True, timeout=30, cwd=str(BASE_DIR)
+        )
+        if result.returncode == 0:
+            logging.info("Transpiled App.jsx → App.compiled.js (%s)", result.stdout.strip())
+        else:
+            logging.error("sucrase transpile failed: %s", result.stderr[:500])
+    except Exception as e:
+        logging.error("Transpile error: %s", e)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
     setup_logging()
+    transpile_jsx()
     project = get_current_project()
     if project:
         await init_db(project)
@@ -636,6 +670,7 @@ async def lifespan(app: FastAPI):
     await stop_proxy()
 
 app = FastAPI(title="Blackwire API", lifespan=lifespan)
+app.add_middleware(GZipMiddleware, minimum_size=500)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 # Usar el frontend.html original que tiene toda la funcionalidad
@@ -646,16 +681,21 @@ FRONTEND_HTML = FRONTEND_HTML_PATH.read_text() if FRONTEND_HTML_PATH.exists() el
 async def root():
     return HTMLResponse(FRONTEND_HTML)
 
+def _static_headers():
+    return {"Cache-Control": "no-cache"}
+
 @app.get("/App.jsx")
 async def app_jsx():
+    if APP_COMPILED_PATH.exists():
+        return FileResponse(APP_COMPILED_PATH, media_type="text/javascript", headers=_static_headers())
     if APP_JSX_PATH.exists():
-        return FileResponse(APP_JSX_PATH, media_type="text/javascript")
+        return FileResponse(APP_JSX_PATH, media_type="text/javascript", headers=_static_headers())
     raise HTTPException(status_code=404, detail="App.jsx not found")
 
 @app.get("/themes.js")
 async def themes_js():
     if THEMES_JS_PATH.exists():
-        return FileResponse(THEMES_JS_PATH, media_type="text/javascript")
+        return FileResponse(THEMES_JS_PATH, media_type="text/javascript", headers=_static_headers())
     raise HTTPException(status_code=404, detail="themes.js not found")
 
 @app.websocket("/ws")
@@ -1009,10 +1049,16 @@ async def proxy_status():
     return {"running": running, "intercept_enabled": intercept_enabled}
 
 
+REQ_LIST_COLS = "id, method, url, response_status, timestamp, request_type, saved, in_scope"
+
+def _row_to_list_item(r):
+    return {"id": r[0], "method": r[1], "url": r[2], "response_status": r[3],
+            "timestamp": r[4], "request_type": r[5], "saved": bool(r[6]), "in_scope": bool(r[7])}
+
 @app.get("/api/requests")
 async def get_requests(limit: int = 500, saved_only: bool = False, in_scope_only: bool = False, search: str = ""):
     async with await get_db() as db:
-        query = "SELECT * FROM requests WHERE 1=1"
+        query = f"SELECT {REQ_LIST_COLS} FROM requests WHERE 1=1"
         params = []
         if saved_only:
             query += " AND saved = 1"
@@ -1025,10 +1071,19 @@ async def get_requests(limit: int = 500, saved_only: bool = False, in_scope_only
         params.append(limit)
         cursor = await db.execute(query, params)
         rows = await cursor.fetchall()
-        return [{"id": r[0], "method": r[1], "url": r[2], "headers": json.loads(r[3]), "body": r[4],
+        return [_row_to_list_item(r) for r in rows]
+
+@app.get("/api/requests/{rid}/detail")
+async def get_request_detail(rid: int):
+    async with await get_db() as db:
+        cursor = await db.execute("SELECT id, method, url, headers, body, response_status, response_headers, response_body, timestamp, request_type, saved, in_scope FROM requests WHERE id = ?", (rid,))
+        r = await cursor.fetchone()
+        if not r:
+            raise HTTPException(status_code=404, detail="Request not found")
+        return {"id": r[0], "method": r[1], "url": r[2], "headers": json.loads(r[3]), "body": r[4],
             "response_status": r[5], "response_headers": json.loads(r[6]) if r[6] else None,
             "response_body": r[7], "timestamp": r[8], "request_type": r[9],
-            "saved": bool(r[12]), "in_scope": bool(r[13]) if len(r) > 13 else True} for r in rows]
+            "saved": bool(r[10]), "in_scope": bool(r[11])}
 
 @app.post("/api/requests/search")
 async def search_requests(body: dict = Body(...)):
@@ -1036,9 +1091,14 @@ async def search_requests(body: dict = Body(...)):
     saved_only = body.get("saved_only", False)
     in_scope_only = body.get("in_scope_only", False)
     limit = body.get("limit", 500)
-    db = await get_db_with_regex()
+    # Only use regex-capable connection when AST contains regex operators
+    use_regex = ast is not None
+    if use_regex:
+        db = await get_db_with_regex()
+    else:
+        db = await aiosqlite.connect(get_project_db(get_current_project()))
     try:
-        query = "SELECT * FROM requests WHERE 1=1"
+        query = f"SELECT {REQ_LIST_COLS} FROM requests WHERE 1=1"
         params = []
         if saved_only:
             query += " AND saved = 1"
@@ -1062,10 +1122,7 @@ async def search_requests(body: dict = Body(...)):
         params.append(limit)
         cursor = await db.execute(query, params)
         rows = await cursor.fetchall()
-        return [{"id": r[0], "method": r[1], "url": r[2], "headers": json.loads(r[3]), "body": r[4],
-            "response_status": r[5], "response_headers": json.loads(r[6]) if r[6] else None,
-            "response_body": r[7], "timestamp": r[8], "request_type": r[9],
-            "saved": bool(r[12]), "in_scope": bool(r[13]) if len(r) > 13 else True} for r in rows]
+        return [_row_to_list_item(r) for r in rows]
     finally:
         await db.close()
 
@@ -1520,7 +1577,9 @@ async def receive_request(data: dict = Body(...)):
             await db.commit()
             cursor = await db.execute("SELECT last_insert_rowid()")
             rid = (await cursor.fetchone())[0]
-            await broadcast({"type": "new_request", "data": {"id": rid, **data, "in_scope": in_scope, "timestamp": datetime.now().isoformat()}})
+            await broadcast({"type": "new_request", "data": {"id": rid, "method": data["method"], "url": data["url"],
+                "response_status": data.get("response_status"), "request_type": data.get("request_type", "http"),
+                "saved": False, "in_scope": in_scope, "timestamp": datetime.now().isoformat()}})
             return {"status": "received", "id": rid}
         except aiosqlite.IntegrityError:
             return {"status": "duplicate"}

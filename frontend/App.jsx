@@ -258,6 +258,7 @@ function Blackwire() {
   // Estado de requests
   const [reqs, setReqs] = useState([]);
   const [selReq, setSelReq] = useState(null);
+  const [selReqFull, setSelReqFull] = useState(null);
   const [detTab, setDetTab] = useState('request');
   const [histSubTab, setHistSubTab] = useState('http'); // 'http' | 'ws' | 'sitemap'
   const [smExpanded, setSmExpanded] = useState({});
@@ -450,13 +451,13 @@ function Blackwire() {
 
   useEffect(() => {
     if (!curPrj) return;
-    // Critical data first (parallel) — what the user sees immediately
-    Promise.all([loadReqs(), loadRep(), loadScope(), checkPx()]).then(() => {
-      // Non-critical data after UI is usable
-      loadGit();
+    // Critical data in parallel
+    loadReqs();
+    Promise.all([loadRep(), loadScope(), checkPx()]).then(() => {
       loadColls();
       loadExts();
     });
+    loadGit();
   }, [curPrj]);
 
   // Ctrl+S para auto-commits
@@ -496,6 +497,19 @@ function Blackwire() {
       return () => window.removeEventListener('click', handleClick);
     }
   }, [contextMenu]);
+
+  // Lazy-load full request detail when selected
+  useEffect(() => {
+    if (!selReq) { setSelReqFull(null); return; }
+    // If already has full data (e.g. from WS push or repeater), skip fetch
+    if (selReq.headers !== undefined) { setSelReqFull(selReq); return; }
+    let cancelled = false;
+    setSelReqFull(null);
+    api.get('/api/requests/' + selReq.id + '/detail').then(r => {
+      if (!cancelled && r.id) setSelReqFull(r);
+    });
+    return () => { cancelled = true; };
+  }, [selReq?.id]);
 
   // Close preset dropdown on outside click
   useEffect(() => {
@@ -1755,10 +1769,21 @@ function Blackwire() {
 
   const handleContextAction = async action => {
     if (!contextMenu) return;
-    const norm = contextMenu.normalized;
+    let norm = contextMenu.normalized;
     const req = contextMenu.request;
     const source = contextMenu.source;
     setContextMenu(null);
+    // For history list items, fetch full detail on demand for actions needing body/headers
+    const needsFull = ['repeater','copy-curl','copy-body','send-to-cipher','compare-a','compare-b','add-to-collection'];
+    if (source === 'history' && needsFull.includes(action) && !norm.headers) {
+      try {
+        const full = await api.get('/api/requests/' + req.id + '/detail');
+        norm = { ...norm, headers: full.headers || {}, body: full.body || null };
+        req.response_status = full.response_status;
+        req.response_headers = full.response_headers;
+        req.response_body = full.response_body;
+      } catch (e) { toast('Failed to load request', 'error'); return; }
+    }
     switch (action) {
       case 'repeater':
         toRep({ method: norm.method, url: norm.url, headers: norm.headers, body: norm.body });
@@ -2230,7 +2255,7 @@ function Blackwire() {
                       <div className="pnl-hdr">
                         <span>{selReq.method} {selReq.url.substring(0, 50)}</span>
                         <div className="acts">
-                          <button className="btn btn-sm btn-p" onClick={() => toRep(selReq)}>→ Rep</button>
+                          <button className="btn btn-sm btn-p" onClick={() => selReqFull && toRep(selReqFull)} disabled={!selReqFull}>→ Rep</button>
                           <button className={'btn btn-sm ' + (selReq.saved ? 'btn-g' : 'btn-s')} onClick={() => togSave(selReq.id)}>
                             {selReq.saved ? '★' : '☆'}
                           </button>
@@ -2249,23 +2274,24 @@ function Blackwire() {
                           </button>
                         </div>
                       </div>
+                      {!selReqFull ? (
+                        <div className="empty"><div className="splash-spin" style={{margin:'20px auto'}} /></div>
+                      ) : (
                       <div className="code">
                         {(() => {
-                          const reqFormatted = selReq.body ? formatBody(selReq.body, reqFormat) : { text: '', html: false };
-                          const respFormatted = formatBody(selReq.response_body || '', respFormat);
+                          const d = selReqFull;
+                          const reqFormatted = d.body ? formatBody(d.body, reqFormat) : { text: '', html: false };
+                          const respFormatted = formatBody(d.response_body || '', respFormat);
                           const content = detTab === 'request'
-                            ? (selReq.method + ' ' + (() => {
-                                try {
-                                  return new URL(selReq.url).pathname;
-                                } catch (e) {
-                                  return selReq.url;
-                                }
-                              })() + '\n\n' + fmtH(selReq.headers) + (selReq.body ? '\n\n' + reqFormatted.text : ''))
-                            : ('HTTP ' + selReq.response_status + '\n\n' + fmtH(selReq.response_headers) + '\n\n' + respFormatted.text);
+                            ? (d.method + ' ' + (() => {
+                                try { return new URL(d.url).pathname; } catch (e) { return d.url; }
+                              })() + '\n\n' + fmtH(d.headers) + (d.body ? '\n\n' + reqFormatted.text : ''))
+                            : ('HTTP ' + d.response_status + '\n\n' + fmtH(d.response_headers) + '\n\n' + respFormatted.text);
                           const isHtml = detTab === 'request' ? reqFormatted.html : respFormatted.html;
                           return isHtml ? <div dangerouslySetInnerHTML={{ __html: content }} /> : content;
                         })()}
                       </div>
+                      )}
                     </React.Fragment>
                   ) : (
                     <div className="empty">
@@ -2411,7 +2437,7 @@ function Blackwire() {
                       <div className="pnl-hdr">
                         <span>{selReq.method} {selReq.url.substring(0, 60)}</span>
                         <div className="acts">
-                          <button className="btn btn-sm btn-p" onClick={() => toRep(selReq)}>→ Rep</button>
+                          <button className="btn btn-sm btn-p" onClick={() => selReqFull && toRep(selReqFull)} disabled={!selReqFull}>→ Rep</button>
                         </div>
                       </div>
                       <div className="det-tabs">
@@ -2422,17 +2448,22 @@ function Blackwire() {
                           <button className={'btn btn-sm ' + (detTab === 'request' ? (reqFormat === 'pretty' ? 'btn-p' : 'btn-s') : (respFormat === 'pretty' ? 'btn-p' : 'btn-s'))} onClick={() => detTab === 'request' ? setReqFormat('pretty') : setRespFormat('pretty')}>Pretty</button>
                         </div>
                       </div>
+                      {!selReqFull ? (
+                        <div className="empty"><div className="splash-spin" style={{margin:'20px auto'}} /></div>
+                      ) : (
                       <div className="code">
                         {(() => {
-                          const reqF = selReq.body ? formatBody(selReq.body, reqFormat) : { text: '', html: false };
-                          const resF = formatBody(selReq.response_body || '', respFormat);
+                          const d = selReqFull;
+                          const reqF = d.body ? formatBody(d.body, reqFormat) : { text: '', html: false };
+                          const resF = formatBody(d.response_body || '', respFormat);
                           const ct = detTab === 'request'
-                            ? (selReq.method + ' ' + (() => { try { return new URL(selReq.url).pathname; } catch (e) { return selReq.url; } })() + '\n\n' + fmtH(selReq.headers) + (selReq.body ? '\n\n' + reqF.text : ''))
-                            : ('HTTP ' + selReq.response_status + '\n\n' + fmtH(selReq.response_headers) + '\n\n' + resF.text);
+                            ? (d.method + ' ' + (() => { try { return new URL(d.url).pathname; } catch (e) { return d.url; } })() + '\n\n' + fmtH(d.headers) + (d.body ? '\n\n' + reqF.text : ''))
+                            : ('HTTP ' + d.response_status + '\n\n' + fmtH(d.response_headers) + '\n\n' + resF.text);
                           const isH = detTab === 'request' ? reqF.html : resF.html;
                           return isH ? <div dangerouslySetInnerHTML={{ __html: ct }} /> : ct;
                         })()}
                       </div>
+                      )}
                     </div>
                   )}
                 </div>

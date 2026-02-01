@@ -1,0 +1,3378 @@
+(function(){
+ function _nullishCoalesce(lhs, rhsFn) { if (lhs != null) { return lhs; } else { return rhsFn(); } } function _optionalChain(ops) { let lastAccessLHS = undefined; let value = ops[0]; let i = 1; while (i < ops.length) { const op = ops[i]; const fn = ops[i + 1]; i += 2; if ((op === 'optionalAccess' || op === 'optionalCall') && value == null) { return undefined; } if (op === 'access' || op === 'optionalAccess') { lastAccessLHS = value; value = fn(value); } else if (op === 'call' || op === 'optionalCall') { value = fn((...args) => value.call(lastAccessLHS, ...args)); lastAccessLHS = undefined; } } return value; }const { useState, useEffect, useRef } = React;
+
+const API = '';
+const WS_URL = 'ws://' + location.host + '/ws';
+
+const THEMES = window.BW_THEMES || {};
+
+// --- HTTPQL Parser ---
+const HTTPQL_REQ_FIELDS = ['method','host','path','port','ext','query','raw','len','tls'];
+const HTTPQL_RESP_FIELDS = ['code','raw','len'];
+const HTTPQL_STR_OPS = ['eq','ne','cont','ncont','like','nlike','regex','nregex'];
+const HTTPQL_NUM_OPS = ['eq','ne','gt','gte','lt','lte'];
+const HTTPQL_BOOL_OPS = ['eq','ne'];
+
+function httpqlTokenize(input) {
+  const tokens = [];
+  let i = 0;
+  while (i < input.length) {
+    if (/\s/.test(input[i])) { i++; continue; }
+    if (input[i] === '(') { tokens.push({ type: 'LPAREN', pos: i }); i++; continue; }
+    if (input[i] === ')') { tokens.push({ type: 'RPAREN', pos: i }); i++; continue; }
+    if (input[i] === ':') { tokens.push({ type: 'COLON', pos: i }); i++; continue; }
+    if (input[i] === '"') {
+      let s = '', j = i + 1, esc = false;
+      while (j < input.length) {
+        if (esc) { s += input[j]; esc = false; }
+        else if (input[j] === '\\') esc = true;
+        else if (input[j] === '"') break;
+        else s += input[j];
+        j++;
+      }
+      if (j >= input.length) return { tokens, error: 'Unterminated string at position ' + i };
+      tokens.push({ type: 'STRING', value: s, pos: i });
+      i = j + 1;
+      continue;
+    }
+    // Word: identifiers, dotted paths, numbers
+    const wordRe = /^[a-zA-Z0-9_.%*?\-\/&+=@:]+/;
+    const rest = input.slice(i);
+    const m = rest.match(wordRe);
+    if (m) {
+      const w = m[0];
+      // Check if it's a dotted comparison like req.method.eq:value — split on last colon
+      // Actually, handle colon as separate token if it separates field.op from value
+      // Parse word up to a colon that looks like operator:value
+      const colonIdx = w.indexOf(':');
+      let word = w;
+      if (colonIdx > 0) {
+        word = w.slice(0, colonIdx);
+        tokens.push({ type: 'IDENT', value: word, pos: i });
+        i += colonIdx;
+        continue; // colon will be picked up next iteration
+      }
+      const upper = word.toUpperCase();
+      if (upper === 'AND') tokens.push({ type: 'AND', pos: i });
+      else if (upper === 'OR') tokens.push({ type: 'OR', pos: i });
+      else tokens.push({ type: 'IDENT', value: word, pos: i });
+      i += word.length;
+      continue;
+    }
+    return { tokens, error: 'Unexpected character \'' + input[i] + '\' at position ' + i };
+  }
+  tokens.push({ type: 'EOF', pos: i });
+  return { tokens, error: null };
+}
+
+function httpqlParse(input) {
+  input = input.trim();
+  if (!input) return { ast: null, error: null };
+  const { tokens, error: tokErr } = httpqlTokenize(input);
+  if (tokErr) return { ast: null, error: tokErr };
+  let pos = 0;
+  const peek = () => tokens[pos] || { type: 'EOF' };
+  const advance = () => tokens[pos++];
+
+  function parseOr() {
+    let left = parseAnd();
+    while (peek().type === 'OR') {
+      advance();
+      const right = parseAnd();
+      if (left.type === 'or') { left.children.push(right); }
+      else { left = { type: 'or', children: [left, right] }; }
+    }
+    return left;
+  }
+
+  function parseAnd() {
+    let left = parseAtom();
+    while (true) {
+      const p = peek();
+      if (p.type === 'AND') { advance(); left = mergeAnd(left, parseAtom()); continue; }
+      // Implicit AND: next token starts a new clause
+      if (p.type === 'IDENT' || p.type === 'STRING' || p.type === 'LPAREN') {
+        left = mergeAnd(left, parseAtom());
+        continue;
+      }
+      break;
+    }
+    return left;
+  }
+
+  function mergeAnd(left, right) {
+    if (left.type === 'and') { left.children.push(right); return left; }
+    return { type: 'and', children: [left, right] };
+  }
+
+  function parseAtom() {
+    const tok = peek();
+    if (tok.type === 'LPAREN') {
+      advance();
+      const expr = parseOr();
+      if (peek().type !== 'RPAREN') throw new Error('Expected ) at position ' + peek().pos);
+      advance();
+      return expr;
+    }
+    if (tok.type === 'STRING') {
+      advance();
+      return { type: 'shorthand', value: tok.value };
+    }
+    if (tok.type === 'IDENT') {
+      const ident = tok.value;
+      advance();
+      // preset:value
+      if (ident === 'preset' && peek().type === 'COLON') {
+        advance();
+        const val = parseValue();
+        return { type: 'preset', name: val };
+      }
+      // namespace.field.operator:value
+      const parts = ident.split('.');
+      if (parts.length !== 3) throw new Error('Expected namespace.field.operator at position ' + tok.pos + ', got "' + ident + '"');
+      const [ns, field, op] = parts;
+      if (ns !== 'req' && ns !== 'resp') throw new Error('Unknown namespace "' + ns + '" at position ' + tok.pos);
+      const validFields = ns === 'req' ? HTTPQL_REQ_FIELDS : HTTPQL_RESP_FIELDS;
+      if (!validFields.includes(field)) throw new Error('Unknown field "' + ns + '.' + field + '" at position ' + tok.pos);
+      const isNum = ['port','len','code'].includes(field);
+      const isBool = field === 'tls';
+      const validOps = isBool ? HTTPQL_BOOL_OPS : isNum ? HTTPQL_NUM_OPS : HTTPQL_STR_OPS;
+      if (!validOps.includes(op)) throw new Error('Operator "' + op + '" not valid for ' + ns + '.' + field);
+      if (peek().type !== 'COLON') throw new Error('Expected : after ' + ident + ' at position ' + peek().pos);
+      advance();
+      const val = parseValue();
+      return { type: 'comparison', namespace: ns, field, operator: op, value: val };
+    }
+    throw new Error('Unexpected token at position ' + tok.pos);
+  }
+
+  function parseValue() {
+    const tok = peek();
+    if (tok.type === 'STRING') { advance(); return tok.value; }
+    if (tok.type === 'IDENT') { advance(); return tok.value; }
+    throw new Error('Expected value at position ' + tok.pos);
+  }
+
+  try {
+    const ast = parseOr();
+    if (peek().type !== 'EOF') throw new Error('Unexpected input at position ' + peek().pos);
+    return { ast, error: null };
+  } catch (e) {
+    return { ast: null, error: e.message };
+  }
+}
+
+// --- Diff Algorithm (LCS-based) ---
+function diffLines(textA, textB) {
+  const a = (textA || '').split('\n');
+  const b = (textB || '').split('\n');
+  const m = a.length, n = b.length;
+  // Fallback for very large texts
+  if (m > 5000 || n > 5000) {
+    const max = Math.max(m, n);
+    const result = [];
+    for (let i = 0; i < max; i++) {
+      const la = i < m ? a[i] : null;
+      const lb = i < n ? b[i] : null;
+      if (la === lb) result.push({ type: 'equal', lineA: la, lineB: lb });
+      else {
+        if (la !== null) result.push({ type: 'removed', lineA: la, lineB: null });
+        if (lb !== null) result.push({ type: 'added', lineA: null, lineB: lb });
+      }
+    }
+    return result;
+  }
+  const dp = Array.from({ length: m + 1 }, () => new Uint16Array(n + 1));
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]);
+  const result = [];
+  let i = m, j = n;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) {
+      result.push({ type: 'equal', lineA: a[i - 1], lineB: b[j - 1] });
+      i--; j--;
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      result.push({ type: 'added', lineA: null, lineB: b[--j] });
+    } else {
+      result.push({ type: 'removed', lineA: a[--i], lineB: null });
+    }
+  }
+  return result.reverse();
+}
+
+// --- Site Map Tree Builder ---
+function buildSiteTree(reqs) {
+  const tree = {};
+  for (const r of reqs) {
+    let origin, pathname;
+    try {
+      const u = new URL(r.url);
+      origin = u.origin;
+      pathname = u.pathname || '/';
+    } catch (e) {
+      origin = '(other)';
+      pathname = r.url || '/';
+    }
+    if (!tree[origin]) tree[origin] = { label: origin.replace(/^https?:\/\//, ''), children: {}, reqs: [], methods: new Set(), count: 0 };
+    const host = tree[origin];
+    host.count++;
+    host.methods.add(r.method);
+    const segs = pathname.split('/').filter(Boolean);
+    if (segs.length === 0) {
+      host.reqs.push(r);
+    } else {
+      let node = host;
+      for (let i = 0; i < segs.length; i++) {
+        const seg = '/' + segs[i];
+        if (!node.children[seg]) node.children[seg] = { label: seg, children: {}, reqs: [], methods: new Set(), count: 0 };
+        node = node.children[seg];
+        node.count++;
+        node.methods.add(r.method);
+      }
+      node.reqs.push(r);
+    }
+  }
+  return tree;
+}
+
+function collectNodeReqs(node) {
+  let all = [...node.reqs];
+  for (const child of Object.values(node.children)) {
+    all = all.concat(collectNodeReqs(child));
+  }
+  return all;
+}
+
+function Blackwire() {
+  // Estado principal
+  const [tab, setTab] = useState('projects');
+  const [prjs, setPrjs] = useState([]);
+  const [curPrj, setCurPrj] = useState(null);
+
+  // Estado del proxy
+  const [pxRun, setPxRun] = useState(false);
+  const [pxPort, setPxPort] = useState(8080);
+  const [pxMode, setPxMode] = useState('regular');
+  const [pxArgs, setPxArgs] = useState('');
+
+  // Estado de requests
+  const [reqs, setReqs] = useState([]);
+  const [selReq, setSelReq] = useState(null);
+  const [selReqFull, setSelReqFull] = useState(null);
+  const [detTab, setDetTab] = useState('request');
+  const [histSubTab, setHistSubTab] = useState('http'); // 'http' | 'ws' | 'sitemap'
+  const [smExpanded, setSmExpanded] = useState({});
+  const [smSelNode, setSmSelNode] = useState(null);
+
+  // Estado del Repeater
+  const [repReqs, setRepReqs] = useState([]);
+  const [selRep, setSelRep] = useState(null);
+  const [repM, setRepM] = useState('GET');
+  const [repU, setRepU] = useState('');
+  const [repH, setRepH] = useState('');
+  const [repB, setRepB] = useState('');
+  const [repBodyColor, setRepBodyColor] = useState(false);
+  const [repResp, setRepResp] = useState(null);
+  const [repRespBody, setRepRespBody] = useState('');
+
+  // Historial de navegación en Repeater
+  const [repHistory, setRepHistory] = useState([]);
+  const [repHistoryIndex, setRepHistoryIndex] = useState(-1);
+  const [repFollowRedirects, setRepFollowRedirects] = useState(false);
+
+  // Estado general
+  const [appReady, setAppReady] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [commits, setCommits] = useState([]);
+  const [cmtMsg, setCmtMsg] = useState('');
+  const [toasts, setToasts] = useState([]);
+  const [themeId, setThemeId] = useState('midnight');
+
+  // Filtros / HTTPQL
+  const [search, setSearch] = useState('');
+  const [savedOnly, setSavedOnly] = useState(false);
+  const [scopeOnly, setScopeOnly] = useState(false);
+  const [httpqlError, setHttpqlError] = useState(null);
+  const [presets, setPresets] = useState([]);
+  const [showPresets, setShowPresets] = useState(false);
+  const [presetName, setPresetName] = useState('');
+  const searchTimer = useRef(null);
+
+  // Intercept
+  const [intOn, setIntOn] = useState(false);
+  const [pending, setPending] = useState([]);
+  const [selPend, setSelPend] = useState(null);
+  const [editReq, setEditReq] = useState(null);
+
+  // Scope
+  const [scopeRules, setScopeRules] = useState([]);
+  const [newPat, setNewPat] = useState('');
+  const [newType, setNewType] = useState('include');
+
+  // Projects
+  const [showNew, setShowNew] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newDesc, setNewDesc] = useState('');
+
+  // Extensions
+  const [extensions, setExtensions] = useState([]);
+  const [whkReqs, setWhkReqs] = useState([]);
+  const [whkLoading, setWhkLoading] = useState(false);
+  const [whkApiKey, setWhkApiKey] = useState('');
+
+  // Webhook History (interactive tab)
+  const [selWhkReq, setSelWhkReq] = useState(null);
+  const [whkSearch, setWhkSearch] = useState('');
+  const [whkDetTab, setWhkDetTab] = useState('request');
+  const [whkReqFormat, setWhkReqFormat] = useState('raw');
+
+  // Formatos
+  const [reqFormat, setReqFormat] = useState('raw');
+  const [respFormat, setRespFormat] = useState('raw');
+
+  // Proxy Config
+  const [showProxyCfg, setShowProxyCfg] = useState(false);
+
+  // Menú contextual
+  const [contextMenu, setContextMenu] = useState(null);
+  const ctxMenuRef = useRef(null);
+
+  // Chepy
+  const [chepyIn, setChepyIn] = useState('');
+  const [chepyOps, setChepyOps] = useState([]);
+  const [chepyOut, setChepyOut] = useState('');
+  const [chepyErr, setChepyErr] = useState('');
+  const [chepyCat, setChepyCat] = useState({});
+  const [chepySelCat, setChepySelCat] = useState('');
+  const [chepyBaking, setChepyBaking] = useState(false);
+
+  // WebSocket Viewer
+  const [wsConns, setWsConns] = useState([]);
+  const [selWsConn, setSelWsConn] = useState(null);
+  const [wsFrames, setWsFrames] = useState([]);
+  const [selWsFrame, setSelWsFrame] = useState(null);
+  const [wsResendMsg, setWsResendMsg] = useState('');
+  const [wsResendResp, setWsResendResp] = useState(null);
+  const [wsSending, setWsSending] = useState(false);
+
+  // Collections
+  const [colls, setColls] = useState([]);
+  const [selColl, setSelColl] = useState(null);
+  const [collItems, setCollItems] = useState([]);
+  const [collVars, setCollVars] = useState({});
+  const [collStep, setCollStep] = useState(0);
+  const [collResps, setCollResps] = useState({});
+  const [collRunning, setCollRunning] = useState(false);
+  const [showCollPick, setShowCollPick] = useState(null);
+
+  // Compare
+  const [cmpA, setCmpA] = useState(null);
+  const [cmpB, setCmpB] = useState(null);
+  const [cmpView, setCmpView] = useState('request');
+
+  const wsRef = useRef(null);
+  const repBodyEditRef = useRef(null);
+  const repBodyCaretRef = useRef(null);
+  const webhookExt = extensions.find(e => e.name === 'webhook_site');
+
+  const getSelectedText = () => {
+    try {
+      const sel = window.getSelection();
+      if (!sel) return '';
+      return sel.toString().trim();
+    } catch (e) {
+      return '';
+    }
+  };
+
+  const toast = (m, t = 'info') => {
+    const id = Date.now();
+    setToasts(p => [...p, { id, message: m, type: t }]);
+    setTimeout(() => setToasts(p => p.filter(x => x.id !== id)), 3000);
+  };
+
+  const api = {
+    get: async u => (await fetch(API + u)).json(),
+    post: async (u, d) => (await fetch(API + u, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: d ? JSON.stringify(d) : undefined
+    })).json(),
+    put: async (u, d) => (await fetch(API + u, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: d ? JSON.stringify(d) : undefined
+    })).json(),
+    del: async u => (await fetch(API + u, { method: 'DELETE' })).json()
+  };
+
+  useEffect(() => {
+    Promise.all([loadPrjs(), loadCur()]).finally(() => setAppReady(true));
+    connectWs();
+    return () => _optionalChain([wsRef, 'access', _2 => _2.current, 'optionalAccess', _3 => _3.close, 'call', _4 => _4()]);
+  }, []);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('bw_theme');
+      if (saved && THEMES[saved]) setThemeId(saved);
+    } catch (e) {
+      // ignore storage errors
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('bw_theme', themeId);
+    } catch (e) {
+      // ignore storage errors
+    }
+  }, [themeId]);
+
+  useEffect(() => {
+    const handler = e => {
+      const selected = getSelectedText();
+      if (!selected) return;
+      if (e.defaultPrevented) return;
+      const target = e.target;
+      if (target && target.closest('input, textarea, [contenteditable="true"]')) return;
+      e.preventDefault();
+      setContextMenu({
+        x: e.clientX,
+        y: e.clientY,
+        source: 'selection',
+        request: { body: selected },
+        normalized: { id: 'selection', method: 'TEXT', url: '', headers: {}, body: selected, source: 'selection' }
+      });
+    };
+    document.addEventListener('contextmenu', handler);
+    return () => document.removeEventListener('contextmenu', handler);
+  }, []);
+
+  useEffect(() => {
+    if (!curPrj) return;
+    // Critical data in parallel
+    loadReqs();
+    Promise.all([loadRep(), loadScope(), checkPx()]).then(() => {
+      loadColls();
+      loadExts();
+    });
+    loadGit();
+  }, [curPrj]);
+
+  // Ctrl+S para auto-commits
+  useEffect(() => {
+    const handleKeyDown = e => {
+      if (e.ctrlKey && e.key === 's') {
+        e.preventDefault();
+        if (curPrj) {
+          autoCommit();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [curPrj]);
+
+  useEffect(() => {
+    const handleClick = () => setContextMenu(null);
+    if (contextMenu) {
+      window.addEventListener('click', handleClick);
+      // Reposicionar si el menú se sale del viewport
+      requestAnimationFrame(() => {
+        const el = ctxMenuRef.current;
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        let x = contextMenu.x;
+        let y = contextMenu.y;
+        if (x + rect.width > window.innerWidth) x = window.innerWidth - rect.width - 8;
+        if (y + rect.height > window.innerHeight) y = window.innerHeight - rect.height - 8;
+        if (x < 0) x = 8;
+        if (y < 0) y = 8;
+        if (x !== contextMenu.x || y !== contextMenu.y) {
+          el.style.left = x + 'px';
+          el.style.top = y + 'px';
+        }
+      });
+      return () => window.removeEventListener('click', handleClick);
+    }
+  }, [contextMenu]);
+
+  // Lazy-load full request detail when selected
+  useEffect(() => {
+    if (!selReq) { setSelReqFull(null); return; }
+    // If already has full data (e.g. from WS push or repeater), skip fetch
+    if (selReq.headers !== undefined) { setSelReqFull(selReq); return; }
+    let cancelled = false;
+    setSelReqFull(null);
+    api.get('/api/requests/' + selReq.id + '/detail').then(r => {
+      if (!cancelled && r.id) setSelReqFull(r);
+    });
+    return () => { cancelled = true; };
+  }, [_optionalChain([selReq, 'optionalAccess', _5 => _5.id])]);
+
+  // Close preset dropdown on outside click
+  useEffect(() => {
+    if (!showPresets) return;
+    const h = (e) => { if (!e.target.closest('.flt-preset-wrap')) setShowPresets(false); };
+    window.addEventListener('click', h, true);
+    return () => window.removeEventListener('click', h, true);
+  }, [showPresets]);
+
+  useEffect(() => {
+    if (tab === 'chepy' && Object.keys(chepyCat).length === 0) {
+      loadChepyOps();
+    }
+  }, [tab]);
+
+  useEffect(() => {
+    setWhkApiKey(_optionalChain([webhookExt, 'optionalAccess', _6 => _6.config, 'optionalAccess', _7 => _7.api_key]) || '');
+  }, [_optionalChain([webhookExt, 'optionalAccess', _8 => _8.config, 'optionalAccess', _9 => _9.api_key])]);
+
+  // Cargar webhook requests desde DB cuando el token esté disponible (persiste entre reinicios)
+  useEffect(() => {
+    if (!_optionalChain([webhookExt, 'optionalAccess', _10 => _10.enabled]) || !_optionalChain([webhookExt, 'optionalAccess', _11 => _11.config, 'optionalAccess', _12 => _12.token_id])) return;
+    loadWebhookLocal();
+  }, [_optionalChain([webhookExt, 'optionalAccess', _13 => _13.enabled]), _optionalChain([webhookExt, 'optionalAccess', _14 => _14.config, 'optionalAccess', _15 => _15.token_id])]);
+
+  // Auto-refresh desde webhook.site cuando estemos en las pestañas relevantes
+  useEffect(() => {
+    if (tab !== 'extensions' && tab !== 'webhook') return;
+    if (!_optionalChain([webhookExt, 'optionalAccess', _16 => _16.enabled]) || !_optionalChain([webhookExt, 'optionalAccess', _17 => _17.config, 'optionalAccess', _18 => _18.token_id])) return;
+    const id = setInterval(() => refreshWebhook(true), 15000);
+    return () => clearInterval(id);
+  }, [tab, _optionalChain([webhookExt, 'optionalAccess', _19 => _19.enabled]), _optionalChain([webhookExt, 'optionalAccess', _20 => _20.config, 'optionalAccess', _21 => _21.token_id])]);
+
+  // Debounced HTTPQL search
+  useEffect(() => {
+    if (!curPrj) return;
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    searchTimer.current = setTimeout(() => loadReqs(), 300);
+    return () => { if (searchTimer.current) clearTimeout(searchTimer.current); };
+  }, [search, savedOnly, scopeOnly]);
+
+  // Load presets when project changes
+  useEffect(() => {
+    if (curPrj) loadPresets();
+  }, [curPrj]);
+
+  const loadPresets = async () => {
+    try {
+      const r = await api.get('/api/filter-presets');
+      setPresets(Array.isArray(r) ? r : []);
+    } catch (e) { setPresets([]); }
+  };
+
+  const savePreset = async () => {
+    if (!presetName.trim() || !search.trim()) { toast('Enter a name and query', 'error'); return; }
+    const { ast, error } = httpqlParse(search);
+    if (error) { toast('Fix query errors first', 'error'); return; }
+    try {
+      const r = await api.post('/api/filter-presets', { name: presetName.trim(), query: search, ast });
+      if (r.error) { toast(r.error, 'error'); return; }
+      toast('Preset saved', 'success');
+      setPresetName('');
+      await loadPresets();
+    } catch (e) { toast('Failed to save preset', 'error'); }
+  };
+
+  const delPreset = async (id) => {
+    await api.del('/api/filter-presets/' + id);
+    await loadPresets();
+    toast('Preset deleted', 'success');
+  };
+
+  const applyPreset = (p) => {
+    setSearch(p.query);
+    setShowPresets(false);
+  };
+
+  const connectWs = () => {
+    const ws = new WebSocket(WS_URL);
+    ws.onmessage = e => {
+      const m = JSON.parse(e.data);
+      if (m.type === 'new_request') {
+        // If no active filter, prepend directly; otherwise re-fetch with current filters
+        if (!search && !savedOnly && !scopeOnly) setReqs(p => [m.data, ...p]);
+        else loadReqs();
+      }
+      if (m.type === 'intercept_new') setPending(p => [...p, m.data]);
+      if (m.type === 'intercept_status') setIntOn(m.enabled);
+      if (m.type === 'intercept_forwarded' || m.type === 'intercept_dropped')
+        setPending(p => p.filter(r => r.id !== m.request_id));
+      if (m.type === 'intercept_all_forwarded' || m.type === 'intercept_all_dropped')
+        setPending([]);
+    };
+    ws.onclose = () => setTimeout(connectWs, 3000);
+    wsRef.current = ws;
+  };
+
+  const loadPrjs = async () => setPrjs(await api.get('/api/projects'));
+
+  const loadCur = async () => {
+    const r = await api.get('/api/projects/current');
+    if (r.project) {
+      setCurPrj(r.project);
+      setIntOn(_optionalChain([r, 'access', _22 => _22.config, 'optionalAccess', _23 => _23.intercept_enabled]) || false);
+      setScopeRules(_optionalChain([r, 'access', _24 => _24.config, 'optionalAccess', _25 => _25.scope_rules]) || []);
+      setPxPort(_optionalChain([r, 'access', _26 => _26.config, 'optionalAccess', _27 => _27.proxy_port]) || 8080);
+      setPxMode(_optionalChain([r, 'access', _28 => _28.config, 'optionalAccess', _29 => _29.proxy_mode]) || 'regular');
+      setPxArgs(_optionalChain([r, 'access', _30 => _30.config, 'optionalAccess', _31 => _31.proxy_args]) || '');
+      setTab('history');
+    }
+  };
+
+  const loadReqs = async (query, ast) => {
+    const q = query !== undefined ? query : search;
+    const parsed = ast !== undefined ? ast : (q ? httpqlParse(q) : { ast: null, error: null });
+    if (parsed.error) { setHttpqlError(parsed.error); return; }
+    setHttpqlError(null);
+    try {
+      const body = { limit: 500, saved_only: savedOnly, in_scope_only: scopeOnly };
+      if (parsed.ast) { body.query = q; body.ast = parsed.ast; }
+      const r = await api.post('/api/requests/search', body);
+      if (r.error) { setHttpqlError(r.error); return; }
+      setReqs(Array.isArray(r) ? r : []);
+    } catch (e) {
+      setHttpqlError('Search failed');
+    }
+  };
+  const loadRep = async () => setRepReqs(await api.get('/api/repeater'));
+  const loadGit = async () => setCommits(await api.get('/api/git/history'));
+  const loadScope = async () => {
+    const r = await api.get('/api/scope');
+    setScopeRules(r.rules || []);
+  };
+  const loadExts = async () => {
+    const r = await api.get('/api/extensions');
+    setExtensions(r.extensions || []);
+  };
+  const checkPx = async () => {
+    const r = await api.get('/api/proxy/status');
+    setPxRun(r.running);
+    setIntOn(r.intercept_enabled);
+  };
+
+  const loadWebhookLocal = async () => {
+    if (!curPrj) return;
+    if (!_optionalChain([webhookExt, 'optionalAccess', _32 => _32.config, 'optionalAccess', _33 => _33.token_id])) {
+      setWhkReqs([]);
+      return;
+    }
+    const r = await api.get('/api/webhooksite/requests?limit=200');
+    setWhkReqs(r.requests || []);
+  };
+
+  const refreshWebhook = async (silent = false) => {
+    if (!_optionalChain([webhookExt, 'optionalAccess', _34 => _34.config, 'optionalAccess', _35 => _35.token_id])) {
+      if (!silent) toast('No webhook token', 'error');
+      return;
+    }
+    setWhkLoading(true);
+    try {
+      const r = await api.post('/api/webhooksite/refresh', { limit: 50 });
+      if (r.status === 'ok') {
+        await loadWebhookLocal();
+        if (!silent) toast('Webhook updated', 'success');
+      } else {
+        if (!silent) toast(r.detail || 'Webhook refresh failed', 'error');
+      }
+    } catch (e) {
+      if (!silent) toast('Webhook refresh failed', 'error');
+    }
+    setWhkLoading(false);
+  };
+
+  const createWebhookToken = async () => {
+    setWhkLoading(true);
+    try {
+      const r = await api.post('/api/webhooksite/token');
+      if (r.status === 'created') {
+        await loadExts();
+        await loadWebhookLocal();
+        toast('Webhook URL created', 'success');
+      } else {
+        toast(r.detail || 'Failed to create webhook', 'error');
+      }
+    } catch (e) {
+      toast('Failed to create webhook', 'error');
+    }
+    setWhkLoading(false);
+  };
+
+  const clearWebhookHistory = async () => {
+    await api.del('/api/webhooksite/requests');
+    setWhkReqs([]);
+    setSelWhkReq(null);
+    toast('Webhook history cleared', 'success');
+  };
+
+  const whkToRepeater = r => {
+    const hdrs = r.headers || {};
+    setRepM(r.method || 'GET');
+    setRepU(r.url || '');
+    setRepH(Object.entries(hdrs).map(([k, v]) => k + ': ' + v).join('\n'));
+    setRepB(r.content || '');
+    setTab('repeater');
+    toast('Sent to Repeater', 'success');
+  };
+
+  // whkContextAction removed - unified into handleContextAction
+
+  const filteredWhk = whkReqs.filter(r => {
+    if (whkSearch && !(r.url || '').toLowerCase().includes(whkSearch.toLowerCase()) &&
+        !(r.method || '').toLowerCase().includes(whkSearch.toLowerCase()) &&
+        !(r.ip || '').toLowerCase().includes(whkSearch.toLowerCase())) return false;
+    return true;
+  });
+
+  const selectPrj = async n => {
+    const r = await api.post('/api/projects/' + encodeURIComponent(n) + '/select');
+    if (r && r.status === 'selected') {
+      setCurPrj(n);
+      await loadCur();
+      setTab('history');
+      toast('Project: ' + n, 'success');
+    } else {
+      toast(_optionalChain([r, 'optionalAccess', _36 => _36.detail]) || 'Failed to select project', 'error');
+    }
+  };
+
+  const createPrj = async () => {
+    const name = newName.trim();
+    if (!name) return;
+    if (/[\\/]/.test(name)) {
+      toast('Project name cannot contain / or \\', 'error');
+      return;
+    }
+    const r = await api.post('/api/projects', { name, description: newDesc });
+    if (!r || r.status !== 'created') {
+      toast(_optionalChain([r, 'optionalAccess', _37 => _37.detail]) || 'Failed to create project', 'error');
+      return;
+    }
+    await loadPrjs();
+    await selectPrj(name);
+    setShowNew(false);
+    setNewName('');
+    setNewDesc('');
+    toast('Created', 'success');
+  };
+
+  const delPrj = async n => {
+    if (!confirm('Delete ' + n + '?')) return;
+    const r = await api.del('/api/projects/' + encodeURIComponent(n));
+    if (r && (r.status === 'deleted' || r.status === 'ok')) {
+      if (curPrj === n) setCurPrj(null);
+      await loadPrjs();
+      toast('Deleted', 'success');
+    } else {
+      toast(_optionalChain([r, 'optionalAccess', _38 => _38.detail]) || 'Failed to delete project', 'error');
+    }
+  };
+
+  const startPx = async () => {
+    setLoading(true);
+    const r = await api.post('/api/proxy/start?port=' + pxPort + '&mode=' + encodeURIComponent(pxMode) + '&extra=' + encodeURIComponent(pxArgs));
+    setLoading(false);
+    if (r.status === 'started' || r.status === 'already_running') {
+      setPxRun(true);
+      toast('Proxy started', 'success');
+    } else {
+      toast('Failed: ' + (r.error || 'unknown'), 'error');
+    }
+  };
+
+  const stopPx = async () => {
+    await api.post('/api/proxy/stop');
+    setPxRun(false);
+    toast('Stopped', 'success');
+  };
+
+  const launchBr = async () => {
+    const r = await api.post('/api/browser/launch?proxy_port=' + pxPort);
+    toast(r.status === 'launched' ? 'Browser launched' : 'Failed', 'success');
+  };
+
+  const togInt = async () => {
+    const r = await api.post('/api/intercept/toggle');
+    setIntOn(r.enabled);
+    toast('Intercept ' + (r.enabled ? 'ON' : 'OFF'), 'success');
+  };
+
+  const fwdReq = async (id, mod = null) => {
+    await api.post('/api/intercept/' + id + '/forward', mod);
+    setPending(p => p.filter(r => r.id !== id));
+    if (_optionalChain([selPend, 'optionalAccess', _39 => _39.id]) === id) setSelPend(null);
+  };
+
+  const dropReq = async id => {
+    await api.post('/api/intercept/' + id + '/drop');
+    setPending(p => p.filter(r => r.id !== id));
+    if (_optionalChain([selPend, 'optionalAccess', _40 => _40.id]) === id) setSelPend(null);
+  };
+
+  const fwdAll = async () => {
+    await api.post('/api/intercept/forward-all');
+    setPending([]);
+    setSelPend(null);
+  };
+
+  const dropAll = async () => {
+    await api.post('/api/intercept/drop-all');
+    setPending([]);
+    setSelPend(null);
+  };
+
+  const addRule = async () => {
+    if (!newPat.trim()) return;
+    await api.post('/api/scope/rules', { pattern: newPat, rule_type: newType });
+    await loadScope();
+    setNewPat('');
+    toast('Rule added', 'success');
+  };
+
+  const delRule = async id => {
+    await api.del('/api/scope/rules/' + id);
+    await loadScope();
+  };
+
+  const togRule = async id => {
+    await api.put('/api/scope/rules/' + id);
+    await loadScope();
+  };
+
+  // Pretty Print/Minify en Repeater
+  // Protobuf best-effort decoder (sin esquema)
+  const tryDecodeProtobuf = raw => {
+    try {
+      const bytes = typeof raw === 'string'
+        ? new Uint8Array([...raw].map(c => c.charCodeAt(0)))
+        : new Uint8Array(raw);
+      if (bytes.length < 2) return null;
+
+      const readVarint = (buf, offset) => {
+        let result = 0, shift = 0;
+        while (offset < buf.length) {
+          const b = buf[offset++];
+          result |= (b & 0x7f) << shift;
+          if ((b & 0x80) === 0) return { value: result, offset };
+          shift += 7;
+          if (shift > 35) return null;
+        }
+        return null;
+      };
+
+      const decodeFields = (buf, start, end) => {
+        const fields = [];
+        let pos = start;
+        while (pos < end) {
+          const tag = readVarint(buf, pos);
+          if (!tag || tag.value === 0) return null;
+          pos = tag.offset;
+          const fieldNum = tag.value >>> 3;
+          const wireType = tag.value & 0x7;
+          if (fieldNum < 1 || fieldNum > 536870911) return null;
+
+          if (wireType === 0) { // varint
+            const v = readVarint(buf, pos);
+            if (!v) return null;
+            pos = v.offset;
+            fields.push({ field: fieldNum, type: 'varint', value: v.value });
+          } else if (wireType === 2) { // length-delimited
+            const len = readVarint(buf, pos);
+            if (!len || len.value < 0 || pos + len.value > end) return null;
+            pos = len.offset;
+            const chunk = buf.slice(pos, pos + len.value);
+            pos += len.value;
+            // Intentar decodificar recursivamente como submensaje
+            const sub = decodeFields(buf, pos - len.value, pos);
+            if (sub && sub.length > 0) {
+              fields.push({ field: fieldNum, type: 'message', value: sub });
+            } else {
+              // Intentar como string UTF-8
+              try {
+                const str = new TextDecoder('utf-8', { fatal: true }).decode(chunk);
+                if (/^[\x20-\x7e\n\r\t]*$/.test(str) && str.length > 0) {
+                  fields.push({ field: fieldNum, type: 'string', value: str });
+                } else {
+                  fields.push({ field: fieldNum, type: 'bytes', value: Array.from(chunk).map(b => b.toString(16).padStart(2, '0')).join(' ') });
+                }
+              } catch (e3) {
+                fields.push({ field: fieldNum, type: 'bytes', value: Array.from(chunk).map(b => b.toString(16).padStart(2, '0')).join(' ') });
+              }
+            }
+          } else if (wireType === 5) { // 32-bit
+            if (pos + 4 > end) return null;
+            const v = new DataView(buf.buffer, buf.byteOffset + pos, 4);
+            fields.push({ field: fieldNum, type: 'fixed32', value: v.getFloat32(0, true) });
+            pos += 4;
+          } else if (wireType === 1) { // 64-bit
+            if (pos + 8 > end) return null;
+            const v = new DataView(buf.buffer, buf.byteOffset + pos, 8);
+            fields.push({ field: fieldNum, type: 'fixed64', value: v.getFloat64(0, true) });
+            pos += 8;
+          } else {
+            return null; // wire type desconocido
+          }
+        }
+        return fields.length > 0 ? fields : null;
+      };
+
+      const formatFields = (fields, indent = 0) => {
+        const pad = '  '.repeat(indent);
+        return fields.map(f => {
+          if (f.type === 'message') {
+            return pad + 'field ' + f.field + ' {' + '\n' + formatFields(f.value, indent + 1) + '\n' + pad + '}';
+          }
+          return pad + 'field ' + f.field + ' (' + f.type + '): ' + f.value;
+        }).join('\n');
+      };
+
+      const fields = decodeFields(bytes, 0, bytes.length);
+      if (fields && fields.length > 0) {
+        return '// Protobuf (best-effort decode)\n' + formatFields(fields);
+      }
+    } catch (e) {}
+    return null;
+  };
+
+  const prettyPrint = text => {
+    try {
+      const obj = JSON.parse(text);
+      return JSON.stringify(obj, null, 2);
+    } catch (e) {
+      try {
+        const parser = new DOMParser();
+        const xml = parser.parseFromString(text, 'text/xml');
+        if (xml.getElementsByTagName('parsererror').length === 0) {
+          return formatXml(new XMLSerializer().serializeToString(xml));
+        }
+      } catch (e2) {}
+    }
+    // Protobuf best-effort: intentar decodificar datos binarios
+    const proto = tryDecodeProtobuf(text);
+    if (proto) return proto;
+    return text;
+  };
+
+  const minify = text => {
+    try {
+      const obj = JSON.parse(text);
+      return JSON.stringify(obj);
+    } catch (e) {}
+    return text.replace(/\s+/g, ' ').trim();
+  };
+
+  const formatXml = xml => {
+    const PADDING = '  ';
+    const reg = /(>)(<)(\/*)/g;
+    let pad = 0;
+    xml = xml.replace(reg, '$1\n$2$3');
+    return xml.split('\n').map(node => {
+      let indent = 0;
+      if (node.match(/.+<\/\w[^>]*>$/)) {
+        indent = 0;
+      } else if (node.match(/^<\/\w/)) {
+        if (pad !== 0) pad -= 1;
+      } else if (node.match(/^<\w[^>]*[^\/]>.*$/)) {
+        indent = 1;
+      }
+      const padding = PADDING.repeat(pad);
+      pad += indent;
+      return padding + node;
+    }).join('\n');
+  };
+
+  // Chepy functions
+  const loadChepyOps = async () => {
+    const data = await api.get('/api/chepy/operations');
+    if (data.operations) {
+      setChepyCat(data.operations);
+      const cats = Object.keys(data.operations);
+      if (cats.length > 0 && !chepySelCat) setChepySelCat(cats[0]);
+    }
+  };
+
+  const addChepyOp = op => {
+    setChepyOps(prev => [...prev, {
+      name: op.name,
+      label: op.label,
+      args: Object.fromEntries((op.params || []).map(p => [p.name, p.default || ''])),
+      params: op.params || []
+    }]);
+  };
+
+  const removeChepyOp = index => {
+    setChepyOps(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const updateChepyArg = (index, argName, value) => {
+    setChepyOps(prev => prev.map((op, i) =>
+      i === index ? { ...op, args: { ...op.args, [argName]: value } } : op
+    ));
+  };
+
+  const moveChepyOp = (index, direction) => {
+    setChepyOps(prev => {
+      const arr = [...prev];
+      const target = index + direction;
+      if (target < 0 || target >= arr.length) return arr;
+      [arr[index], arr[target]] = [arr[target], arr[index]];
+      return arr;
+    });
+  };
+
+  const bakeChepy = async () => {
+    if (!chepyIn && chepyOps.length === 0) return;
+    setChepyBaking(true);
+    setChepyErr('');
+    try {
+      const data = await api.post('/api/chepy/bake', {
+        input: chepyIn,
+        operations: chepyOps.map(op => ({ name: op.name, args: op.args }))
+      });
+      if (data.error) {
+        setChepyErr(data.error);
+        setChepyOut('');
+      } else {
+        setChepyOut(data.output || '');
+      }
+    } catch (e) {
+      setChepyErr(String(e));
+    }
+    setChepyBaking(false);
+  };
+
+  const clearChepyRecipe = () => {
+    setChepyOps([]);
+    setChepyOut('');
+    setChepyErr('');
+  };
+
+  // WebSocket Viewer functions
+  const loadWsConns = async () => {
+    const data = await api.get('/api/websocket/connections');
+    setWsConns(Array.isArray(data) ? data : []);
+  };
+
+  const loadWsFrames = async url => {
+    setSelWsConn(url);
+    const data = await api.get('/api/websocket/frames?url=' + encodeURIComponent(url));
+    setWsFrames(Array.isArray(data) ? data : []);
+    setSelWsFrame(null);
+    setWsResendResp(null);
+  };
+
+  const selectWsFrame = f => {
+    setSelWsFrame(f);
+    setWsResendMsg(f.content || '');
+    setWsResendResp(null);
+  };
+
+  const resendWsFrame = async () => {
+    if (!selWsConn || !wsResendMsg) return;
+    setWsSending(true);
+    setWsResendResp(null);
+    const r = await api.post('/api/websocket/resend', { url: selWsConn, message: wsResendMsg });
+    setWsResendResp(r);
+    setWsSending(false);
+    if (r.error) toast('WS Error: ' + r.error, 'error');
+    else toast('Frame sent', 'success');
+  };
+
+  // Collections functions
+  const loadColls = async () => {
+    const data = await api.get('/api/collections');
+    setColls(Array.isArray(data) ? data : []);
+  };
+
+  const createColl = async () => {
+    const n = prompt('Collection name:');
+    if (!n) return;
+    const r = await api.post('/api/collections', { name: n });
+    await loadColls();
+    if (r.id) { setSelColl(r.id); loadCollItems(r.id); }
+    toast('Collection created', 'success');
+  };
+
+  const deleteColl = async id => {
+    if (!confirm('Delete collection?')) return;
+    await api.del('/api/collections/' + id);
+    if (selColl === id) { setSelColl(null); setCollItems([]); }
+    loadColls();
+    toast('Deleted', 'success');
+  };
+
+  const loadCollItems = async cid => {
+    setSelColl(cid);
+    const data = await api.get('/api/collections/' + cid + '/items');
+    setCollItems(Array.isArray(data) ? data : []);
+    setCollStep(0);
+    setCollVars({});
+    setCollResps({});
+  };
+
+  const addToCollection = async (collId, req) => {
+    const headers = req.headers || {};
+    await api.post('/api/collections/' + collId + '/items', {
+      method: req.method || 'GET',
+      url: req.url || '',
+      headers: typeof headers === 'string' ? {} : headers,
+      body: req.body || req.content || null,
+      var_extracts: []
+    });
+    if (selColl === collId) loadCollItems(collId);
+    toast('Added to collection', 'success');
+    setShowCollPick(null);
+  };
+
+  const deleteCollItem = async (cid, iid) => {
+    await api.del('/api/collections/' + cid + '/items/' + iid);
+    loadCollItems(cid);
+  };
+
+  const updateCollItemExtracts = async (cid, iid, extracts) => {
+    await api.put('/api/collections/' + cid + '/items/' + iid, { var_extracts: extracts });
+    loadCollItems(cid);
+  };
+
+  const executeCollStep = async () => {
+    if (!selColl || collStep >= collItems.length) return;
+    const item = collItems[collStep];
+    setCollRunning(true);
+    const r = await api.post('/api/collections/' + selColl + '/items/' + item.id + '/execute', { variables: collVars });
+    setCollRunning(false);
+    if (r.error) {
+      toast('Step failed: ' + r.error, 'error');
+      setCollResps(prev => ({ ...prev, [item.id]: r }));
+      return;
+    }
+    if (r.extracted_variables) {
+      setCollVars(prev => ({ ...prev, ...r.extracted_variables }));
+    }
+    setCollResps(prev => ({ ...prev, [item.id]: r }));
+    if (collStep < collItems.length - 1) {
+      setCollStep(prev => prev + 1);
+    }
+    toast('Step ' + (collStep + 1) + ' complete', 'success');
+  };
+
+  const resetCollRun = () => {
+    setCollStep(0);
+    setCollVars({});
+    setCollResps({});
+  };
+
+  // Historial de navegación en Repeater
+  const saveToHistory = (request, response) => {
+    const historyItem = {
+      method: request.method,
+      url: request.url,
+      headers: request.headers,
+      body: request.body,
+      response: response
+    };
+    setRepHistory(prev => {
+      const newHistory = prev.slice(0, repHistoryIndex + 1);
+      return [...newHistory, historyItem];
+    });
+    setRepHistoryIndex(prev => prev + 1);
+  };
+
+  const navigateHistory = direction => {
+    const newIndex = repHistoryIndex + direction;
+    if (newIndex >= 0 && newIndex < repHistory.length) {
+      const item = repHistory[newIndex];
+      setRepM(item.method);
+      setRepU(item.url);
+      setRepH(item.headers);
+      setRepB(item.body);
+      setRepResp(item.response);
+      setRepHistoryIndex(newIndex);
+    }
+  };
+
+  const sendRep = async () => {
+    setLoading(true);
+    setRepResp(null);
+    let h = {};
+    try {
+      repH.split('\n').forEach(l => {
+        const [k, ...v] = l.split(':');
+        if (k && v.length) h[k.trim()] = v.join(':').trim();
+      });
+    } catch (e) {}
+
+    // Auto-calcular Content-Length si hay body
+    if (repB) {
+      const len = new TextEncoder().encode(repB).length;
+      const clKey = Object.keys(h).find(k => k.toLowerCase() === 'content-length');
+      if (clKey) h[clKey] = String(len);
+      else h['Content-Length'] = String(len);
+    } else {
+      // Eliminar Content-Length si no hay body
+      const clKey = Object.keys(h).find(k => k.toLowerCase() === 'content-length');
+      if (clKey) delete h[clKey];
+    }
+
+    const requestData = { method: repM, url: repU, headers: h, body: repB };
+    const r = await api.post('/api/repeater/send-raw', { ...requestData, body: repB || null, follow_redirects: repFollowRedirects });
+    setRepResp(r);
+    setRepRespBody(r.body || '');
+    setLoading(false);
+
+    // Guardar en historial de navegación
+    saveToHistory(requestData, r);
+
+    // Auto-save: siempre guardar automáticamente
+    if (selRep) {
+      // Actualizar item existente con datos actuales y última respuesta
+      await api.put('/api/repeater/' + selRep, { method: repM, url: repU, headers: h, body: repB, last_response: r });
+      loadRep();
+    } else {
+      // Crear nuevo item automáticamente
+      let host = repU;
+      try { host = new URL(repU).host; } catch (e) {}
+      const autoName = repM + ' ' + host;
+      await api.post('/api/repeater', { name: autoName, method: repM, url: repU, headers: h, body: repB });
+      const items = await api.get('/api/repeater');
+      setRepReqs(items);
+      if (items.length > 0) setSelRep(items[0].id);
+    }
+  };
+
+  const followRedirect = async () => {
+    if (!repResp || !repResp.is_redirect || !repResp.redirect_url) return;
+    let nextUrl = repResp.redirect_url;
+    // Resolver URL relativa
+    try {
+      nextUrl = new URL(nextUrl, repU).href;
+    } catch (e) {}
+    setRepU(nextUrl);
+    setRepM('GET');
+    setLoading(true);
+    setRepResp(null);
+    let h = {};
+    try {
+      repH.split('\n').forEach(l => {
+        const [k, ...v] = l.split(':');
+        if (k && v.length) h[k.trim()] = v.join(':').trim();
+      });
+    } catch (e) {}
+    const requestData = { method: 'GET', url: nextUrl, headers: h, body: null };
+    const r = await api.post('/api/repeater/send-raw', { ...requestData, follow_redirects: false });
+    setRepResp(r);
+    setRepRespBody(r.body || '');
+    setLoading(false);
+    saveToHistory(requestData, r);
+  };
+
+  const toRep = r => {
+    setRepM(r.method);
+    setRepU(r.url);
+    setRepH(Object.entries(r.headers || {}).map(([k, v]) => k + ': ' + v).join('\n'));
+    setRepB(r.body || '');
+    setTab('repeater');
+    toast('Sent to Repeater', 'success');
+  };
+
+  const saveRep = async () => {
+    const n = prompt('Name:');
+    if (!n) return;
+    let h = {};
+    try {
+      repH.split('\n').forEach(l => {
+        const [k, ...v] = l.split(':');
+        if (k && v.length) h[k.trim()] = v.join(':').trim();
+      });
+    } catch (e) {}
+    await api.post('/api/repeater', { name: n, method: repM, url: repU, headers: h, body: repB });
+    loadRep();
+    toast('Saved', 'success');
+  };
+
+  const loadRepItem = r => {
+    setSelRep(r.id);
+    setRepM(r.method);
+    setRepU(r.url);
+    setRepH(Object.entries(r.headers || {}).map(([k, v]) => k + ': ' + v).join('\n'));
+    setRepB(r.body || '');
+    if (r.last_response) {
+      setRepResp(r.last_response);
+      setRepRespBody(r.last_response.body || '');
+    } else {
+      setRepResp(null);
+      setRepRespBody('');
+    }
+  };
+
+  const renameRepItem = async id => {
+    const item = repReqs.find(r => r.id === id);
+    if (!item) return;
+    const n = prompt('Rename:', item.name);
+    if (!n || n === item.name) return;
+    await api.put('/api/repeater/' + id, { name: n });
+    loadRep();
+    toast('Renamed', 'success');
+  };
+
+  const delRepItem = async id => {
+    await api.del('/api/repeater/' + id);
+    if (selRep === id) setSelRep(null);
+    loadRep();
+    toast('Deleted', 'success');
+  };
+
+  const commit = async () => {
+    if (!cmtMsg.trim()) return;
+    const r = await api.post('/api/git/commit?message=' + encodeURIComponent(cmtMsg));
+    if (r.status === 'committed') {
+      toast('Committed: ' + r.hash, 'success');
+      setCmtMsg('');
+      loadGit();
+    }
+  };
+
+  // Auto-commit con Ctrl+S
+  const autoCommit = async () => {
+    const msg = 'Auto-commit ' + new Date().toISOString();
+    const r = await api.post('/api/git/commit?message=' + encodeURIComponent(msg));
+    if (r.status === 'committed') {
+      toast('Auto-committed: ' + r.hash.substring(0, 7), 'success');
+      loadGit();
+    } else {
+      toast('No changes to commit', 'info');
+    }
+  };
+
+  const togSave = async id => {
+    await api.put('/api/requests/' + id + '/save');
+    loadReqs();
+  };
+
+  const delReq = async id => {
+    await api.del('/api/requests/' + id);
+    loadReqs();
+    if (_optionalChain([selReq, 'optionalAccess', _41 => _41.id]) === id) setSelReq(null);
+  };
+
+  const clearHist = async () => {
+    if (!confirm('Clear unsaved?')) return;
+    await api.del('/api/requests?keep_saved=true');
+    loadReqs();
+    toast('Cleared', 'success');
+  };
+
+  const togExtEnabled = async (name, enabled) => {
+    const ext = extensions.find(e => e.name === name);
+    if (!ext) return;
+    const newCfg = { ...ext.config, enabled };
+    await api.put('/api/extensions/' + name, newCfg);
+    loadExts();
+    toast('Extension ' + (enabled ? 'enabled' : 'disabled'), 'success');
+  };
+
+  const updateExtCfg = async (name, cfg) => {
+    await api.put('/api/extensions/' + name, cfg);
+    loadExts();
+    toast('Extension updated', 'success');
+  };
+
+  const saveProxyCfg = async () => {
+    if (!curPrj) return;
+    const r = await api.get('/api/projects/current');
+    if (!r.config) return;
+    r.config.proxy_port = pxPort;
+    r.config.proxy_mode = pxMode;
+    r.config.proxy_args = pxArgs;
+    await save_project_config(curPrj, r.config);
+    toast('Proxy config saved', 'success');
+    setShowProxyCfg(false);
+  };
+
+  const save_project_config = async (name, config) => {
+    await api.put('/api/projects/' + encodeURIComponent(name), config);
+  };
+
+  // ===== EXTENSION UI COMPONENTS =====
+
+  function MatchReplaceUI({ ext, updateExtCfg }) {
+    const rules = _optionalChain([ext, 'access', _42 => _42.config, 'optionalAccess', _43 => _43.rules]) || [];
+
+    const updateRule = (idx, field, value) => {
+      const newRules = rules.map((r, i) => i === idx ? { ...r, [field]: value } : r);
+      updateExtCfg(ext.name, { ...ext.config, rules: newRules });
+    };
+
+    const removeRule = idx => {
+      updateExtCfg(ext.name, { ...ext.config, rules: rules.filter((_, i) => i !== idx) });
+    };
+
+    const addRule = () => {
+      updateExtCfg(ext.name, { ...ext.config, rules: [...rules, {
+        enabled: true, when: 'request', target: 'url', pattern: '', replace: '', regex: false, ignore_case: false, header: ''
+      }]});
+    };
+
+    const duplicateRule = idx => {
+      const newRules = [...rules];
+      newRules.splice(idx + 1, 0, { ...rules[idx] });
+      updateExtCfg(ext.name, { ...ext.config, rules: newRules });
+    };
+
+    const whenColors = { request: 'var(--blue)', response: 'var(--green)', both: 'var(--orange)' };
+    const s = {
+      card: { background: 'var(--bg3)', border: '1px solid var(--brd)', borderRadius: '6px', padding: '12px', marginBottom: '8px', opacity: 1 },
+      cardOff: { background: 'var(--bg3)', border: '1px solid var(--brd)', borderRadius: '6px', padding: '12px', marginBottom: '8px', opacity: 0.5 },
+      row: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px' },
+      lastRow: { display: 'flex', gap: '8px', alignItems: 'center' },
+      label: { fontSize: '10px', color: 'var(--txt3)', marginBottom: '3px', display: 'block' },
+      sel: { background: 'var(--bg)', color: 'var(--txt)', border: '1px solid var(--brd)', borderRadius: '4px', padding: '4px 6px', fontSize: '11px', fontFamily: 'var(--font-mono)', outline: 'none' },
+      inp: { background: 'var(--bg)', color: 'var(--txt)', border: '1px solid var(--brd)', borderRadius: '4px', padding: '4px 8px', fontSize: '11px', fontFamily: 'var(--font-mono)', flex: 1, outline: 'none', width: '100%' },
+      badge: (color) => ({ fontSize: '9px', padding: '2px 6px', borderRadius: '3px', background: color, color: '#fff', fontWeight: '600', textTransform: 'uppercase' }),
+    };
+
+    return (
+      React.createElement('div', { style: { marginTop: '12px', paddingTop: '12px', borderTop: '1px solid var(--brd)' },}
+        , React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' },}
+          , React.createElement('div', { style: { fontSize: '12px', fontWeight: '600', color: 'var(--txt2)' },}, "Rules ("
+             , rules.length, ")"
+          )
+          , React.createElement('button', { className: "btn btn-sm btn-p"  , onClick: addRule,}, "+ Add Rule"  )
+        )
+
+        , rules.length === 0 && (
+          React.createElement('div', { style: { padding: '20px', textAlign: 'center', color: 'var(--txt3)', fontSize: '11px', background: 'var(--bg3)', borderRadius: '6px' },}, "No rules yet. Click \"+ Add Rule\" to create one."
+
+          )
+        )
+
+        , rules.map((rule, idx) => (
+          React.createElement('div', { key: idx, style: rule.enabled ? s.card : s.cardOff,}
+            /* Row 1: Enable + When + Target + Actions */
+            , React.createElement('div', { style: s.row,}
+              , React.createElement('input', { type: "checkbox", checked: rule.enabled, onChange: e => updateRule(idx, 'enabled', e.target.checked),
+                title: rule.enabled ? 'Disable rule' : 'Enable rule',} )
+              , React.createElement('span', { style: s.badge(whenColors[rule.when] || 'var(--txt3)'),}, "#", idx + 1)
+              , React.createElement('div', { style: { flex: 0 },}
+                , React.createElement('select', { style: s.sel, value: rule.when, onChange: e => updateRule(idx, 'when', e.target.value),}
+                  , React.createElement('option', { value: "request",}, "Request")
+                  , React.createElement('option', { value: "response",}, "Response")
+                  , React.createElement('option', { value: "both",}, "Both")
+                )
+              )
+              , React.createElement('div', { style: { flex: 0 },}
+                , React.createElement('select', { style: s.sel, value: rule.target, onChange: e => updateRule(idx, 'target', e.target.value),}
+                  , React.createElement('option', { value: "url",}, "URL")
+                  , React.createElement('option', { value: "headers",}, "Header")
+                  , React.createElement('option', { value: "body",}, "Body")
+                )
+              )
+              , rule.target === 'headers' && (
+                React.createElement('input', { style: { ...s.inp, maxWidth: '120px' }, value: rule.header || '', placeholder: "Header name" ,
+                  onChange: e => updateRule(idx, 'header', e.target.value), title: "Leave empty to match all headers"     ,} )
+              )
+              , React.createElement('div', { style: { marginLeft: 'auto', display: 'flex', gap: '4px' },}
+                , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: () => duplicateRule(idx), title: "Duplicate",}, "⧉")
+                , React.createElement('button', { className: "btn btn-sm btn-d"  , onClick: () => removeRule(idx), title: "Delete",}, "✕")
+              )
+            )
+
+            /* Row 2: Pattern → Replace */
+            , React.createElement('div', { style: s.lastRow,}
+              , React.createElement('div', { style: { flex: 1 },}
+                , React.createElement('label', { style: s.label,}, "Match")
+                , React.createElement('input', { style: s.inp, value: rule.pattern, placeholder: rule.regex ? '(regex)' : 'text to find',
+                  onChange: e => updateRule(idx, 'pattern', e.target.value),} )
+              )
+              , React.createElement('span', { style: { color: 'var(--txt3)', fontSize: '14px', marginTop: '14px' },}, "→")
+              , React.createElement('div', { style: { flex: 1 },}
+                , React.createElement('label', { style: s.label,}, "Replace")
+                , React.createElement('input', { style: s.inp, value: rule.replace, placeholder: "replacement",
+                  onChange: e => updateRule(idx, 'replace', e.target.value),} )
+              )
+              , React.createElement('div', { style: { display: 'flex', gap: '6px', marginTop: '14px' },}
+                , React.createElement('button', { className: 'btn btn-sm ' + (rule.regex ? 'btn-p' : 'btn-s'), onClick: () => updateRule(idx, 'regex', !rule.regex),
+                  title: "Regular expression" , style: { fontFamily: 'var(--font-mono)', fontSize: '10px' },}, ".*")
+                , React.createElement('button', { className: 'btn btn-sm ' + (rule.ignore_case ? 'btn-p' : 'btn-s'), onClick: () => updateRule(idx, 'ignore_case', !rule.ignore_case),
+                  title: "Ignore case" , style: { fontFamily: 'var(--font-mono)', fontSize: '10px' },}, "Aa")
+              )
+            )
+          )
+        ))
+      )
+    );
+  }
+
+  function WebhookSiteUI({ ext, updateExtCfg, whkReqs, whkApiKey, setWhkApiKey, whkLoading, createWebhookToken, refreshWebhook, loadWebhookLocal, toast }) {
+    return (
+      React.createElement('div', { style: { marginTop: '12px', paddingTop: '12px', borderTop: '1px solid var(--brd)' },}
+        , React.createElement('div', { style: { fontSize: '12px', fontWeight: '600', marginBottom: '8px', color: 'var(--txt2)' },}, "Webhook.site")
+        , React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px' },}
+          , React.createElement('div', null
+            , React.createElement('label', { style: { display: 'block', fontSize: '11px', color: 'var(--txt2)', marginBottom: '6px' },}, "API Key (optional)"  )
+            , React.createElement('div', { style: { display: 'flex', gap: '8px' },}
+              , React.createElement('input', { className: "inp", type: "password", placeholder: "Api-Key", value: whkApiKey, onChange: e => setWhkApiKey(e.target.value),} )
+              , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: () => updateExtCfg(ext.name, { ...ext.config, api_key: whkApiKey }),}, "Save")
+            )
+          )
+          , React.createElement('div', null
+            , React.createElement('label', { style: { display: 'block', fontSize: '11px', color: 'var(--txt2)', marginBottom: '6px' },}, "Webhook URL" )
+            , React.createElement('div', { style: { display: 'flex', gap: '8px' },}
+              , React.createElement('input', { className: "inp", readOnly: true, value: _optionalChain([ext, 'access', _44 => _44.config, 'optionalAccess', _45 => _45.token_url]) || '', placeholder: "Create a webhook URL"   ,} )
+              , React.createElement('button', { className: "btn btn-sm btn-s"  , disabled: !_optionalChain([ext, 'access', _46 => _46.config, 'optionalAccess', _47 => _47.token_url]), onClick: () => {
+                navigator.clipboard.writeText(ext.config.token_url);
+                toast('Copied', 'success');
+              },}, "Copy")
+            )
+          )
+          , React.createElement('div', { style: { display: 'flex', gap: '8px' },}
+            , React.createElement('button', { className: "btn btn-sm btn-p"  , onClick: createWebhookToken, disabled: whkLoading,}
+              , _optionalChain([ext, 'access', _48 => _48.config, 'optionalAccess', _49 => _49.token_id]) ? 'Regenerate URL' : 'Create URL'
+            )
+            , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: () => refreshWebhook(), disabled: !_optionalChain([ext, 'access', _50 => _50.config, 'optionalAccess', _51 => _51.token_id]) || whkLoading,}, "Sync Now" )
+          )
+          , React.createElement('div', { style: { marginTop: '6px' },}
+            , React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' },}
+              , React.createElement('div', { style: { fontSize: '11px', color: 'var(--txt2)' },}, "Local history" )
+              , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: loadWebhookLocal, disabled: !_optionalChain([ext, 'access', _52 => _52.config, 'optionalAccess', _53 => _53.token_id]),}, "Reload")
+            )
+            , React.createElement('div', { style: { border: '1px solid var(--brd)', borderRadius: '6px', overflow: 'auto', maxHeight: '220px' },}
+              , whkReqs.length === 0 && (
+                React.createElement('div', { style: { padding: '10px', fontSize: '11px', color: 'var(--txt3)', textAlign: 'center' },}, "No requests yet"
+
+                )
+              )
+              , whkReqs.map(r => (
+                React.createElement('div', { key: r.request_id, style: { display: 'grid', gridTemplateColumns: '60px 1fr 120px 140px', gap: '8px', padding: '8px 10px', borderBottom: '1px solid var(--brd)', fontSize: '11px', fontFamily: 'var(--font-mono)' },}
+                  , React.createElement('span', { className: 'mth mth-' + (r.method || 'GET'),}, r.method || 'GET')
+                  , React.createElement('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },}, r.url || r.path || '-')
+                  , React.createElement('span', { style: { color: 'var(--txt2)' },}, r.ip || '-')
+                  , React.createElement('span', { style: { color: 'var(--txt3)' },}, r.created_at || '')
+                )
+              ))
+            )
+          )
+        )
+      )
+    );
+  }
+
+  // Registry de componentes de extensión
+  const EXTENSION_COMPONENTS = {
+    'match_replace': MatchReplaceUI,
+    'webhook_site': WebhookSiteUI,
+  };
+
+  const syntaxHighlightJSON = json => {
+    json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, match => {
+      let cls = 'json-number';
+      if (/^"/.test(match)) {
+        if (/:$/.test(match)) {
+          cls = 'json-key';
+        } else {
+          cls = 'json-string';
+        }
+      } else if (/true|false/.test(match)) {
+        cls = 'json-bool';
+      } else if (/null/.test(match)) {
+        cls = 'json-null';
+      }
+      return '<span class="' + cls + '">' + match + '</span>';
+    });
+  };
+
+  const syntaxHighlightXML = xml => {
+    const esc = xml.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return esc
+      .replace(/(&lt;\/?)([\w:.-]+)/g, '$1<span class="json-key">$2</span>')
+      .replace(/([\w:.-]+)(=)(&quot;|")/g, '<span class="json-bool">$1</span>$2$3')
+      .replace(/(&quot;|")(.*?)(&quot;|")/g, '$1<span class="json-string">$2</span>$3')
+      .replace(/(&lt;!--.*?--&gt;)/g, '<span class="json-null">$1</span>');
+  };
+
+  const syntaxHighlightProto = text => {
+    const esc = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return esc
+      .replace(/^(\/\/.*)/gm, '<span class="json-null">$1</span>')
+      .replace(/(field \d+)/g, '<span class="json-key">$1</span>')
+      .replace(/\((varint|string|bytes|message|fixed32|fixed64)\)/g, '(<span class="json-bool">$1</span>)')
+      .replace(/: (.+)$/gm, (m, val) => {
+        if (/^\d+(\.\d+)?$/.test(val)) return ': <span class="json-number">' + val + '</span>';
+        return ': <span class="json-string">' + val + '</span>';
+      });
+  };
+
+  const escapeHtml = s => String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  const getCaretOffset = el => {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return null;
+    const range = sel.getRangeAt(0);
+    if (!el.contains(range.startContainer)) return null;
+    const pre = range.cloneRange();
+    pre.selectNodeContents(el);
+    pre.setEnd(range.startContainer, range.startOffset);
+    return pre.toString().length;
+  };
+
+  const setCaretOffset = (el, offset) => {
+    if (offset == null) return;
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
+    let node;
+    let remaining = offset;
+    while ((node = walker.nextNode())) {
+      const len = node.textContent.length;
+      if (remaining <= len) {
+        const range = document.createRange();
+        range.setStart(node, remaining);
+        range.collapse(true);
+        const sel = window.getSelection();
+        if (!sel) return;
+        sel.removeAllRanges();
+        sel.addRange(range);
+        return;
+      }
+      remaining -= len;
+    }
+  };
+
+  // Colorea cualquier body inteligentemente (JSON, XML, protobuf, texto plano)
+  const colorizeBody = text => {
+    if (!text) return { text: text, html: false };
+    // JSON
+    try {
+      JSON.parse(text);
+      return { text: syntaxHighlightJSON(text), html: true };
+    } catch (e) {}
+    // XML
+    try {
+      const parser = new DOMParser();
+      const xml = parser.parseFromString(text, 'text/xml');
+      if (xml.getElementsByTagName('parsererror').length === 0 && text.trim().startsWith('<')) {
+        return { text: syntaxHighlightXML(text), html: true };
+      }
+    } catch (e) {}
+    // Protobuf best-effort output
+    if (text.includes('// Protobuf') && text.includes('field ')) {
+      return { text: syntaxHighlightProto(text), html: true };
+    }
+    return { text: text, html: false };
+  };
+
+  const formatBody = (body, format) => {
+    if (!body) return { text: body, html: false };
+    if (format === 'pretty') {
+      try {
+        const obj = JSON.parse(body);
+        const formatted = JSON.stringify(obj, null, 2);
+        return { text: syntaxHighlightJSON(formatted), html: true };
+      } catch (e) {
+        // XML pretty
+        try {
+          const parser = new DOMParser();
+          const xml = parser.parseFromString(body, 'text/xml');
+          if (xml.getElementsByTagName('parsererror').length === 0 && body.trim().startsWith('<')) {
+            const formatted = formatXml(new XMLSerializer().serializeToString(xml));
+            return { text: syntaxHighlightXML(formatted), html: true };
+          }
+        } catch (e2) {}
+        // Protobuf best-effort
+        const proto = tryDecodeProtobuf(body);
+        if (proto) return { text: syntaxHighlightProto(proto), html: true };
+      }
+    }
+    // Siempre intentar colorear, incluso en raw
+    return colorizeBody(body);
+  };
+
+  const handleRepBodyInput = () => {
+    const el = repBodyEditRef.current;
+    if (!el) return;
+    repBodyCaretRef.current = getCaretOffset(el);
+    const text = el.textContent || '';
+    setRepB(text);
+  };
+
+  useEffect(() => {
+    if (!repBodyColor) return;
+    const el = repBodyEditRef.current;
+    if (!el) return;
+    const bodyFmt = formatBody(repB || '', 'pretty');
+    const html = bodyFmt.html ? bodyFmt.text : escapeHtml(bodyFmt.text || '');
+    if (el.innerHTML !== html) el.innerHTML = html;
+    if (repBodyCaretRef.current != null) setCaretOffset(el, repBodyCaretRef.current);
+  }, [repB, repBodyColor]);
+
+  // Menú contextual
+  // Unified context menu
+  const normalizeRequest = (req, source) => {
+    if (source === 'webhook') {
+      return { id: req.request_id, method: req.method || 'GET', url: req.url || '',
+        headers: req.headers || {}, body: req.content || null, source: 'webhook' };
+    }
+    if (source === 'repeater') {
+      return { id: req.id, method: req.method, url: req.url,
+        headers: req.headers || {}, body: req.body || null, name: req.name, source: 'repeater' };
+    }
+    if (source === 'websocket') {
+      return { id: req.id, method: 'WS', url: req.url || '',
+        headers: {}, body: req.content || req.body || null, source: 'websocket' };
+    }
+    if (source === 'collection') {
+      return { id: req.id, method: req.method, url: req.url,
+        headers: req.headers || {}, body: req.body || null, source: 'collection' };
+    }
+    if (source === 'intercept') {
+      return { id: req.id, method: req.method, url: req.url,
+        headers: req.headers || {}, body: req.body || null, source: 'intercept' };
+    }
+    if (source === 'selection') {
+      return { id: 'selection', method: 'TEXT', url: '', headers: {}, body: req.body || '', source: 'selection' };
+    }
+    return { id: req.id, method: req.method, url: req.url,
+      headers: req.headers || {}, body: req.body || null, saved: req.saved, source: 'history' };
+  };
+
+  const showContextMenu = (e, req, source) => {
+    e.preventDefault();
+    const norm = normalizeRequest(req, source || 'history');
+    setContextMenu({ x: e.clientX, y: e.clientY, request: req, source: source || 'history', normalized: norm });
+  };
+
+  const addScopeFromRequest = async ruleType => {
+    const norm = _optionalChain([contextMenu, 'optionalAccess', _54 => _54.normalized]);
+    if (!norm || !norm.url) {
+      toast('No URL', 'error');
+      return;
+    }
+    let host = '';
+    try {
+      host = new URL(norm.url).host;
+    } catch (e) {
+      try {
+        host = new URL('http://' + norm.url).host;
+      } catch (e2) {}
+    }
+    if (!host) {
+      toast('Invalid URL', 'error');
+      return;
+    }
+    await api.post('/api/scope/rules', { pattern: host, rule_type: ruleType });
+    await loadScope();
+    toast((ruleType === 'include' ? 'Included ' : 'Excluded ') + host, 'success');
+  };
+
+  const handleContextAction = async action => {
+    if (!contextMenu) return;
+    let norm = contextMenu.normalized;
+    const req = contextMenu.request;
+    const source = contextMenu.source;
+    setContextMenu(null);
+    // For history list items, fetch full detail on demand for actions needing body/headers
+    const needsFull = ['repeater','copy-curl','copy-body','send-to-cipher','compare-a','compare-b','add-to-collection'];
+    if (source === 'history' && needsFull.includes(action) && !norm.headers) {
+      try {
+        const full = await api.get('/api/requests/' + req.id + '/detail');
+        norm = { ...norm, headers: full.headers || {}, body: full.body || null };
+        req.response_status = full.response_status;
+        req.response_headers = full.response_headers;
+        req.response_body = full.response_body;
+      } catch (e) { toast('Failed to load request', 'error'); return; }
+    }
+    switch (action) {
+      case 'repeater':
+        toRep({ method: norm.method, url: norm.url, headers: norm.headers, body: norm.body });
+        break;
+      case 'favorite':
+        if (source === 'history' && req.id) await togSave(req.id);
+        break;
+      case 'copy-url':
+        navigator.clipboard.writeText(norm.url);
+        toast('URL copied', 'success');
+        break;
+      case 'copy-curl':
+        navigator.clipboard.writeText(generateCurl(norm));
+        toast('cURL copied', 'success');
+        break;
+      case 'copy-body':
+        navigator.clipboard.writeText(norm.body || '');
+        toast('Body copied', 'success');
+        break;
+      case 'send-to-cipher':
+        if (norm.body) {
+          setChepyIn(norm.body);
+          setTab('chepy');
+          toast('Sent to Cipher', 'success');
+        } else {
+          toast('No text selected', 'error');
+        }
+        break;
+      case 'add-to-collection':
+        setShowCollPick(norm);
+        break;
+      case 'scope-include':
+        await addScopeFromRequest('include');
+        break;
+      case 'scope-exclude':
+        await addScopeFromRequest('exclude');
+        break;
+      case 'rename':
+        if (source === 'repeater') renameRepItem(req.id);
+        break;
+      case 'delete':
+        if (source === 'history') await delReq(req.id);
+        else if (source === 'repeater') await delRepItem(req.id);
+        break;
+      case 'compare-a':
+        setCmpA({ method: norm.method, url: norm.url, headers: norm.headers, body: norm.body,
+          response_status: req.response_status || null, response_headers: req.response_headers || null, response_body: req.response_body || null });
+        setTab('compare');
+        toast('Loaded into Compare A', 'success');
+        break;
+      case 'compare-b':
+        setCmpB({ method: norm.method, url: norm.url, headers: norm.headers, body: norm.body,
+          response_status: req.response_status || null, response_headers: req.response_headers || null, response_body: req.response_body || null });
+        setTab('compare');
+        toast('Loaded into Compare B', 'success');
+        break;
+    }
+  };
+
+  const generateCurl = req => {
+    let curl = 'curl -X ' + req.method + " '" + req.url + "'";
+    if (req.headers) {
+      Object.entries(req.headers).forEach(([k, v]) => {
+        curl += " -H '" + k + ': ' + v + "'";
+      });
+    }
+    if (req.body) {
+      curl += " -d '" + req.body.replace(/'/g, "'\\''") + "'";
+    }
+    return curl;
+  };
+
+  const filtered = reqs;
+
+  const stCls = s => !s ? '' : s < 300 ? 'st2' : s < 400 ? 'st3' : s < 500 ? 'st4' : 'st5';
+  const fmtTime = t => t ? new Date(t).toLocaleTimeString('en-US', { hour12: false }) : '';
+  const fmtH = h => h ? Object.entries(h).map(([k, v]) => k + ': ' + (Array.isArray(v) ? v.join(', ') : v)).join('\n') : '';
+
+  const buildCmpText = (req, view) => {
+    if (!req) return '';
+    if (view === 'request') {
+      return req.method + ' ' + req.url + '\n' + fmtH(req.headers) + (req.body ? '\n\n' + req.body : '');
+    }
+    return 'HTTP ' + (req.response_status || '(no response)') + '\n' + fmtH(req.response_headers) + '\n\n' + (req.response_body || '');
+  };
+
+  const cmpDiff = React.useMemo(() => {
+    if (!cmpA && !cmpB) return [];
+    return diffLines(buildCmpText(cmpA, cmpView), buildCmpText(cmpB, cmpView));
+  }, [cmpA, cmpB, cmpView]);
+
+  const siteTree = React.useMemo(() => buildSiteTree(reqs), [reqs]);
+  const smNodeReqs = React.useMemo(() => smSelNode ? collectNodeReqs(smSelNode) : [], [smSelNode, reqs]);
+
+  const toggleSmNode = (key) => setSmExpanded(p => ({ ...p, [key]: !p[key] }));
+
+  const renderTreeNode = (key, node, depth, parentKey) => {
+    const fullKey = parentKey ? parentKey + key : key;
+    const expanded = !!smExpanded[fullKey];
+    const hasChildren = Object.keys(node.children).length > 0;
+    const isSelected = smSelNode === node;
+    const methods = [...node.methods].sort();
+    return (
+      React.createElement(React.Fragment, { key: fullKey,}
+        , React.createElement('div', {
+          className: 'sm-node' + (isSelected ? ' sel' : ''),
+          style: { paddingLeft: (depth * 16 + 8) + 'px' },
+          onClick: () => setSmSelNode(node),}
+
+          , React.createElement('span', { className: "sm-toggle", onClick: e => { e.stopPropagation(); if (hasChildren) toggleSmNode(fullKey); },}
+            , hasChildren ? (expanded ? '\u25BC' : '\u25B6') : '\u00B7'
+          )
+          , React.createElement('span', { className: "sm-label",}, node.label)
+          , React.createElement('span', { className: "sm-methods",}
+            , methods.map(m => React.createElement('span', { key: m, className: 'sm-mth mth-' + m,}, m))
+          )
+          , React.createElement('span', { className: "sm-badge",}, node.count)
+        )
+        , expanded && Object.entries(node.children)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([k, child]) => renderTreeNode(k, child, depth + 1, fullKey))
+      )
+    );
+  };
+
+  const themeVars = (THEMES[themeId] && THEMES[themeId].vars)
+    ? THEMES[themeId].vars
+    : (THEMES.midnight && THEMES.midnight.vars) ? THEMES.midnight.vars : {};
+
+  return (
+    React.createElement('div', { className: "app", style: themeVars,}
+      , React.createElement('style', { dangerouslySetInnerHTML: { __html: `
+:root{--bg:#0a0e14;--bg2:#0d1117;--bg3:#161b22;--bgh:#1f262d;--brd:#30363d;--txt:#e6edf3;--txt2:#8b949e;--txt3:#6e7681;--blue:#58a6ff;--green:#3fb950;--red:#f85149;--orange:#d29922;--purple:#a371f7;--cyan:#39c5cf;--font-main:"Inter",sans-serif;--font-mono:"JetBrains Mono",monospace}
+*{margin:0;padding:0;box-sizing:border-box}body{font-family:var(--font-main);background:var(--bg);color:var(--txt);overflow:hidden}
+.app{display:flex;flex-direction:column;height:100vh}
+.hdr{display:flex;align-items:center;justify-content:space-between;padding:10px 20px;background:var(--bg2);border-bottom:1px solid var(--brd)}
+.logo{display:flex;align-items:center;gap:10px}.logo-i{width:32px;height:32px;background:linear-gradient(135deg,var(--cyan),var(--purple));border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:700}
+.logo-t{font-family:var(--font-mono);font-size:18px;font-weight:600;background:linear-gradient(90deg,var(--cyan),var(--purple));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.prj-badge{background:var(--bg3);padding:4px 10px;border-radius:4px;font-size:11px;color:var(--cyan);border:1px solid var(--brd);margin-left:12px}
+.hdr-ctrl{display:flex;align-items:center;gap:10px}
+.int-tog{display:flex;align-items:center;gap:6px;padding:6px 12px;background:var(--bg3);border:1px solid var(--brd);border-radius:6px;font-size:11px;cursor:pointer}
+.int-tog.on{background:rgba(248,81,73,.2);border-color:var(--red)}.int-dot{width:8px;height:8px;border-radius:50%;background:var(--txt3)}
+.int-tog.on .int-dot{background:var(--red);animation:pulse 1s infinite}.pend-badge{background:var(--red);color:#fff;padding:1px 6px;border-radius:10px;font-size:10px;margin-left:4px}
+.prx-st{display:flex;align-items:center;gap:6px;padding:5px 10px;background:var(--bg3);border-radius:6px;font-family:var(--font-mono);font-size:11px}
+.st-dot{width:8px;height:8px;border-radius:50%}.st-dot.run{background:var(--green);animation:pulse 2s infinite}.st-dot.stop{background:var(--red)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+.btn{padding:6px 14px;border:none;border-radius:5px;font-size:12px;font-weight:500;cursor:pointer;display:inline-flex;align-items:center;gap:5px}
+.btn-p{background:var(--blue);color:#fff}.btn-s{background:var(--bg3);color:var(--txt);border:1px solid var(--brd)}.btn-d{background:var(--red);color:#fff}.btn-g{background:var(--green);color:#fff}
+.btn-sm{padding:3px 8px;font-size:11px}.btn-lg{padding:10px 20px;font-size:13px}.btn:disabled{opacity:.5}
+.tabs{display:flex;background:var(--bg2);border-bottom:1px solid var(--brd);padding:0 16px}
+.tab{padding:10px 18px;font-size:12px;font-weight:500;color:var(--txt2);cursor:pointer;border-bottom:2px solid transparent;display:flex;align-items:center;gap:5px}
+.tab:hover{color:var(--txt);background:var(--bg3)}.tab.act{color:var(--blue);border-bottom-color:var(--blue)}
+.tab-badge{background:var(--red);color:#fff;padding:1px 5px;border-radius:8px;font-size:9px}
+.main{flex:1;display:flex;overflow:hidden}
+.panel{display:flex;flex-direction:column;overflow:hidden}.pnl-hdr{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--bg2);border-bottom:1px solid var(--brd);font-size:12px;font-weight:500}
+.pnl-cnt{flex:1;overflow:auto}.hist-pnl{width:44%;border-right:1px solid var(--brd)}.det-pnl{flex:1;display:flex;flex-direction:column}
+.req-list{font-family:var(--font-mono);font-size:11px}.req-item{display:grid;grid-template-columns:60px 1fr 60px 55px;gap:10px;padding:8px 14px;border-bottom:1px solid var(--brd);cursor:pointer;align-items:center}
+.req-item:hover{background:var(--bgh)}.req-item.sel{background:var(--bg3);border-left:3px solid var(--blue)}.req-item.out{opacity:.4}
+.mth{font-weight:600;padding:2px 6px;border-radius:3px;text-align:center;font-size:10px}
+.mth-GET{background:rgba(63,185,80,.15);color:var(--green)}.mth-POST{background:rgba(88,166,255,.15);color:var(--blue)}
+.mth-PUT,.mth-PATCH{background:rgba(210,153,34,.15);color:var(--orange)}.mth-DELETE{background:rgba(248,81,73,.15);color:var(--red)}
+.url{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.sts{font-weight:500}
+.st2{color:var(--green)}.st3{color:var(--blue)}.st4{color:var(--orange)}.st5{color:var(--red)}.ts{color:var(--txt3);font-size:10px}
+.det-tabs{display:flex;background:var(--bg2);border-bottom:1px solid var(--brd);padding:0 10px}
+.det-tab{padding:8px 14px;font-size:11px;color:var(--txt2);cursor:pointer;border-bottom:2px solid transparent}
+.det-tab.act{color:var(--cyan);border-bottom-color:var(--cyan)}
+.hist-wrap{display:flex;flex-direction:column;width:100%;height:100%}
+.hist-content{display:flex;flex:1;overflow:hidden}
+.hist-sub-tabs{display:flex;width:100%;background:var(--bg2);border-bottom:1px solid var(--brd);padding:0 16px;flex-shrink:0}
+.hist-sub-tab{padding:7px 16px;font-size:11px;font-weight:600;color:var(--txt3);cursor:pointer;border-bottom:2px solid transparent;text-transform:uppercase;letter-spacing:.5px}
+.hist-sub-tab:hover{color:var(--txt);background:var(--bg3)}.hist-sub-tab.act{color:var(--cyan);border-bottom-color:var(--cyan)}
+.code{flex:1;padding:14px;font-family:var(--font-mono);font-size:11px;line-height:1.5;background:var(--bg);overflow:auto;white-space:pre-wrap;word-break:break-all}
+.json-key{color:var(--cyan)}.json-string{color:var(--green)}.json-number{color:var(--orange)}.json-bool{color:var(--purple)}.json-null{color:var(--txt3)}
+.flt-bar{display:flex;align-items:center;gap:6px;padding:6px 14px;background:var(--bg3);border-bottom:1px solid var(--brd)}
+.flt-in-wrap{flex:1;position:relative}
+.flt-in{width:100%;padding:5px 8px;background:var(--bg2);border:1px solid var(--brd);border-radius:4px;color:var(--txt);font-size:11px;font-family:var(--font-mono);outline:none}
+.flt-in:focus{border-color:var(--blue)}.flt-in.flt-err{border-color:var(--red);background:rgba(248,81,73,.08)}
+.flt-err-msg{position:absolute;top:100%;left:0;margin-top:4px;padding:4px 8px;background:var(--bg2);border:1px solid var(--red);border-radius:4px;font-size:10px;color:var(--red);white-space:nowrap;z-index:100}
+.flt-tog{padding:3px 8px;background:var(--bg2);border:1px solid var(--brd);border-radius:4px;font-size:10px;cursor:pointer;user-select:none}.flt-tog.act{background:var(--blue);border-color:var(--blue)}
+.flt-preset-dd{position:absolute;top:100%;right:0;margin-top:4px;min-width:300px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;z-index:200;box-shadow:0 8px 24px rgba(0,0,0,.4);max-height:300px;overflow-y:auto}
+.flt-preset-save{display:flex;gap:4px;padding:8px;border-bottom:1px solid var(--brd)}.flt-preset-save .flt-in{flex:1}
+.flt-preset-empty{padding:12px;text-align:center;color:var(--txt3);font-size:11px}
+.flt-preset-item{display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid var(--brd);cursor:pointer}.flt-preset-item:hover{background:var(--bg3)}
+.flt-preset-name-label{font-weight:600;font-size:11px;color:var(--cyan);white-space:nowrap}
+.flt-preset-q{flex:1;font-size:10px;color:var(--txt3);font-family:var(--font-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.flt-preset-del{padding:1px 5px!important;font-size:10px!important;min-width:auto}
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--txt3);font-size:13px;gap:6px}.empty-i{font-size:40px;opacity:.3}
+.acts{display:flex;gap:6px}
+.prj-pnl{padding:24px;max-width:800px;margin:0 auto;width:100%}.prj-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}.prj-hdr h2{font-size:18px}
+.new-prj{background:var(--bg2);padding:16px;border-radius:8px;margin-bottom:16px;display:flex;flex-direction:column;gap:10px}
+.inp{padding:8px 12px;background:var(--bg3);border:1px solid var(--brd);border-radius:5px;color:var(--txt);font-size:12px;outline:none}.inp:focus{border-color:var(--blue)}
+.form-acts{display:flex;gap:10px}.prj-list{display:flex;flex-direction:column;gap:10px}
+.prj-card{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;background:var(--bg2);border:1px solid var(--brd);border-radius:8px;cursor:pointer}
+.prj-card:hover{background:var(--bg3);border-color:var(--blue)}.prj-card.cur{border-color:var(--cyan)}
+.prj-name{font-weight:600;font-size:14px;margin-bottom:3px}.cur-badge{background:var(--cyan);color:#000;padding:1px 6px;border-radius:3px;font-size:9px;margin-left:6px}
+.prj-desc{color:var(--txt2);font-size:12px}.prj-date{color:var(--txt3);font-size:10px;margin-top:3px}
+.int-pnl{display:flex;flex-direction:column;width:100%;height:100%}.int-ctrl{display:flex;gap:10px;padding:14px;background:var(--bg2);border-bottom:1px solid var(--brd)}
+.int-cnt{display:flex;flex:1;overflow:hidden}.pend-list{width:280px;border-right:1px solid var(--brd);display:flex;flex-direction:column}
+.pend-item{display:flex;gap:10px;padding:10px 14px;border-bottom:1px solid var(--brd);cursor:pointer;align-items:center}
+.pend-item:hover{background:var(--bgh)}.pend-item.sel{background:var(--bg3);border-left:3px solid var(--orange)}
+.int-edit{flex:1;display:flex;flex-direction:column;overflow:hidden}.ed-row{display:flex;gap:10px;padding:10px 14px;background:var(--bg2);border-bottom:1px solid var(--brd)}
+.ed-ta{width:100%;padding:14px;background:var(--bg);border:none;border-bottom:1px solid var(--brd);color:var(--txt);font-family:var(--font-mono);font-size:11px;resize:none;outline:none;overflow:auto;min-height:0}
+.ed-ce{flex:1;padding:14px;background:var(--bg);border:none;border-bottom:1px solid var(--brd);color:var(--txt);font-family:var(--font-mono);font-size:11px;line-height:1.5;outline:none;overflow:auto;white-space:pre-wrap;word-break:break-all;tab-size:2}
+.overlay-ta::selection{background:rgba(88,166,255,.35)}
+.scp-pnl{padding:24px;max-width:700px;margin:0 auto;width:100%}.scp-hdr{margin-bottom:20px}.scp-hdr h3{font-size:16px;margin-bottom:6px}.scp-hdr p{color:var(--txt2);font-size:12px}
+.scp-form{display:flex;gap:10px;margin-bottom:20px}.sel{padding:8px 12px;background:var(--bg3);border:1px solid var(--brd);border-radius:5px;color:var(--txt);font-size:12px}
+.scp-rules{display:flex;flex-direction:column;gap:6px}.scp-rule{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px}
+.scp-rule.dis{opacity:.4}.rul-type{padding:3px 8px;border-radius:3px;font-size:10px;font-weight:600}
+.rul-inc{background:rgba(63,185,80,.15);color:var(--green)}.rul-exc{background:rgba(248,81,73,.15);color:var(--red)}
+.rul-pat{flex:1;font-family:var(--font-mono);font-size:12px}.rul-acts{display:flex;gap:6px}
+.rep-cnt{display:flex;width:100%;height:100%;overflow:hidden}.rep-side{width:200px;border-right:1px solid var(--brd);display:flex;flex-direction:column;overflow:hidden}
+.rep-list{flex:1;overflow-y:auto;overflow-x:hidden}.rep-item{display:flex;gap:6px;padding:10px 14px;border-bottom:1px solid var(--brd);cursor:pointer;align-items:center}
+.rep-item:hover{background:var(--bgh)}.rep-item.sel{background:var(--bg3);border-left:3px solid var(--purple)}.rep-item .name{font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rep-main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}.req-bar{display:flex;gap:10px;padding:10px 14px;background:var(--bg2);border-bottom:1px solid var(--brd);flex-shrink:0}
+.mth-sel{padding:6px 10px;background:var(--bg3);border:1px solid var(--brd);border-radius:5px;color:var(--txt);font-family:var(--font-mono);font-size:12px;font-weight:600}
+.url-in{flex:1;padding:6px 10px;background:var(--bg3);border:1px solid var(--brd);border-radius:5px;color:var(--txt);font-family:var(--font-mono);font-size:12px;outline:none}
+.rep-edit{display:grid;grid-template-columns:1fr 1fr;flex:1;gap:1px;background:var(--brd);overflow:hidden}.ed-pane{display:flex;flex-direction:column;background:var(--bg);overflow:hidden;min-height:0}
+.ed-hdr{padding:6px 14px;background:var(--bg2);border-bottom:1px solid var(--brd);font-size:11px;font-weight:500;display:flex;justify-content:space-between;flex-shrink:0}
+.git-pnl{padding:24px;max-width:700px;margin:0 auto;width:100%}.git-sec{margin-bottom:20px}
+.git-ttl{font-size:13px;font-weight:600;margin-bottom:10px;color:var(--txt2)}.cmt-form{display:flex;gap:10px}
+.cmt-in{flex:1;padding:8px 12px;background:var(--bg3);border:1px solid var(--brd);border-radius:5px;color:var(--txt);outline:none}
+.cmt-list{background:var(--bg2);border-radius:8px;border:1px solid var(--brd)}.cmt-item{display:flex;gap:14px;padding:12px 14px;border-bottom:1px solid var(--brd);font-family:var(--font-mono);font-size:11px;align-items:center}
+.cmt-item:last-child{border-bottom:none}.cmt-hash{color:var(--purple);font-weight:500}.cmt-msg{flex:1}.cmt-date{color:var(--txt3);font-size:10px}
+.toast-c{position:fixed;bottom:20px;right:20px;z-index:1000}.toast{padding:10px 18px;background:var(--bg3);border:1px solid var(--brd);border-radius:6px;font-size:12px;margin-top:6px;animation:slideIn .2s}
+.toast.success{border-color:var(--green)}.toast.error{border-color:var(--red)}@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
+::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:var(--bg)}::-webkit-scrollbar-thumb{background:var(--brd);border-radius:3px}
+.context-menu{position:fixed;background:var(--bg2);border:1px solid var(--brd);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,0.5);z-index:1000;min-width:180px}
+.context-menu-item{padding:8px 12px;font-size:12px;color:var(--txt);cursor:pointer;border-radius:4px;transition:all .15s ease}
+.context-menu-item:hover{background:var(--bgh)}
+.context-menu-divider{height:1px;background:var(--brd);margin:4px 0}
+.chepy-cnt{display:flex;width:100%;height:100%}.chepy-col{display:flex;flex-direction:column;overflow:hidden}
+.chepy-in-col{width:30%;border-right:1px solid var(--brd)}.chepy-recipe-col{width:30%;border-right:1px solid var(--brd)}.chepy-out-col{flex:1}
+.chepy-add{display:flex;flex-direction:column;border-bottom:1px solid var(--brd);max-height:40%}.chepy-ops-list{flex:1;overflow:auto;padding:0 8px 8px}
+.chepy-avail-op{padding:5px 10px;font-size:11px;cursor:pointer;border-radius:4px;color:var(--txt2);font-family:var(--font-mono)}.chepy-avail-op:hover{background:var(--bg3);color:var(--cyan)}
+.chepy-steps{flex:1;overflow:auto;padding:8px}
+.chepy-step{background:var(--bg2);border:1px solid var(--brd);border-radius:6px;margin-bottom:6px}
+.chepy-step-hdr{display:flex;align-items:center;gap:8px;padding:8px 10px}
+.chepy-step-num{width:20px;height:20px;border-radius:50%;background:var(--purple);color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;flex-shrink:0}
+.chepy-step-name{flex:1;font-size:12px;font-weight:500}.chepy-step-acts{display:flex;gap:3px}
+.chepy-step-params{padding:6px 10px 10px;border-top:1px solid var(--brd);display:flex;flex-direction:column;gap:6px}
+.chepy-param{display:flex;align-items:center;gap:8px}.chepy-param-lbl{font-size:10px;color:var(--txt2);min-width:60px}
+.ws-cnt{display:flex;width:100%;height:100%}
+.ws-conns{width:220px;border-right:1px solid var(--brd)}.ws-frames{width:300px;border-right:1px solid var(--brd)}.ws-detail{flex:1;display:flex;flex-direction:column}
+.ws-conn-item{padding:10px 14px;border-bottom:1px solid var(--brd);cursor:pointer;font-size:11px}
+.ws-conn-item:hover{background:var(--bgh)}.ws-conn-item.sel{background:var(--bg3);border-left:3px solid var(--cyan)}
+.ws-conn-url{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono);font-size:11px}
+.ws-conn-count{font-size:10px;color:var(--txt3)}
+.ws-frame-item{display:flex;gap:8px;padding:8px 14px;border-bottom:1px solid var(--brd);cursor:pointer;align-items:center;font-size:11px}
+.ws-frame-item:hover{background:var(--bgh)}.ws-frame-item.sel{background:var(--bg3);border-left:3px solid var(--cyan)}
+.ws-dir{font-weight:700;font-size:14px;width:20px;text-align:center}.ws-dir-up{color:var(--green)}.ws-dir-down{color:var(--orange)}
+.ws-frame-body{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono)}
+.coll-cnt{display:flex;width:100%;height:100%}
+.coll-side{width:200px;border-right:1px solid var(--brd)}.coll-steps{width:350px;border-right:1px solid var(--brd)}.coll-exec{flex:1;display:flex;flex-direction:column}
+.coll-item{display:flex;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--brd);cursor:pointer;font-size:12px}
+.coll-item:hover{background:var(--bgh)}.coll-item.sel{background:var(--bg3);border-left:3px solid var(--purple)}
+.coll-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.coll-count{color:var(--txt3);font-size:10px;background:var(--bg);padding:1px 6px;border-radius:8px}
+.coll-step-item{display:flex;gap:8px;padding:8px 14px;border-bottom:1px solid var(--brd);align-items:center;font-size:11px;cursor:pointer}
+.coll-step-item:hover{background:var(--bgh)}
+.coll-step-item.active{background:rgba(88,166,255,.1);border-left:3px solid var(--blue)}
+.coll-step-item.done{background:rgba(63,185,80,.05)}.coll-step-item.err{background:rgba(248,81,73,.05)}
+.coll-step-num{width:20px;height:20px;border-radius:50%;background:var(--bg3);color:var(--txt2);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;flex-shrink:0}
+.coll-step-item.active .coll-step-num{background:var(--blue);color:#fff}
+.coll-vars{padding:10px 14px;border-top:1px solid var(--brd);background:var(--bg2)}
+.coll-vars-hdr{font-size:10px;color:var(--txt3);font-weight:600;margin-bottom:6px;text-transform:uppercase}
+.coll-var{display:flex;gap:8px;font-size:11px;font-family:var(--font-mono);padding:2px 0}
+.coll-var-name{color:var(--purple);font-weight:500}.coll-var-val{color:var(--green);flex:1;overflow:hidden;text-overflow:ellipsis}
+.coll-extract{display:flex;gap:6px;align-items:center;padding:4px 0;font-size:11px}
+.coll-extract-name{color:var(--cyan);font-weight:500}
+.coll-pick-item{padding:8px 12px;cursor:pointer;border-radius:4px;font-size:12px;margin-bottom:2px}
+.coll-pick-item:hover{background:var(--bgh)}
+.cmp-wrap{display:flex;flex:1;overflow:hidden}
+.cmp-side{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.cmp-side:first-child{border-right:1px solid var(--brd)}
+.cmp-body{flex:1;overflow:auto}
+.cmp-line{padding:0 10px;line-height:1.6;min-height:1.6em;font-family:var(--font-mono);font-size:11px;white-space:pre-wrap;word-break:break-all}
+.cmp-eq{}.cmp-rem{background:rgba(248,81,73,.1);color:var(--red);border-left:3px solid var(--red)}
+.cmp-add{background:rgba(63,185,80,.1);color:var(--green);border-left:3px solid var(--green)}
+.cmp-blank{opacity:0.15;background:var(--bg3)}
+.sm-tree{width:38%;border-right:1px solid var(--brd);display:flex;flex-direction:column;overflow:hidden}
+.sm-right{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.sm-node{padding:4px 8px;cursor:pointer;font-size:11px;font-family:var(--font-mono);display:flex;align-items:center;gap:4px;border-left:2px solid transparent;white-space:nowrap}
+.sm-node:hover{background:var(--bgh)}.sm-node.sel{background:var(--bg3);border-left-color:var(--cyan)}
+.sm-toggle{width:14px;text-align:center;color:var(--txt3);flex-shrink:0;font-size:9px;cursor:pointer}
+.sm-label{flex:1;overflow:hidden;text-overflow:ellipsis;color:var(--txt)}
+.sm-badge{font-size:9px;background:var(--bg3);color:var(--txt3);padding:1px 6px;border-radius:8px;flex-shrink:0}
+.sm-methods{display:flex;gap:2px;flex-shrink:0}
+.sm-mth{font-size:8px;padding:1px 4px;border-radius:3px;font-weight:600}
+.splash{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:16px}
+.splash .logo-i{width:56px;height:56px;font-size:22px;border-radius:10px}
+.splash-spin{width:24px;height:24px;border:2px solid var(--brd);border-top-color:var(--cyan);border-radius:50%;animation:spin .6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+      `},} )
+
+      , !appReady ? (
+        React.createElement('div', { className: "splash",}
+          , React.createElement('div', { className: "logo-i",}, "BW")
+          , React.createElement('span', { className: "logo-t",}, "Blackwire")
+          , React.createElement('div', { className: "splash-spin",} )
+        )
+      ) : (
+      React.createElement(React.Fragment, null
+      , React.createElement('header', { className: "hdr",}
+        , React.createElement('div', { className: "logo",}
+          , React.createElement('div', { className: "logo-i",}, "BW")
+          , React.createElement('span', { className: "logo-t",}, "Blackwire")
+          , curPrj && React.createElement('span', { className: "prj-badge",}, curPrj)
+        )
+        , React.createElement('div', { className: "hdr-ctrl",}
+          , React.createElement('select', { className: "sel", value: themeId, onChange: e => setThemeId(e.target.value), title: "Theme",}
+            , Object.entries(THEMES).map(([id, t]) => (
+              React.createElement('option', { key: id, value: id,}, t.label)
+            ))
+          )
+          , curPrj && (
+            React.createElement(React.Fragment, null
+              , React.createElement('div', { className: 'int-tog' + (intOn ? ' on' : ''), onClick: togInt,}
+                , React.createElement('span', { className: "int-dot",}), "Intercept "
+                 , intOn ? 'ON' : 'OFF'
+                , pending.length > 0 && React.createElement('span', { className: "pend-badge",}, pending.length)
+              )
+              , React.createElement('div', { className: "prx-st", onClick: () => setShowProxyCfg(true), style: { cursor: 'pointer' }, title: 'Mode: ' + pxMode + (pxArgs ? ' | Args: ' + pxArgs : ''),}
+                , React.createElement('div', { className: 'st-dot ' + (pxRun ? 'run' : 'stop'),})
+                , pxRun ? pxMode + ' :' + pxPort : 'Stopped'
+              )
+              , !pxRun ? (
+                React.createElement('button', { className: "btn btn-g" , onClick: startPx, disabled: loading,}, "▶ Start" )
+              ) : (
+                React.createElement('button', { className: "btn btn-d" , onClick: stopPx,}, "■ Stop" )
+              )
+              , React.createElement('button', { className: "btn btn-s" , onClick: launchBr, disabled: !pxRun,}, "🌐")
+            )
+          )
+        )
+      )
+
+      , React.createElement('nav', { className: "tabs",}
+        , React.createElement('div', { className: 'tab' + (tab === 'projects' ? ' act' : ''), onClick: () => setTab('projects'),}, "Projects")
+        , curPrj && (
+          React.createElement(React.Fragment, null
+            , React.createElement('div', { className: 'tab' + (tab === 'scope' ? ' act' : ''), onClick: () => setTab('scope'),}, "Scope")
+            , React.createElement('div', { className: 'tab' + (tab === 'history' ? ' act' : ''), onClick: () => setTab('history'),}, "History")
+            , React.createElement('div', { className: 'tab' + (tab === 'collections' ? ' act' : ''), onClick: () => { setTab('collections'); loadColls(); },}, "Collections")
+            , React.createElement('div', { className: 'tab' + (tab === 'repeater' ? ' act' : ''), onClick: () => setTab('repeater'),}, "Repeater")
+            , React.createElement('div', { className: 'tab' + (tab === 'git' ? ' act' : ''), onClick: () => setTab('git'),}, "Git")
+            , React.createElement('div', { className: 'tab' + (tab === 'chepy' ? ' act' : ''), onClick: () => setTab('chepy'),}, "Cipher")
+            , React.createElement('div', { className: 'tab' + (tab === 'compare' ? ' act' : ''), onClick: () => setTab('compare'),}, "Compare")
+            , React.createElement('div', { className: 'tab' + (tab === 'extensions' ? ' act' : ''), onClick: () => setTab('extensions'),}, "Extensions")
+          )
+        )
+      )
+
+      , React.createElement('main', { className: "main",}
+        , tab === 'projects' && (
+          React.createElement('div', { className: "prj-pnl",}
+            , React.createElement('div', { className: "prj-hdr",}
+              , React.createElement('h2', null, "Projects")
+              , React.createElement('button', { className: "btn btn-p" , onClick: () => setShowNew(true),}, "+ New" )
+            )
+            , showNew && (
+              React.createElement('div', { className: "new-prj",}
+                , React.createElement('input', { className: "inp", placeholder: "Project name" , value: newName, onChange: e => setNewName(e.target.value),} )
+                , React.createElement('input', { className: "inp", placeholder: "Description", value: newDesc, onChange: e => setNewDesc(e.target.value),} )
+                , React.createElement('div', { className: "form-acts",}
+                  , React.createElement('button', { className: "btn btn-p" , onClick: createPrj,}, "Create")
+                  , React.createElement('button', { className: "btn btn-s" , onClick: () => setShowNew(false),}, "Cancel")
+                )
+              )
+            )
+            , React.createElement('div', { className: "prj-list",}
+              , prjs.map(p => (
+                React.createElement('div', { key: p.name, className: 'prj-card' + (p.is_current ? ' cur' : ''), onClick: () => selectPrj(p.name),}
+                  , React.createElement('div', null
+                    , React.createElement('div', { className: "prj-name",}
+                      , p.name
+                      , p.is_current && React.createElement('span', { className: "cur-badge",}, "ACTIVE")
+                    )
+                    , React.createElement('div', { className: "prj-desc",}, p.description || 'No description')
+                    , React.createElement('div', { className: "prj-date",}, p.created_at ? new Date(p.created_at).toLocaleDateString() : '')
+                  )
+                  , React.createElement('div', { onClick: e => e.stopPropagation(),}
+                    , React.createElement('button', { className: "btn btn-sm btn-d"  , onClick: () => delPrj(p.name),}, "🗑")
+                  )
+                )
+              ))
+              , prjs.length === 0 && (
+                React.createElement('div', { className: "empty",}
+                  , React.createElement('div', { className: "empty-i",})
+                  , React.createElement('span', null, "No projects" )
+                )
+              )
+            )
+          )
+        )
+
+        , tab === 'history' && curPrj && (
+          React.createElement('div', { className: "hist-wrap",}
+            , React.createElement('div', { className: "hist-sub-tabs",}
+              , React.createElement('div', { className: 'hist-sub-tab' + (histSubTab === 'http' ? ' act' : ''), onClick: () => setHistSubTab('http'),}, "HTTP")
+              , React.createElement('div', { className: 'hist-sub-tab' + (histSubTab === 'ws' ? ' act' : ''), onClick: () => { setHistSubTab('ws'); loadWsConns(); },}, "WebSocket")
+              , React.createElement('div', { className: 'hist-sub-tab' + (histSubTab === 'sitemap' ? ' act' : ''), onClick: () => setHistSubTab('sitemap'),}, "Site Map" )
+            )
+
+            , histSubTab === 'http' && (
+              React.createElement('div', { className: "hist-content",}
+                , React.createElement('div', { className: "panel hist-pnl" ,}
+                  , React.createElement('div', { className: "flt-bar",}
+                    , React.createElement('div', { className: "flt-in-wrap",}
+                      , React.createElement('input', { className: 'flt-in' + (httpqlError ? ' flt-err' : ''), placeholder: "Filter: req.method.eq:\"GET\" AND resp.code.lt:400"   , value: search, onChange: e => setSearch(e.target.value),} )
+                      , httpqlError && React.createElement('div', { className: "flt-err-msg",}, httpqlError)
+                    )
+                    , React.createElement('div', { className: "flt-preset-wrap", style: {position:'relative'},}
+                      , React.createElement('div', { className: "flt-tog", onClick: () => setShowPresets(!showPresets), title: "Filter presets" ,}, "▼")
+                      , showPresets && (
+                        React.createElement('div', { className: "flt-preset-dd",}
+                          , React.createElement('div', { className: "flt-preset-save",}
+                            , React.createElement('input', { className: "flt-in flt-preset-name" , placeholder: "Preset name..." , value: presetName, onChange: e => setPresetName(e.target.value), onKeyDown: e => e.key === 'Enter' && savePreset(),} )
+                            , React.createElement('button', { className: "btn btn-sm btn-p"  , onClick: savePreset, disabled: !presetName.trim() || !search.trim(),}, "Save")
+                          )
+                          , presets.length === 0 && React.createElement('div', { className: "flt-preset-empty",}, "No presets saved"  )
+                          , presets.map(p => (
+                            React.createElement('div', { key: p.id, className: "flt-preset-item",}
+                              , React.createElement('span', { className: "flt-preset-name-label", onClick: () => applyPreset(p), title: p.query,}, p.name)
+                              , React.createElement('span', { className: "flt-preset-q",}, p.query)
+                              , React.createElement('button', { className: "btn btn-sm btn-d flt-preset-del"   , onClick: () => delPreset(p.id),}, "×")
+                            )
+                          ))
+                        )
+                      )
+                    )
+                    , React.createElement('div', { className: 'flt-tog' + (scopeOnly ? ' act' : ''), onClick: () => setScopeOnly(!scopeOnly),}, "Scope")
+                    , React.createElement('div', { className: 'flt-tog' + (savedOnly ? ' act' : ''), onClick: () => setSavedOnly(!savedOnly),}, "★")
+                  )
+                  , React.createElement('div', { className: "pnl-hdr",}
+                    , React.createElement('span', null, filtered.length, " requests" )
+                    , React.createElement('div', { className: "acts",}
+                      , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: loadReqs,}, "↻")
+                      , React.createElement('button', { className: "btn btn-sm btn-d"  , onClick: clearHist,}, "Clear")
+                    )
+                  )
+                  , React.createElement('div', { className: "pnl-cnt",}
+                    , React.createElement('div', { className: "req-list",}
+                      , filtered.map(r => (
+                        React.createElement('div', {
+                          key: r.id,
+                          className: 'req-item' + (_optionalChain([selReq, 'optionalAccess', _55 => _55.id]) === r.id ? ' sel' : '') + (!r.in_scope ? ' out' : ''),
+                          onClick: () => setSelReq(r),
+                          onContextMenu: e => showContextMenu(e, r),}
+
+                          , React.createElement('span', { className: 'mth mth-' + r.method,}, r.method)
+                          , React.createElement('span', { className: "url", title: r.url,}, r.url)
+                          , React.createElement('span', { className: 'sts ' + stCls(r.response_status),}, r.response_status || '-')
+                          , React.createElement('span', { className: "ts",}, fmtTime(r.timestamp))
+                        )
+                      ))
+                      , filtered.length === 0 && (
+                        React.createElement('div', { className: "empty",}
+                          , React.createElement('div', { className: "empty-i",}, "📭")
+                          , React.createElement('span', null, "No requests" )
+                        )
+                      )
+                    )
+                  )
+                )
+
+                , React.createElement('div', { className: "panel det-pnl" ,}
+                  , selReq ? (
+                    React.createElement(React.Fragment, null
+                      , React.createElement('div', { className: "pnl-hdr",}
+                        , React.createElement('span', null, selReq.method, " " , selReq.url.substring(0, 50))
+                        , React.createElement('div', { className: "acts",}
+                          , React.createElement('button', { className: "btn btn-sm btn-p"  , onClick: () => selReqFull && toRep(selReqFull), disabled: !selReqFull,}, "→ Rep" )
+                          , React.createElement('button', { className: 'btn btn-sm ' + (selReq.saved ? 'btn-g' : 'btn-s'), onClick: () => togSave(selReq.id),}
+                            , selReq.saved ? '★' : '☆'
+                          )
+                          , React.createElement('button', { className: "btn btn-sm btn-d"  , onClick: () => delReq(selReq.id),}, "🗑")
+                        )
+                      )
+                      , React.createElement('div', { className: "det-tabs",}
+                        , React.createElement('div', { className: 'det-tab' + (detTab === 'request' ? ' act' : ''), onClick: () => setDetTab('request'),}, "Request")
+                        , React.createElement('div', { className: 'det-tab' + (detTab === 'response' ? ' act' : ''), onClick: () => setDetTab('response'),}, "Response")
+                        , React.createElement('div', { style: { marginLeft: 'auto', display: 'flex', gap: '6px', alignItems: 'center' },}
+                          , React.createElement('button', { className: 'btn btn-sm ' + (detTab === 'request' ? (reqFormat === 'raw' ? 'btn-p' : 'btn-s') : (respFormat === 'raw' ? 'btn-p' : 'btn-s')), onClick: () => detTab === 'request' ? setReqFormat('raw') : setRespFormat('raw'),}, "Raw"
+
+                          )
+                          , React.createElement('button', { className: 'btn btn-sm ' + (detTab === 'request' ? (reqFormat === 'pretty' ? 'btn-p' : 'btn-s') : (respFormat === 'pretty' ? 'btn-p' : 'btn-s')), onClick: () => detTab === 'request' ? setReqFormat('pretty') : setRespFormat('pretty'),}, "Pretty"
+
+                          )
+                        )
+                      )
+                      , !selReqFull ? (
+                        React.createElement('div', { className: "empty",}, React.createElement('div', { className: "splash-spin", style: {margin:'20px auto'},} ))
+                      ) : (
+                      React.createElement('div', { className: "code",}
+                        , (() => {
+                          const d = selReqFull;
+                          const reqFormatted = d.body ? formatBody(d.body, reqFormat) : { text: '', html: false };
+                          const respFormatted = formatBody(d.response_body || '', respFormat);
+                          const content = detTab === 'request'
+                            ? (d.method + ' ' + (() => {
+                                try { return new URL(d.url).pathname; } catch (e) { return d.url; }
+                              })() + '\n\n' + fmtH(d.headers) + (d.body ? '\n\n' + reqFormatted.text : ''))
+                            : ('HTTP ' + d.response_status + '\n\n' + fmtH(d.response_headers) + '\n\n' + respFormatted.text);
+                          const isHtml = detTab === 'request' ? reqFormatted.html : respFormatted.html;
+                          return isHtml ? React.createElement('div', { dangerouslySetInnerHTML: { __html: content },} ) : content;
+                        })()
+                      )
+                      )
+                    )
+                  ) : (
+                    React.createElement('div', { className: "empty",}
+                      , React.createElement('span', null, "Select request" )
+                    )
+                  )
+                )
+              )
+            )
+
+            , histSubTab === 'ws' && (
+              React.createElement('div', { className: "ws-cnt",}
+                , React.createElement('div', { className: "ws-conns panel" ,}
+                  , React.createElement('div', { className: "pnl-hdr",}
+                    , React.createElement('span', null, "Connections (" , wsConns.length, ")")
+                    , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: loadWsConns,}, "↻")
+                  )
+                  , React.createElement('div', { className: "pnl-cnt",}
+                    , wsConns.map(c => (
+                      React.createElement('div', { key: c.url, className: 'ws-conn-item' + (selWsConn === c.url ? ' sel' : ''),
+                           onClick: () => loadWsFrames(c.url),}
+                        , React.createElement('span', { className: "ws-conn-url",}, c.url)
+                        , React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', marginTop: '4px' },}
+                          , React.createElement('span', { className: "ws-conn-count",}, c.frame_count, " frames" )
+                          , React.createElement('span', { className: "ts",}, fmtTime(c.last_seen))
+                        )
+                      )
+                    ))
+                    , wsConns.length === 0 && (
+                      React.createElement('div', { className: "empty", style: { padding: 30 },}
+                        , React.createElement('span', null, "No WebSocket connections captured"   )
+                      )
+                    )
+                  )
+                )
+                , React.createElement('div', { className: "ws-frames panel" ,}
+                  , React.createElement('div', { className: "pnl-hdr",}
+                    , React.createElement('span', null, "Frames " , selWsConn ? '(' + wsFrames.length + ')' : '')
+                  )
+                  , React.createElement('div', { className: "pnl-cnt",}
+                    , wsFrames.map(f => (
+                      React.createElement('div', { key: f.id, className: 'ws-frame-item' + (_optionalChain([selWsFrame, 'optionalAccess', _56 => _56.id]) === f.id ? ' sel' : ''),
+                           onClick: () => selectWsFrame(f),
+                           onContextMenu: e => showContextMenu(e, { ...f, url: selWsConn, method: 'WS', body: f.content }, 'websocket'),}
+                        , React.createElement('span', { className: 'ws-dir ws-dir-' + f.direction,}
+                          , f.direction === 'up' ? '\u2191' : '\u2193'
+                        )
+                        , React.createElement('span', { className: "ws-frame-body",}, (f.content || '').substring(0, 80))
+                        , React.createElement('span', { className: "ts",}, fmtTime(f.timestamp))
+                      )
+                    ))
+                    , selWsConn && wsFrames.length === 0 && (
+                      React.createElement('div', { className: "empty", style: { padding: 30 },}, React.createElement('span', null, "No frames" ))
+                    )
+                    , !selWsConn && (
+                      React.createElement('div', { className: "empty", style: { padding: 30 },}, React.createElement('span', null, "Select a connection"  ))
+                    )
+                  )
+                )
+                , React.createElement('div', { className: "ws-detail panel" ,}
+                  , selWsFrame ? (
+                    React.createElement(React.Fragment, null
+                      , React.createElement('div', { className: "pnl-hdr",}
+                        , React.createElement('span', null, selWsFrame.direction === 'up' ? 'Client \u2192 Server' : 'Server \u2192 Client')
+                        , React.createElement('span', { className: "ts",}, fmtTime(selWsFrame.timestamp))
+                      )
+                      , React.createElement('div', { className: "code", style: { maxHeight: '40%', borderBottom: '1px solid var(--brd)' },}, selWsFrame.content)
+                      , React.createElement('div', { className: "pnl-hdr",}, React.createElement('span', null, "Resend Frame" ))
+                      , React.createElement('textarea', { className: "ed-ta", style: { flex: 1 }, value: wsResendMsg,
+                                onChange: e => setWsResendMsg(e.target.value), placeholder: "Edit frame content..."  ,} )
+                      , React.createElement('div', { style: { padding: '10px 14px', display: 'flex', gap: '10px', background: 'var(--bg2)', borderTop: '1px solid var(--brd)' },}
+                        , React.createElement('button', { className: "btn btn-p" , onClick: resendWsFrame,
+                                disabled: wsSending || !wsResendMsg,}
+                          , wsSending ? '...' : '\u25B6 Resend'
+                        )
+                      )
+                      , wsResendResp && (
+                        React.createElement('div', { className: "code", style: { maxHeight: '30%', borderTop: '1px solid var(--brd)' },}
+                          , wsResendResp.error
+                            ? 'Error: ' + wsResendResp.error
+                            : wsResendResp.response
+                              ? 'Response: ' + wsResendResp.response
+                              : wsResendResp.note || 'Sent (no response)'
+                        )
+                      )
+                    )
+                  ) : (
+                    React.createElement('div', { className: "empty",}, React.createElement('span', null, "Select a frame"  ))
+                  )
+                )
+              )
+            )
+
+            , histSubTab === 'sitemap' && (
+              React.createElement('div', { className: "hist-content",}
+                , React.createElement('div', { className: "panel sm-tree" ,}
+                  , React.createElement('div', { className: "pnl-hdr",}
+                    , React.createElement('span', null, Object.keys(siteTree).length, " hosts" )
+                    , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: () => { setSmExpanded({}); setSmSelNode(null); },}, "Collapse All" )
+                  )
+                  , React.createElement('div', { className: "pnl-cnt",}
+                    , Object.keys(siteTree).length === 0 ? (
+                      React.createElement('div', { className: "empty",}
+                        , React.createElement('div', { className: "empty-i",}, "🌐")
+                        , React.createElement('span', null, "No requests captured"  )
+                      )
+                    ) : (
+                      Object.entries(siteTree)
+                        .sort(([a], [b]) => a.localeCompare(b))
+                        .map(([origin, node]) => renderTreeNode(origin, node, 0, ''))
+                    )
+                  )
+                )
+                , React.createElement('div', { className: "sm-right",}
+                  , React.createElement('div', { className: "panel", style: { flex: smSelNode && selReq ? 1 : 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' },}
+                    , React.createElement('div', { className: "pnl-hdr",}
+                      , React.createElement('span', null, smSelNode ? smNodeReqs.length + ' requests' : 'Select a node')
+                    )
+                    , React.createElement('div', { className: "pnl-cnt",}
+                      , smSelNode ? (
+                        React.createElement('div', { className: "req-list",}
+                          , smNodeReqs.map(r => (
+                            React.createElement('div', {
+                              key: r.id,
+                              className: 'req-item' + (_optionalChain([selReq, 'optionalAccess', _57 => _57.id]) === r.id ? ' sel' : '') + (!r.in_scope ? ' out' : ''),
+                              onClick: () => setSelReq(r),
+                              onContextMenu: e => showContextMenu(e, r),}
+
+                              , React.createElement('span', { className: 'mth mth-' + r.method,}, r.method)
+                              , React.createElement('span', { className: "url", title: r.url,}, r.url)
+                              , React.createElement('span', { className: 'sts ' + stCls(r.response_status),}, r.response_status || '-')
+                              , React.createElement('span', { className: "ts",}, fmtTime(r.timestamp))
+                            )
+                          ))
+                        )
+                      ) : (
+                        React.createElement('div', { className: "empty",}, React.createElement('span', null, "Click a node in the tree"     ))
+                      )
+                    )
+                  )
+                  , selReq && smSelNode && (
+                    React.createElement('div', { className: "panel", style: { flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', borderTop: '1px solid var(--brd)' },}
+                      , React.createElement('div', { className: "pnl-hdr",}
+                        , React.createElement('span', null, selReq.method, " " , selReq.url.substring(0, 60))
+                        , React.createElement('div', { className: "acts",}
+                          , React.createElement('button', { className: "btn btn-sm btn-p"  , onClick: () => selReqFull && toRep(selReqFull), disabled: !selReqFull,}, "→ Rep" )
+                        )
+                      )
+                      , React.createElement('div', { className: "det-tabs",}
+                        , React.createElement('div', { className: 'det-tab' + (detTab === 'request' ? ' act' : ''), onClick: () => setDetTab('request'),}, "Request")
+                        , React.createElement('div', { className: 'det-tab' + (detTab === 'response' ? ' act' : ''), onClick: () => setDetTab('response'),}, "Response")
+                        , React.createElement('div', { style: { marginLeft: 'auto', display: 'flex', gap: '6px', alignItems: 'center' },}
+                          , React.createElement('button', { className: 'btn btn-sm ' + (detTab === 'request' ? (reqFormat === 'raw' ? 'btn-p' : 'btn-s') : (respFormat === 'raw' ? 'btn-p' : 'btn-s')), onClick: () => detTab === 'request' ? setReqFormat('raw') : setRespFormat('raw'),}, "Raw")
+                          , React.createElement('button', { className: 'btn btn-sm ' + (detTab === 'request' ? (reqFormat === 'pretty' ? 'btn-p' : 'btn-s') : (respFormat === 'pretty' ? 'btn-p' : 'btn-s')), onClick: () => detTab === 'request' ? setReqFormat('pretty') : setRespFormat('pretty'),}, "Pretty")
+                        )
+                      )
+                      , !selReqFull ? (
+                        React.createElement('div', { className: "empty",}, React.createElement('div', { className: "splash-spin", style: {margin:'20px auto'},} ))
+                      ) : (
+                      React.createElement('div', { className: "code",}
+                        , (() => {
+                          const d = selReqFull;
+                          const reqF = d.body ? formatBody(d.body, reqFormat) : { text: '', html: false };
+                          const resF = formatBody(d.response_body || '', respFormat);
+                          const ct = detTab === 'request'
+                            ? (d.method + ' ' + (() => { try { return new URL(d.url).pathname; } catch (e) { return d.url; } })() + '\n\n' + fmtH(d.headers) + (d.body ? '\n\n' + reqF.text : ''))
+                            : ('HTTP ' + d.response_status + '\n\n' + fmtH(d.response_headers) + '\n\n' + resF.text);
+                          const isH = detTab === 'request' ? reqF.html : resF.html;
+                          return isH ? React.createElement('div', { dangerouslySetInnerHTML: { __html: ct },} ) : ct;
+                        })()
+                      )
+                      )
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
+
+        , tab === 'intercept' && curPrj && (
+          React.createElement('div', { className: "int-pnl",}
+            , React.createElement('div', { className: "int-ctrl",}
+              , React.createElement('button', { className: 'btn btn-lg ' + (intOn ? 'btn-d' : 'btn-g'), onClick: togInt,}
+                , intOn ? '🔴 ON' : '⚪ OFF'
+              )
+              , pending.length > 0 && (
+                React.createElement(React.Fragment, null
+                  , React.createElement('button', { className: "btn btn-p" , onClick: fwdAll,}, "▶ Forward All ("   , pending.length, ")")
+                  , React.createElement('button', { className: "btn btn-d" , onClick: dropAll,}, "✕ Drop All"  )
+                )
+              )
+            )
+            , React.createElement('div', { className: "int-cnt",}
+              , React.createElement('div', { className: "pend-list",}
+                , React.createElement('div', { className: "pnl-hdr",}
+                  , React.createElement('span', null, "Pending (" , pending.length, ")")
+                )
+                , pending.map(r => (
+                  React.createElement('div', { key: r.id, className: 'pend-item' + (_optionalChain([selPend, 'optionalAccess', _58 => _58.id]) === r.id ? ' sel' : ''), onClick: () => { setSelPend(r); setEditReq({ ...r }); },
+                       onContextMenu: e => showContextMenu(e, r, 'intercept'),}
+                    , React.createElement('span', { className: 'mth mth-' + r.method,}, r.method)
+                    , React.createElement('span', { className: "url",}, r.url)
+                  )
+                ))
+                , pending.length === 0 && (
+                  React.createElement('div', { className: "empty", style: { padding: 30 },}
+                    , React.createElement('span', null, intOn ? 'Waiting...' : 'Enable intercept')
+                  )
+                )
+              )
+              , React.createElement('div', { className: "int-edit",}
+                , selPend && editReq ? (
+                  React.createElement(React.Fragment, null
+                    , React.createElement('div', { className: "pnl-hdr", onContextMenu: e => showContextMenu(e, editReq, 'intercept'),}
+                      , React.createElement('span', null, "Edit")
+                      , React.createElement('div', { className: "acts",}
+                        , React.createElement('button', { className: "btn btn-g" , onClick: () => fwdReq(selPend.id, editReq),}, "▶ Forward" )
+                        , React.createElement('button', { className: "btn btn-d" , onClick: () => dropReq(selPend.id),}, "✕ Drop" )
+                      )
+                    )
+                    , React.createElement('div', { className: "ed-row",}
+                      , React.createElement('select', { className: "mth-sel", value: editReq.method, onChange: e => setEditReq({ ...editReq, method: e.target.value }),}
+                        , React.createElement('option', null, "GET")
+                        , React.createElement('option', null, "POST")
+                        , React.createElement('option', null, "PUT")
+                        , React.createElement('option', null, "DELETE")
+                      )
+                      , React.createElement('input', { className: "url-in", value: editReq.url, onChange: e => setEditReq({ ...editReq, url: e.target.value }),} )
+                    )
+                    , React.createElement('textarea', { className: "ed-ta", placeholder: "Headers", style: { height: '30%' }, value: fmtH(editReq.headers), onChange: e => {
+                      const h = {};
+                      e.target.value.split('\n').forEach(l => {
+                        const [k, ...v] = l.split(':');
+                        if (k && v.length) h[k.trim()] = v.join(':').trim();
+                      });
+                      setEditReq({ ...editReq, headers: h });
+                    },} )
+                    , React.createElement('textarea', { className: "ed-ta", placeholder: "Body", style: { flex: 1 }, value: editReq.body || '', onChange: e => setEditReq({ ...editReq, body: e.target.value }),} )
+                  )
+                ) : (
+                  React.createElement('div', { className: "empty",}
+                    , React.createElement('span', null, "Select pending request"  )
+                  )
+                )
+              )
+            )
+          )
+        )
+
+        , tab === 'scope' && curPrj && (
+          React.createElement('div', { className: "scp-pnl",}
+            , React.createElement('div', { className: "scp-hdr",}
+              , React.createElement('h3', null, "Scope Rules" )
+              , React.createElement('p', null, "Define which hosts are in scope"     )
+            )
+            , React.createElement('div', { className: "scp-form",}
+              , React.createElement('input', { className: "inp", style: { flex: 1 }, placeholder: "Pattern: *.example.com" , value: newPat, onChange: e => setNewPat(e.target.value),} )
+              , React.createElement('select', { className: "sel", value: newType, onChange: e => setNewType(e.target.value),}
+                , React.createElement('option', { value: "include",}, "Include")
+                , React.createElement('option', { value: "exclude",}, "Exclude")
+              )
+              , React.createElement('button', { className: "btn btn-p" , onClick: addRule,}, "+ Add" )
+            )
+            , React.createElement('div', { className: "scp-rules",}
+              , scopeRules.map(r => (
+                React.createElement('div', { key: r.id, className: 'scp-rule' + (r.enabled ? '' : ' dis'),}
+                  , React.createElement('span', { className: 'rul-type rul-' + (r.rule_type === 'include' ? 'inc' : 'exc'),}, r.rule_type)
+                  , React.createElement('span', { className: "rul-pat",}, r.pattern)
+                  , React.createElement('div', { className: "rul-acts",}
+                    , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: () => togRule(r.id),}, r.enabled ? 'Disable' : 'Enable')
+                    , React.createElement('button', { className: "btn btn-sm btn-d"  , onClick: () => delRule(r.id),}, "🗑")
+                  )
+                )
+              ))
+              , scopeRules.length === 0 && (
+                React.createElement('div', { className: "empty", style: { padding: 30 },}
+                  , React.createElement('span', null, "No rules - all in scope"     )
+                )
+              )
+            )
+          )
+        )
+
+        , tab === 'repeater' && curPrj && (
+          React.createElement('div', { className: "rep-cnt",}
+            , React.createElement('div', { className: "rep-side",}
+              , React.createElement('div', { className: "pnl-hdr",}
+                , React.createElement('span', null, "Saved")
+                , React.createElement('button', { className: "btn btn-sm btn-p"  , onClick: saveRep,}, "+")
+              )
+              , React.createElement('div', { className: "rep-list",}
+                , repReqs.map(r => (
+                  React.createElement('div', { key: r.id, className: 'rep-item' + (selRep === r.id ? ' sel' : ''), onClick: () => loadRepItem(r),
+                    onContextMenu: e => showContextMenu(e, r, 'repeater'),}
+                    , React.createElement('span', { className: 'mth mth-' + r.method,}, r.method)
+                    , React.createElement('span', { className: "name", onDoubleClick: e => { e.stopPropagation(); renameRepItem(r.id); },}, r.name)
+                    , selRep === r.id && (
+                      React.createElement('div', { style: { marginLeft: 'auto', display: 'flex', gap: '2px' }, onClick: e => e.stopPropagation(),}
+                        , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: () => renameRepItem(r.id), title: "Rename", style: { padding: '2px 5px', fontSize: '10px' },}, "✎")
+                        , React.createElement('button', { className: "btn btn-sm btn-d"  , onClick: () => delRepItem(r.id), title: "Delete", style: { padding: '2px 5px', fontSize: '10px' },}, "✕")
+                      )
+                    )
+                  )
+                ))
+              )
+            )
+            , React.createElement('div', { className: "rep-main",}
+              , React.createElement('div', { className: "req-bar",}
+                , React.createElement('button', { className: "btn btn-s" , onClick: () => navigateHistory(-1), disabled: repHistoryIndex <= 0, title: "Previous",}, "◀")
+                , React.createElement('button', { className: "btn btn-s" , onClick: () => navigateHistory(1), disabled: repHistoryIndex >= repHistory.length - 1, title: "Next",}, "▶")
+                , React.createElement('select', { className: "mth-sel", value: repM, onChange: e => setRepM(e.target.value),}
+                  , React.createElement('option', null, "GET")
+                  , React.createElement('option', null, "HEAD")
+                  , React.createElement('option', null, "POST")
+                  , React.createElement('option', null, "PUT")
+                  , React.createElement('option', null, "PATCH")
+                  , React.createElement('option', null, "DELETE")
+                  , React.createElement('option', null, "CONNECT")
+                  , React.createElement('option', null, "OPTIONS")
+                  , React.createElement('option', null, "TRACE")
+                  , React.createElement('option', null, "PATCH")
+                )
+                , React.createElement('input', { className: "url-in", placeholder: "https://...", value: repU, onChange: e => setRepU(e.target.value),} )
+                , React.createElement('button', { className: "btn btn-p" , onClick: sendRep, disabled: loading || !repU,}, loading ? '...' : '▶ Send')
+                , React.createElement('select', { className: "sel", value: repFollowRedirects ? 'follow' : 'manual', onChange: e => setRepFollowRedirects(e.target.value === 'follow'),
+                  style: { fontSize: '10px', padding: '4px 6px', minWidth: '105px' }, title: "Redirect mode" ,}
+                  , React.createElement('option', { value: "manual",}, "No Redirect" )
+                  , React.createElement('option', { value: "follow",}, "Auto Follow" )
+                )
+              )
+              , React.createElement('div', { className: "rep-edit",}
+                , React.createElement('div', { className: "ed-pane",}
+                  , React.createElement('div', { className: "ed-hdr",}
+                    , React.createElement('span', null, "Headers")
+                  )
+                  , React.createElement('textarea', { className: "ed-ta", style: { height: '40%' }, value: repH, onChange: e => setRepH(e.target.value),} )
+                  , React.createElement('div', { className: "ed-hdr",}
+                    , React.createElement('span', null, "Body")
+                    , React.createElement('div', { style: { display: 'flex', gap: '4px' },}
+                      , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: () => { setRepB(prettyPrint(repB)); setRepBodyColor(true); }, title: "Pretty Print" ,}, "Pretty")
+                      , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: () => { setRepB(minify(repB)); setRepBodyColor(false); }, title: "Minify",}, "Minify")
+                    )
+                  )
+                  , repBodyColor ? (
+                    React.createElement('div', {
+                      ref: repBodyEditRef,
+                      className: "ed-ce",
+                      contentEditable: true,
+                      suppressContentEditableWarning: true,
+                      onInput: handleRepBodyInput,}
+                    )
+                  ) : (
+                    React.createElement('textarea', { className: "ed-ta", style: { flex: 1 }, value: repB, onChange: e => setRepB(e.target.value),} )
+                  )
+                )
+                , React.createElement('div', { className: "ed-pane",}
+                  , React.createElement('div', { className: "ed-hdr",}
+                    , React.createElement('span', null, "Response")
+                    , React.createElement('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' },}
+                      , repResp && !repResp.error && (
+                        React.createElement('span', { style: { color: 'var(--txt3)' },}
+                          , repResp.status_code, " • "  , _optionalChain([repResp, 'access', _59 => _59.elapsed, 'optionalAccess', _60 => _60.toFixed, 'call', _61 => _61(3)]), "s"
+                        )
+                      )
+                      , repResp && repResp.body && !repResp.error && (
+                        React.createElement('div', { style: { display: 'flex', gap: '4px' },}
+                          , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: () => setRepRespBody(prettyPrint(repRespBody)), title: "Pretty Print" ,}, "Pretty")
+                          , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: () => setRepRespBody(minify(repRespBody)), title: "Minify",}, "Minify")
+                        )
+                      )
+                    )
+                  )
+                  , repResp && repResp.error ? (
+                    React.createElement('div', { className: "code",}, repResp.error)
+                  ) : repResp ? (
+                    React.createElement(React.Fragment, null
+                      , repResp.redirect_chain && repResp.redirect_chain.length > 0 && (
+                        React.createElement('div', { style: { padding: '6px 10px', background: 'var(--bg3)', borderBottom: '1px solid var(--brd)', fontSize: '10px', fontFamily: 'var(--font-mono)', flexShrink: 0, overflow: 'auto', maxHeight: '120px' },}
+                          , React.createElement('div', { style: { color: 'var(--cyan)', marginBottom: '4px', fontWeight: 600 },}, "Redirect chain ("  , repResp.redirect_chain.length, " hops):" )
+                          , repResp.redirect_chain.map((hop, i) => (
+                            React.createElement('div', { key: i, style: { color: 'var(--txt2)', paddingLeft: '8px' },}
+                              , React.createElement('span', { className: 'sts ' + stCls(hop.status_code),}, hop.status_code), " " , hop.url, " → "  , hop.location
+                            )
+                          ))
+                          , React.createElement('div', { style: { color: 'var(--green)', paddingLeft: '8px' },}
+                            , React.createElement('span', { className: 'sts ' + stCls(repResp.status_code),}, repResp.status_code), " " , repResp.final_url
+                          )
+                        )
+                      )
+                      , repResp.is_redirect && !repFollowRedirects && repResp.redirect_url && (
+                        React.createElement('div', { style: { padding: '6px 10px', background: 'rgba(210,153,34,.1)', borderBottom: '1px solid var(--brd)', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', flexShrink: 0 },}
+                          , React.createElement('span', { style: { color: 'var(--orange)', fontWeight: 600 },}, "↪ Redirect" )
+                          , React.createElement('span', { style: { fontFamily: 'var(--font-mono)', fontSize: '10px', color: 'var(--txt2)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+                                title: repResp.redirect_url,}, repResp.redirect_url)
+                          , React.createElement('button', { className: "btn btn-sm btn-p"  , onClick: followRedirect, disabled: loading, title: "Follow this redirect"  ,}, "Follow →"
+
+                          )
+                        )
+                      )
+                      , React.createElement('div', { className: "code", style: { height: '100px', minHeight: '60px', overflow: 'auto', flexShrink: 0, borderBottom: '1px solid var(--brd)' },}
+                        , fmtH(repResp.headers)
+                      )
+                      , (() => {
+                        const highlighted = colorizeBody(repRespBody);
+                        return highlighted.html
+                          ? React.createElement('div', { className: "code", style: { flex: 1, overflow: 'auto' }, dangerouslySetInnerHTML: { __html: highlighted.text },} )
+                          : React.createElement('textarea', {
+                              className: "ed-ta",
+                              style: { flex: 1 },
+                              value: repRespBody,
+                              onChange: e => setRepRespBody(e.target.value),
+                              placeholder: "Response body will appear here"    ,}
+                            );
+                      })()
+                    )
+                  ) : (
+                    React.createElement('div', { className: "code",}, "Send a request"  )
+                  )
+                )
+              )
+            )
+          )
+        )
+
+        , tab === 'webhook' && curPrj && _optionalChain([webhookExt, 'optionalAccess', _62 => _62.enabled]) && (
+          React.createElement(React.Fragment, null
+            , React.createElement('div', { className: "panel hist-pnl" ,}
+              , React.createElement('div', { className: "flt-bar",}
+                , React.createElement('input', { className: "flt-in", placeholder: "Filter by URL, method, IP..."    , value: whkSearch, onChange: e => setWhkSearch(e.target.value),} )
+                , React.createElement('div', { style: { display: 'flex', gap: '4px', alignItems: 'center' },}
+                  , React.createElement('span', { style: { fontSize: '10px', color: 'var(--txt3)' },}, _optionalChain([webhookExt, 'optionalAccess', _63 => _63.config, 'optionalAccess', _64 => _64.token_url]) ? '● Live' : '')
+                )
+              )
+              , React.createElement('div', { className: "pnl-hdr",}
+                , React.createElement('span', null, filteredWhk.length, " webhook requests"  )
+                , React.createElement('div', { className: "acts",}
+                  , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: () => refreshWebhook(), disabled: whkLoading,}, whkLoading ? '⏳' : '↻', " Sync" )
+                  , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: loadWebhookLocal,}, "↻")
+                  , React.createElement('button', { className: "btn btn-sm btn-d"  , onClick: clearWebhookHistory,}, "Clear")
+                )
+              )
+              , React.createElement('div', { className: "pnl-cnt",}
+                , React.createElement('div', { className: "req-list",}
+                  , filteredWhk.map(r => (
+                    React.createElement('div', {
+                      key: r.request_id,
+                      className: 'req-item' + (_optionalChain([selWhkReq, 'optionalAccess', _65 => _65.request_id]) === r.request_id ? ' sel' : ''),
+                      onClick: () => { setSelWhkReq(r); setWhkDetTab('request'); },
+                      onContextMenu: e => showContextMenu(e, r, 'webhook'),}
+
+                      , React.createElement('span', { className: 'mth mth-' + (r.method || 'GET'),}, r.method || 'GET')
+                      , React.createElement('span', { className: "url", title: r.url,}, r.url || r.path || '-')
+                      , React.createElement('span', { style: { color: 'var(--txt2)', fontSize: '10px', minWidth: '90px' },}, r.ip || '-')
+                      , React.createElement('span', { className: "ts",}, fmtTime(r.created_at))
+                    )
+                  ))
+                  , filteredWhk.length === 0 && (
+                    React.createElement('div', { className: "empty",}
+                      , React.createElement('div', { className: "empty-i",}, "🔗")
+                      , React.createElement('span', null, _optionalChain([webhookExt, 'optionalAccess', _66 => _66.config, 'optionalAccess', _67 => _67.token_id]) ? 'No webhook requests yet' : 'Create a webhook URL first')
+                    )
+                  )
+                )
+              )
+            )
+
+            , React.createElement('div', { className: "panel det-pnl" ,}
+              , selWhkReq ? (
+                React.createElement(React.Fragment, null
+                  , React.createElement('div', { className: "pnl-hdr",}
+                    , React.createElement('span', null, selWhkReq.method || 'GET', " " , (selWhkReq.url || '').substring(0, 50))
+                    , React.createElement('div', { className: "acts",}
+                      , React.createElement('button', { className: "btn btn-sm btn-p"  , onClick: () => whkToRepeater(selWhkReq),}, "→ Rep" )
+                      , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: () => {
+                        navigator.clipboard.writeText(selWhkReq.url || '');
+                        toast('URL copied', 'success');
+                      },}, "📋")
+                    )
+                  )
+                  , React.createElement('div', { className: "det-tabs",}
+                    , React.createElement('div', { className: 'det-tab' + (whkDetTab === 'request' ? ' act' : ''), onClick: () => setWhkDetTab('request'),}, "Request")
+                    , React.createElement('div', { className: 'det-tab' + (whkDetTab === 'headers' ? ' act' : ''), onClick: () => setWhkDetTab('headers'),}, "Headers")
+                    , React.createElement('div', { className: 'det-tab' + (whkDetTab === 'query' ? ' act' : ''), onClick: () => setWhkDetTab('query'),}, "Query")
+                    , React.createElement('div', { className: 'det-tab' + (whkDetTab === 'body' ? ' act' : ''), onClick: () => setWhkDetTab('body'),}, "Body")
+                    , React.createElement('div', { style: { marginLeft: 'auto', display: 'flex', gap: '6px', alignItems: 'center' },}
+                      , (whkDetTab === 'body' || whkDetTab === 'request') && (
+                        React.createElement(React.Fragment, null
+                          , React.createElement('button', { className: 'btn btn-sm ' + (whkReqFormat === 'raw' ? 'btn-p' : 'btn-s'), onClick: () => setWhkReqFormat('raw'),}, "Raw")
+                          , React.createElement('button', { className: 'btn btn-sm ' + (whkReqFormat === 'pretty' ? 'btn-p' : 'btn-s'), onClick: () => setWhkReqFormat('pretty'),}, "Pretty")
+                        )
+                      )
+                    )
+                  )
+                  , (() => {
+                    if (whkDetTab === 'request') {
+                      const bodyFmt = selWhkReq.content ? formatBody(selWhkReq.content, whkReqFormat) : null;
+                      const info = (selWhkReq.method || 'GET') + ' ' + (selWhkReq.url || '') + '\n'
+                        + 'IP: ' + (selWhkReq.ip || '-') + '\n'
+                        + 'User-Agent: ' + (selWhkReq.user_agent || '-') + '\n'
+                        + 'Time: ' + (selWhkReq.created_at || '-') + '\n\n'
+                        + '--- Headers ---\n' + fmtH(selWhkReq.headers)
+                        + (selWhkReq.content ? '\n\n--- Body ---\n' + (bodyFmt ? bodyFmt.text : selWhkReq.content) : '');
+                      const isHtml = bodyFmt && bodyFmt.html;
+                      return isHtml
+                        ? React.createElement('div', { className: "code", dangerouslySetInnerHTML: { __html: info },} )
+                        : React.createElement('div', { className: "code",}, info);
+                    }
+                    if (whkDetTab === 'headers') {
+                      return React.createElement('div', { className: "code",}, fmtH(selWhkReq.headers) || 'No headers');
+                    }
+                    if (whkDetTab === 'query') {
+                      const q = selWhkReq.query || {};
+                      const entries = Object.entries(q);
+                      return React.createElement('div', { className: "code",}, entries.length === 0 ? 'No query parameters' : entries.map(([k, v]) => k + ' = ' + v).join('\n'));
+                    }
+                    if (whkDetTab === 'body') {
+                      if (!selWhkReq.content) return React.createElement('div', { className: "code",}, "No body content"  );
+                      const bodyFmt = formatBody(selWhkReq.content, whkReqFormat);
+                      return bodyFmt.html
+                        ? React.createElement('div', { className: "code", dangerouslySetInnerHTML: { __html: bodyFmt.text },} )
+                        : React.createElement('div', { className: "code",}, selWhkReq.content);
+                    }
+                    return React.createElement('div', { className: "code",});
+                  })()
+                )
+              ) : (
+                React.createElement('div', { className: "empty",}
+                  , React.createElement('span', null, "Select a webhook request"   )
+                )
+              )
+            )
+          )
+        )
+
+        , tab === 'git' && curPrj && (
+          React.createElement('div', { className: "git-pnl",}
+            , React.createElement('div', { className: "git-sec",}
+              , React.createElement('div', { className: "git-ttl",}, "Create Commit (Press Ctrl+S for auto-commit)"     )
+              , React.createElement('div', { className: "cmt-form",}
+                , React.createElement('input', { className: "cmt-in", placeholder: "Message...", value: cmtMsg, onChange: e => setCmtMsg(e.target.value), onKeyPress: e => e.key === 'Enter' && commit(),} )
+                , React.createElement('button', { className: "btn btn-p" , onClick: commit,}, "Commit")
+              )
+            )
+            , React.createElement('div', { className: "git-sec",}
+              , React.createElement('div', { className: "git-ttl",}, "History")
+              , React.createElement('div', { className: "cmt-list",}
+                , commits.map((c, i) => (
+                  React.createElement('div', { key: i, className: "cmt-item",}
+                    , React.createElement('span', { className: "cmt-hash",}, c.hash)
+                    , React.createElement('span', { className: "cmt-msg",}, c.message)
+                    , React.createElement('span', { className: "cmt-date",}, c.date)
+                  )
+                ))
+                , commits.length === 0 && (
+                  React.createElement('div', { className: "cmt-item", style: { justifyContent: 'center', color: 'var(--txt3)' },}, "No commits"
+
+                  )
+                )
+              )
+            )
+          )
+        )
+
+        , tab === 'extensions' && curPrj && (
+          React.createElement('div', { className: "scp-pnl",}
+            , React.createElement('div', { className: "scp-hdr",}
+              , React.createElement('h3', null, "Extensions")
+              , React.createElement('p', null, "Manage and configure extensions for request/response manipulation"      )
+            )
+            , extensions.length === 0 && (
+              React.createElement('div', { className: "empty", style: { padding: 30 },}
+                , React.createElement('div', { className: "empty-i",})
+                , React.createElement('span', null, "No extensions installed"  )
+              )
+            )
+            , extensions.map(ext => (
+              React.createElement('div', { key: ext.name, style: { background: 'var(--bg2)', border: '1px solid var(--brd)', borderRadius: '8px', padding: '16px', marginBottom: '12px' },}
+                , React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' },}
+                  , React.createElement('div', null
+                    , React.createElement('div', { style: { fontSize: '14px', fontWeight: '600', marginBottom: '4px' },}, ext.title || ext.name)
+                    , React.createElement('div', { style: { fontSize: '11px', color: 'var(--txt2)' },}, ext.description || 'No description')
+                  )
+                  , React.createElement('button', { className: 'btn btn-sm ' + (ext.enabled ? 'btn-g' : 'btn-s'), onClick: () => togExtEnabled(ext.name, !ext.enabled),}
+                    , ext.enabled ? 'Enabled' : 'Disabled'
+                  )
+                )
+                , ext.enabled && EXTENSION_COMPONENTS[ext.name] &&
+                  React.createElement(EXTENSION_COMPONENTS[ext.name], {
+                    ext,
+                    updateExtCfg,
+                    ...(ext.name === 'webhook_site' ? {
+                      whkReqs,
+                      whkApiKey,
+                      setWhkApiKey,
+                      whkLoading,
+                      createWebhookToken,
+                      refreshWebhook,
+                      loadWebhookLocal,
+                      toast
+                    } : {})
+                  })
+                
+              )
+            ))
+          )
+        )
+
+
+        , tab === 'collections' && curPrj && (
+          React.createElement('div', { className: "coll-cnt",}
+            , React.createElement('div', { className: "coll-side panel" ,}
+              , React.createElement('div', { className: "pnl-hdr",}
+                , React.createElement('span', null, "Collections")
+                , React.createElement('button', { className: "btn btn-sm btn-p"  , onClick: createColl,}, "+")
+              )
+              , React.createElement('div', { className: "pnl-cnt",}
+                , colls.map(c => (
+                  React.createElement('div', { key: c.id, className: 'coll-item' + (selColl === c.id ? ' sel' : ''),
+                       onClick: () => loadCollItems(c.id),
+                       onContextMenu: e => { e.preventDefault(); if (confirm('Delete "' + c.name + '"?')) deleteColl(c.id); },}
+                    , React.createElement('span', { className: "coll-name",}, c.name)
+                    , React.createElement('span', { className: "coll-count",}, c.item_count)
+                  )
+                ))
+                , colls.length === 0 && (
+                  React.createElement('div', { className: "empty", style: { padding: 20, fontSize: 11 },}
+                    , React.createElement('span', null, "No collections yet"  )
+                  )
+                )
+              )
+            )
+            , React.createElement('div', { className: "coll-steps panel" ,}
+              , React.createElement('div', { className: "pnl-hdr",}
+                , React.createElement('span', null, "Steps " , selColl ? '(' + collItems.length + ')' : '')
+              )
+              , React.createElement('div', { className: "pnl-cnt",}
+                , collItems.map((item, idx) => (
+                  React.createElement('div', { key: item.id, className: 'coll-step-item' + (collStep === idx ? ' active' : '') + (collResps[item.id] ? (collResps[item.id].error ? ' err' : ' done') : ''),
+                       onClick: () => setCollStep(idx),
+                       onContextMenu: e => showContextMenu(e, item, 'collection'),}
+                    , React.createElement('span', { className: "coll-step-num",}, idx + 1)
+                    , React.createElement('span', { className: 'mth mth-' + item.method,}, item.method)
+                    , React.createElement('span', { className: "url", style: { flex: 1 },}, item.url.length > 45 ? item.url.substring(0, 45) + '...' : item.url)
+                    , collResps[item.id] && !collResps[item.id].error && (
+                      React.createElement('span', { className: 'sts ' + stCls(collResps[item.id].status_code),}, collResps[item.id].status_code)
+                    )
+                    , collResps[item.id] && collResps[item.id].error && (
+                      React.createElement('span', { className: "sts st5" ,}, "ERR")
+                    )
+                    , React.createElement('button', { className: "btn btn-sm btn-d"  , onClick: e => { e.stopPropagation(); deleteCollItem(selColl, item.id); }, style: { padding: '2px 5px', fontSize: '10px' },}, "✕")
+                  )
+                ))
+                , selColl && collItems.length === 0 && (
+                  React.createElement('div', { className: "empty", style: { padding: 20, fontSize: 11 },}
+                    , React.createElement('span', null, "Add requests via right-click in History"     )
+                  )
+                )
+                , !selColl && (
+                  React.createElement('div', { className: "empty", style: { padding: 20, fontSize: 11 },}
+                    , React.createElement('span', null, "Select a collection"  )
+                  )
+                )
+                , Object.keys(collVars).length > 0 && (
+                  React.createElement('div', { className: "coll-vars",}
+                    , React.createElement('div', { className: "coll-vars-hdr",}, "Variables")
+                    , Object.entries(collVars).map(([k, v]) => (
+                      React.createElement('div', { key: k, className: "coll-var",}
+                        , React.createElement('span', { className: "coll-var-name",}, k)
+                        , React.createElement('span', { className: "coll-var-val",}, String(v).substring(0, 60))
+                      )
+                    ))
+                  )
+                )
+              )
+            )
+            , React.createElement('div', { className: "coll-exec panel" ,}
+              , selColl && collItems.length > 0 ? (
+                React.createElement(React.Fragment, null
+                  , React.createElement('div', { className: "pnl-hdr",}
+                    , React.createElement('span', null, "Step " , Math.min(collStep + 1, collItems.length), " of "  , collItems.length)
+                    , React.createElement('div', { className: "acts",}
+                      , React.createElement('button', { className: "btn btn-sm btn-p"  , onClick: executeCollStep,
+                              disabled: collRunning || collStep >= collItems.length,}
+                        , collRunning ? '...' : '\u25B6 Send Next'
+                      )
+                      , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: resetCollRun,}, "Reset")
+                    )
+                  )
+                  , (() => {
+                    const item = collItems[Math.min(collStep, collItems.length - 1)];
+                    if (!item) return null;
+                    const resp = collResps[item.id];
+                    return (
+                      React.createElement(React.Fragment, null
+                        , React.createElement('div', { style: { padding: '10px 14px', background: 'var(--bg2)', borderBottom: '1px solid var(--brd)', fontSize: '12px' },}
+                          , React.createElement('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '6px' },}
+                            , React.createElement('span', { className: 'mth mth-' + item.method,}, item.method)
+                            , React.createElement('span', { style: { fontFamily: 'var(--font-mono)', fontSize: '11px', flex: 1 },}, item.url)
+                          )
+                          , item.headers && Object.keys(item.headers).length > 0 && (
+                            React.createElement('div', { style: { fontSize: '10px', color: 'var(--txt3)', marginBottom: '4px' },}
+                              , Object.entries(item.headers).map(([k, v]) => k + ': ' + v).join(' | ')
+                            )
+                          )
+                          , item.body && (
+                            React.createElement('div', { style: { fontSize: '10px', color: 'var(--txt3)' },}, "Body: " , item.body.substring(0, 100))
+                          )
+                        )
+                        , React.createElement('div', { style: { padding: '8px 14px', background: 'var(--bg3)', borderBottom: '1px solid var(--brd)' },}
+                          , React.createElement('div', { style: { fontSize: '10px', color: 'var(--txt2)', fontWeight: '600', marginBottom: '6px' },}, "Variable Extractions" )
+                          , (item.var_extracts || []).map((ve, vi) => (
+                            React.createElement('div', { key: vi, className: "coll-extract",}
+                              , React.createElement('span', { className: "coll-extract-name",}, ve.name)
+                              , React.createElement('span', { style: { color: 'var(--txt3)', fontSize: '10px' },}, "from " , ve.source, " at" )
+                              , React.createElement('span', { style: { fontFamily: 'var(--font-mono)', fontSize: '10px', color: 'var(--cyan)' },}, ve.path)
+                              , React.createElement('button', { className: "btn btn-sm btn-d"  , style: { padding: '1px 4px', fontSize: '9px' },
+                                onClick: () => {
+                                  const newExtracts = item.var_extracts.filter((_, i) => i !== vi);
+                                  updateCollItemExtracts(selColl, item.id, newExtracts);
+                                },}, "✕")
+                            )
+                          ))
+                          , React.createElement('div', { style: { display: 'flex', gap: '6px', marginTop: '6px' },}
+                            , React.createElement('input', { className: "inp", placeholder: "var name" , id: "ve-name", style: { flex: 1, fontSize: '10px', padding: '4px 6px' },} )
+                            , React.createElement('select', { className: "sel", id: "ve-source", style: { fontSize: '10px', padding: '4px' },}
+                              , React.createElement('option', { value: "body",}, "body")
+                              , React.createElement('option', { value: "header",}, "header")
+                            )
+                            , React.createElement('input', { className: "inp", placeholder: "$.path.to.value", id: "ve-path", style: { flex: 1, fontSize: '10px', padding: '4px 6px' },} )
+                            , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: () => {
+                              const name = document.getElementById('ve-name').value;
+                              const source = document.getElementById('ve-source').value;
+                              const path = document.getElementById('ve-path').value;
+                              if (!name || !path) return;
+                              const newExtracts = [...(item.var_extracts || []), { name, source, path }];
+                              updateCollItemExtracts(selColl, item.id, newExtracts);
+                              document.getElementById('ve-name').value = '';
+                              document.getElementById('ve-path').value = '';
+                            },}, "+ Add" )
+                          )
+                        )
+                        , resp && (
+                          React.createElement(React.Fragment, null
+                            , React.createElement('div', { className: "pnl-hdr",}
+                              , React.createElement('span', null, "Response")
+                              , !resp.error && (
+                                React.createElement('span', { style: { color: 'var(--txt3)', fontSize: '10px' },}
+                                  , resp.status_code, " • "  , _optionalChain([resp, 'access', _68 => _68.elapsed, 'optionalAccess', _69 => _69.toFixed, 'call', _70 => _70(3)]), "s"
+                                )
+                              )
+                            )
+                            , (() => {
+                              if (resp.error) return React.createElement('div', { className: "code", style: { flex: 1 },}, resp.error);
+                              const collBodyFmt = colorizeBody(resp.body || '');
+                              return collBodyFmt.html
+                                ? React.createElement('div', { className: "code", style: { flex: 1 }, dangerouslySetInnerHTML: { __html: collBodyFmt.text },} )
+                                : React.createElement('div', { className: "code", style: { flex: 1 },}, resp.body || '');
+                            })()
+                            , resp.extracted_variables && Object.keys(resp.extracted_variables).length > 0 && (
+                              React.createElement('div', { className: "coll-vars", style: { borderTop: '1px solid var(--brd)' },}
+                                , React.createElement('div', { className: "coll-vars-hdr",}, "Extracted")
+                                , Object.entries(resp.extracted_variables).map(([k, v]) => (
+                                  React.createElement('div', { key: k, className: "coll-var",}
+                                    , React.createElement('span', { className: "coll-var-name",}, k)
+                                    , React.createElement('span', { className: "coll-var-val",}, String(v).substring(0, 60))
+                                  )
+                                ))
+                              )
+                            )
+                          )
+                        )
+                        , !resp && (
+                          React.createElement('div', { className: "empty",}, React.createElement('span', null, "Click \"Send Next\" to execute this step"      ))
+                        )
+                      )
+                    );
+                  })()
+                )
+              ) : (
+                React.createElement('div', { className: "empty",}, React.createElement('span', null, selColl ? 'No steps - add requests from History' : 'Select a collection'))
+              )
+            )
+          )
+        )
+
+        , tab === 'chepy' && curPrj && (
+          React.createElement('div', { className: "chepy-cnt",}
+            , React.createElement('div', { className: "chepy-col chepy-in-col" ,}
+              , React.createElement('div', { className: "pnl-hdr",}
+                , React.createElement('span', null, "Input")
+                , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: () => setChepyIn(''),}, "Clear")
+              )
+              , React.createElement('textarea', {
+                className: "ed-ta",
+                style: { flex: 1 },
+                value: chepyIn,
+                onChange: e => setChepyIn(e.target.value),
+                placeholder: "Paste or type input text here..."     ,}
+              )
+            )
+
+            , React.createElement('div', { className: "chepy-col chepy-recipe-col" ,}
+              , React.createElement('div', { className: "pnl-hdr",}
+                , React.createElement('span', null, "Recipe")
+                , React.createElement('div', { style: { display: 'flex', gap: '6px' },}
+                  , React.createElement('button', { className: "btn btn-sm btn-d"  , onClick: clearChepyRecipe,}, "Clear")
+                  , React.createElement('button', { className: "btn btn-sm btn-p"  , onClick: bakeChepy, disabled: chepyBaking,}
+                    , chepyBaking ? '...' : 'Bake'
+                  )
+                )
+              )
+
+              , React.createElement('div', { className: "chepy-add",}
+                , React.createElement('select', { className: "sel", value: chepySelCat,
+                  onChange: e => setChepySelCat(e.target.value),
+                  style: { margin: '8px', borderRadius: '4px' },}
+                  , Object.keys(chepyCat).map(cat => (
+                    React.createElement('option', { key: cat, value: cat,}, cat)
+                  ))
+                )
+                , React.createElement('div', { className: "chepy-ops-list",}
+                  , (chepyCat[chepySelCat] || []).map(op => (
+                    React.createElement('div', { key: op.name, className: "chepy-avail-op", onClick: () => addChepyOp(op),}
+                      , op.label
+                    )
+                  ))
+                )
+              )
+
+              , React.createElement('div', { className: "chepy-steps",}
+                , chepyOps.length === 0 && (
+                  React.createElement('div', { className: "empty", style: { padding: 20, fontSize: 11 },}
+                    , React.createElement('span', null, "Click operations above to build a recipe"      )
+                  )
+                )
+                , chepyOps.map((op, i) => (
+                  React.createElement('div', { key: i, className: "chepy-step",}
+                    , React.createElement('div', { className: "chepy-step-hdr",}
+                      , React.createElement('span', { className: "chepy-step-num",}, i + 1)
+                      , React.createElement('span', { className: "chepy-step-name",}, op.label)
+                      , React.createElement('div', { className: "chepy-step-acts",}
+                        , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: () => moveChepyOp(i, -1), disabled: i === 0,}, "▲")
+                        , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: () => moveChepyOp(i, 1), disabled: i === chepyOps.length - 1,}, "▼")
+                        , React.createElement('button', { className: "btn btn-sm btn-d"  , onClick: () => removeChepyOp(i),}, "✕")
+                      )
+                    )
+                    , op.params.length > 0 && (
+                      React.createElement('div', { className: "chepy-step-params",}
+                        , op.params.map(p => (
+                          React.createElement('div', { key: p.name, className: "chepy-param",}
+                            , React.createElement('label', { className: "chepy-param-lbl",}, p.label)
+                            , p.type === 'select' ? (
+                              React.createElement('select', { className: "sel", value: op.args[p.name] || p.default,
+                                onChange: e => updateChepyArg(i, p.name, e.target.value),
+                                style: { flex: 1, fontSize: '11px', padding: '5px 8px' },}
+                                , (p.options || []).map(o => React.createElement('option', { key: o, value: o,}, o))
+                              )
+                            ) : (
+                              React.createElement('input', { className: "inp", value: op.args[p.name] || '',
+                                onChange: e => updateChepyArg(i, p.name, e.target.value),
+                                placeholder: p.default || '',
+                                style: { flex: 1, fontSize: '11px', padding: '5px 8px' },} )
+                            )
+                          )
+                        ))
+                      )
+                    )
+                  )
+                ))
+              )
+            )
+
+            , React.createElement('div', { className: "chepy-col chepy-out-col" ,}
+              , React.createElement('div', { className: "pnl-hdr",}
+                , React.createElement('span', null, "Output")
+                , React.createElement('button', { className: "btn btn-sm btn-s"  ,
+                  onClick: () => { navigator.clipboard.writeText(chepyOut); toast('Copied', 'success'); },
+                  disabled: !chepyOut,}, "Copy"
+
+                )
+              )
+              , chepyErr ? (
+                React.createElement('div', { className: "code", style: { color: 'var(--red)' },}, chepyErr)
+              ) : (
+                React.createElement('div', { className: "code",}, chepyOut || 'Output will appear here after baking')
+              )
+            )
+          )
+        )
+
+        , tab === 'compare' && curPrj && (
+          React.createElement('div', { style: { display: 'flex', flexDirection: 'column', width: '100%', height: '100%' },}
+            , React.createElement('div', { className: "det-tabs", style: { justifyContent: 'flex-start', gap: 0 },}
+              , React.createElement('div', { className: 'det-tab' + (cmpView === 'request' ? ' act' : ''), onClick: () => setCmpView('request'),}, "Request")
+              , React.createElement('div', { className: 'det-tab' + (cmpView === 'response' ? ' act' : ''), onClick: () => setCmpView('response'),}, "Response")
+              , React.createElement('div', { style: { flex: 1 },} )
+              , React.createElement('button', { className: "btn btn-sm btn-s"  , style: { margin: '4px 10px' }, onClick: () => { setCmpA(null); setCmpB(null); },}, "Clear All" )
+            )
+            , !cmpA && !cmpB ? (
+              React.createElement('div', { className: "empty",}
+                , React.createElement('div', { className: "empty-i",}, "↔")
+                , React.createElement('span', null, "Right-click a request and choose \"Send to Compare (A/B)\""        )
+              )
+            ) : (
+              React.createElement('div', { className: "cmp-wrap",}
+                , React.createElement('div', { className: "cmp-side",}
+                  , React.createElement('div', { className: "pnl-hdr",}
+                    , React.createElement('span', { style: { fontWeight: 600, color: 'var(--red)' },}, "A " , cmpA ? React.createElement('span', { style: { fontWeight: 400, color: 'var(--txt2)' },}, cmpA.method, " " , cmpA.url) : '(empty)')
+                    , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: () => setCmpA(null),}, "Clear")
+                  )
+                  , React.createElement('div', { className: "cmp-body",}
+                    , cmpDiff.map((d, i) => (
+                      React.createElement('div', { key: i, className: 'cmp-line ' + (d.type === 'equal' ? 'cmp-eq' : d.type === 'removed' ? 'cmp-rem' : 'cmp-blank'),}
+                        , d.type === 'added' ? '\u00A0' : (_nullishCoalesce(d.lineA, () => ( '')))
+                      )
+                    ))
+                  )
+                )
+                , React.createElement('div', { className: "cmp-side",}
+                  , React.createElement('div', { className: "pnl-hdr",}
+                    , React.createElement('span', { style: { fontWeight: 600, color: 'var(--green)' },}, "B " , cmpB ? React.createElement('span', { style: { fontWeight: 400, color: 'var(--txt2)' },}, cmpB.method, " " , cmpB.url) : '(empty)')
+                    , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: () => setCmpB(null),}, "Clear")
+                  )
+                  , React.createElement('div', { className: "cmp-body",}
+                    , cmpDiff.map((d, i) => (
+                      React.createElement('div', { key: i, className: 'cmp-line ' + (d.type === 'equal' ? 'cmp-eq' : d.type === 'added' ? 'cmp-add' : 'cmp-blank'),}
+                        , d.type === 'removed' ? '\u00A0' : (_nullishCoalesce(d.lineB, () => ( '')))
+                      )
+                    ))
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+
+      , React.createElement('div', { className: "toast-c",}
+        , toasts.map(t => (
+          React.createElement('div', { key: t.id, className: 'toast ' + t.type,}, t.message)
+        ))
+      )
+
+      , contextMenu && (
+        React.createElement('div', { ref: ctxMenuRef, className: "context-menu", style: { left: contextMenu.x, top: contextMenu.y }, onClick: e => e.stopPropagation(),}
+          , (_optionalChain([contextMenu, 'access', _71 => _71.normalized, 'optionalAccess', _72 => _72.body]) || contextMenu.source === 'selection') && (
+            React.createElement('div', { className: "context-menu-item", onClick: () => handleContextAction('send-to-cipher'),}, "Send to Cipher"
+
+            )
+          )
+          , contextMenu.source !== 'websocket' && (
+            React.createElement('div', { className: "context-menu-item", onClick: () => handleContextAction('repeater'),}, "Send to Repeater"
+
+            )
+          )
+          , React.createElement('div', { className: "context-menu-item", onClick: () => handleContextAction('add-to-collection'),}, "Add to Collection"
+
+          )
+          , contextMenu.source !== 'websocket' && contextMenu.source !== 'selection' && (
+            React.createElement(React.Fragment, null
+              , React.createElement('div', { className: "context-menu-item", onClick: () => handleContextAction('compare-a'),}, "Send to Compare (A)"
+
+              )
+              , React.createElement('div', { className: "context-menu-item", onClick: () => handleContextAction('compare-b'),}, "Send to Compare (B)"
+
+              )
+            )
+          )
+          , React.createElement('div', { className: "context-menu-divider",} )
+          , React.createElement('div', { className: "context-menu-item", onClick: () => handleContextAction('copy-url'),}, "Copy URL"
+
+          )
+          , contextMenu.source !== 'websocket' && (
+            React.createElement('div', { className: "context-menu-item", onClick: () => handleContextAction('copy-curl'),}, "Copy as cURL"
+
+            )
+          )
+          , React.createElement('div', { className: "context-menu-item", onClick: () => handleContextAction('copy-body'),}, "Copy Body"
+
+          )
+          , _optionalChain([contextMenu, 'access', _73 => _73.normalized, 'optionalAccess', _74 => _74.url]) && (
+            React.createElement(React.Fragment, null
+              , React.createElement('div', { className: "context-menu-divider",} )
+              , React.createElement('div', { className: "context-menu-item", onClick: () => handleContextAction('scope-include'),}, "Add host to Scope"
+
+              )
+              , React.createElement('div', { className: "context-menu-item", onClick: () => handleContextAction('scope-exclude'),}, "Exclude host to Scope"
+
+              )
+            )
+          )
+          , contextMenu.source === 'history' && (
+            React.createElement(React.Fragment, null
+              , React.createElement('div', { className: "context-menu-divider",} )
+              , React.createElement('div', { className: "context-menu-item", onClick: () => handleContextAction('favorite'),}
+                , contextMenu.request.saved ? 'Unmark' : 'Mark', " as Favorite"
+              )
+              , React.createElement('div', { className: "context-menu-item", onClick: () => handleContextAction('delete'),}, "Delete"
+
+              )
+            )
+          )
+          , contextMenu.source === 'repeater' && (
+            React.createElement(React.Fragment, null
+              , React.createElement('div', { className: "context-menu-divider",} )
+              , React.createElement('div', { className: "context-menu-item", onClick: () => handleContextAction('rename'),}, "Rename"
+
+              )
+              , React.createElement('div', { className: "context-menu-item", onClick: () => handleContextAction('delete'),}, "Delete"
+
+              )
+            )
+          )
+        )
+      )
+
+      , showCollPick && (
+        React.createElement('div', { style: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1001 },
+             onClick: () => setShowCollPick(null),}
+          , React.createElement('div', { style: { background: 'var(--bg2)', border: '1px solid var(--brd)', borderRadius: '8px', padding: '20px', minWidth: '300px' },
+               onClick: e => e.stopPropagation(),}
+            , React.createElement('h3', { style: { fontSize: '14px', marginBottom: '12px' },}, "Add to Collection"  )
+            , colls.length === 0 && React.createElement('div', { style: { color: 'var(--txt3)', fontSize: '12px', marginBottom: '10px' },}, "No collections yet. Create one in the Collections tab."        )
+            , colls.map(c => (
+              React.createElement('div', { key: c.id, className: "coll-pick-item", onClick: () => addToCollection(c.id, showCollPick),}
+                , c.name, " " , React.createElement('span', { style: { color: 'var(--txt3)', fontSize: '10px' },}, "(", c.item_count, " items)" )
+              )
+            ))
+            , React.createElement('button', { className: "btn btn-sm btn-s"  , style: { marginTop: '10px' }, onClick: () => setShowCollPick(null),}, "Cancel")
+          )
+        )
+      )
+
+      , showProxyCfg && (
+        React.createElement('div', { style: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1001 }, onClick: () => setShowProxyCfg(false),}
+          , React.createElement('div', { style: { background: 'var(--bg2)', border: '1px solid var(--brd)', borderRadius: '8px', padding: '24px', minWidth: '500px', maxHeight: '80vh', overflowY: 'auto' }, onClick: e => e.stopPropagation(),}
+            , React.createElement('h3', { style: { fontSize: '16px', marginBottom: '16px' },}, "Proxy Configuration" )
+            , React.createElement('div', { style: { marginBottom: '16px' },}
+              , React.createElement('label', { style: { display: 'block', fontSize: '12px', color: 'var(--txt2)', marginBottom: '6px' },}, "Port")
+              , React.createElement('input', { className: "inp", type: "number", value: pxPort, onChange: e => setPxPort(parseInt(e.target.value) || 8080), min: "1", max: "65535",} )
+            )
+            , React.createElement('div', { style: { marginBottom: '16px' },}
+              , React.createElement('label', { style: { display: 'block', fontSize: '12px', color: 'var(--txt2)', marginBottom: '6px' },}, "Mode")
+              , React.createElement('select', { className: "sel", value: pxMode, onChange: e => setPxMode(e.target.value), style: { width: '100%' },}
+                , React.createElement('option', { value: "regular",}, "Regular")
+                , React.createElement('option', { value: "transparent",}, "Transparent")
+                , React.createElement('option', { value: "socks5",}, "SOCKS5")
+                , React.createElement('option', { value: "reverse:http://example.com",}, "Reverse Proxy" )
+                , React.createElement('option', { value: "upstream:http://proxy.example.com:8080",}, "Upstream Proxy" )
+              )
+              , React.createElement('div', { style: { fontSize: '10px', color: 'var(--txt3)', marginTop: '4px' },}, "Select proxy operating mode"   )
+            )
+            , React.createElement('div', { style: { marginBottom: '16px' },}
+              , React.createElement('label', { style: { display: 'block', fontSize: '12px', color: 'var(--txt2)', marginBottom: '6px' },}, "Additional Arguments" )
+              , React.createElement('input', { className: "inp", type: "text", value: pxArgs, onChange: e => setPxArgs(e.target.value), placeholder: "--ssl-insecure --verbose" ,} )
+              , React.createElement('div', { style: { fontSize: '10px', color: 'var(--txt3)', marginTop: '4px' },}, "Extra mitmproxy arguments (e.g., --ssl-insecure --verbose)"     )
+            )
+            , React.createElement('div', { style: { marginBottom: '16px', padding: '12px', background: 'var(--bg3)', borderRadius: '6px', fontSize: '11px' },}
+              , React.createElement('div', { style: { fontWeight: '600', marginBottom: '8px', color: 'var(--txt2)' },}, "Common Configurations:" )
+              , React.createElement('div', { style: { marginBottom: '4px' },}, React.createElement('strong', null, "Transparent:"), " Intercept traffic at network level (requires iptables)"       )
+              , React.createElement('div', { style: { marginBottom: '4px' },}, React.createElement('strong', null, "SOCKS5:"), " Run as SOCKS5 proxy server"     )
+              , React.createElement('div', { style: { marginBottom: '4px' },}, React.createElement('strong', null, "Reverse:"), " Act as reverse proxy for specific server"       )
+              , React.createElement('div', { style: { marginBottom: '4px' },}, React.createElement('strong', null, "Upstream:"), " Chain with another proxy"    )
+              , React.createElement('div', { style: { marginTop: '8px', color: 'var(--txt3)', fontSize: '10px' },}, "Docs: " , React.createElement('a', { href: "https://docs.mitmproxy.org/stable/concepts-modes/", target: "_blank", style: { color: 'var(--cyan)' },}, "mitmproxy.org/modes"))
+            )
+            , React.createElement('div', { style: { display: 'flex', gap: '10px' },}
+              , React.createElement('button', { className: "btn btn-p" , onClick: saveProxyCfg,}, "Save")
+              , React.createElement('button', { className: "btn btn-s" , onClick: () => setShowProxyCfg(false),}, "Cancel")
+            )
+          )
+        )
+      )
+      )
+      )
+    )
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(React.createElement(Blackwire, null ));
+
+})();
