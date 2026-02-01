@@ -1053,6 +1053,14 @@ async def proxy_status():
     running = proxy_process is not None and proxy_process.poll() is None
     return {"running": running, "intercept_enabled": intercept_enabled}
 
+@app.post("/api/shutdown")
+async def shutdown_server():
+    """Gracefully shut down the entire server."""
+    await stop_proxy()
+    # Schedule shutdown after response is sent
+    asyncio.get_event_loop().call_later(0.5, lambda: os._exit(0))
+    return {"status": "shutting_down"}
+
 
 REQ_LIST_COLS = "id, method, url, response_status, timestamp, request_type, saved, in_scope"
 

@@ -2118,6 +2118,7 @@ function Blackwire() {
               , React.createElement('button', { className: "btn btn-s" , onClick: launchBr, disabled: !pxRun,}, "🌐")
             )
           )
+          , React.createElement('button', { className: "btn btn-sm btn-s"  , title: "Shutdown server" , onClick: () => { if (confirm('Shut down Blackwire server?')) api.post('/api/shutdown'); }, style: { marginLeft: '4px', color: 'var(--red)', fontSize: '14px', padding: '4px 8px' },}, "⏻")
         )
       )
 
