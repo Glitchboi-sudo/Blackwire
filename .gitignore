@@ -1,5 +1,4 @@
 .current_project
 /projects/*
 /data/*
-.calude/*
 backend/.proxy_config.json
