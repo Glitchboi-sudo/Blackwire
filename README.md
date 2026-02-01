@@ -39,29 +39,16 @@
 - **WebSocket Viewer**: Captura y visualiza conexiones WebSocket con sus frames en ambas direcciones, con soporte para reenviar mensajes
 
 ### Herramientas
-- **Cipher (Chepy)**: Encoder/decoder visual con recetas encadenables — Base64, URL encoding, hashes criptográficos, gzip, hex, y 100+ operaciones
+- **Cipher**: Encoder/decoder visual con recetas encadenables — Base64, URL encoding, hashes criptográficos, gzip, hex, y 100+ operaciones
 - **Collections**: Agrupa requests en secuencias ejecutables con extracción de variables y sustitución automática para workflows de testing
-- **Webhook.site**: Integración con webhook.site para generar URLs únicas, capturar webhooks entrantes y analizarlos en la interfaz
 - **Git Integration**: Control de versiones integrado para commits y revisión de historial del proyecto
-
-### UI/UX
-- **15 Temas**: Midnight, Dusk, Paper, Gruvbox, Solarized, Aurora, Noir, Glacier, Ember, Forest, Oceanic, Rose, Mono, Desert, Synth
-- **Context Menu**: Click derecho en cualquier request para enviar a Repeater, Compare, Collections, Cipher, copiar como cURL, agregar a scope, etc.
-- **Splash Screen**: Carga frontend inmediatamente mientras los datos se cargan en paralelo
-- **Sistema de Extensiones**: Plugins en Python con hooks para on_request, on_response y on_error
-
-### Rendimiento
-- **Pre-transpilación JSX**: Sucrase compila App.jsx al iniciar el server, eliminando Babel en el browser
-- **Lazy Loading**: Los detalles completos de requests se cargan bajo demanda, no en listas
-- **GZip Middleware**: Compresión automática de respuestas del API
-- **Índices SQLite**: Queries optimizados con índices en columnas frecuentes
-- **Payloads Ligeros**: Las listas solo cargan metadatos, los body/headers se piden por separado
 
 ### Operación
 - **100% Portable**: Sin rutas hardcoded, funciona desde cualquier directorio
 - **Desktop Launcher**: Integración con menú de aplicaciones sin terminal visible
 - **Shutdown**: Botón en la UI, script `stop.sh`, o endpoint API para apagar el server
 - **Cross-Platform**: Compatible con cualquier distribución Linux
+- **15 Temas**: Midnight, Dusk, Paper, Gruvbox, Solarized, Aurora, Noir, Glacier, Ember, Forest, Oceanic, Rose, Mono, Desert, Synth
 
 ---
 
@@ -338,7 +325,7 @@ Los nodos muestran badges con el conteo de requests y los métodos HTTP vistos (
 
 ---
 
-### Cipher (Chepy)
+### Cipher
 
 Encoder/decoder con recetas encadenables:
 
