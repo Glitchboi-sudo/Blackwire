@@ -1775,7 +1775,7 @@ function Blackwire() {
     setContextMenu(null);
     // For history list items, fetch full detail on demand for actions needing body/headers
     const needsFull = ['repeater','copy-curl','copy-body','send-to-cipher','compare-a','compare-b','add-to-collection'];
-    if (source === 'history' && needsFull.includes(action) && !norm.headers) {
+    if (source === 'history' && needsFull.includes(action) && (!norm.headers || Object.keys(norm.headers).length === 0)) {
       try {
         const full = await api.get('/api/requests/' + req.id + '/detail');
         norm = { ...norm, headers: full.headers || {}, body: full.body || null };

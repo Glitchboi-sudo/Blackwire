@@ -686,6 +686,11 @@ def _static_headers():
 
 @app.get("/App.jsx")
 async def app_jsx():
+    # Auto-recompile if source is newer than compiled
+    if APP_JSX_PATH.exists():
+        need_compile = not APP_COMPILED_PATH.exists() or APP_JSX_PATH.stat().st_mtime > APP_COMPILED_PATH.stat().st_mtime
+        if need_compile:
+            transpile_jsx()
     if APP_COMPILED_PATH.exists():
         return FileResponse(APP_COMPILED_PATH, media_type="text/javascript", headers=_static_headers())
     if APP_JSX_PATH.exists():
