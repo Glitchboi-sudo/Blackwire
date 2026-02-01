@@ -200,6 +200,49 @@ function diffLines(textA, textB) {
   return result.reverse();
 }
 
+// --- Site Map Tree Builder ---
+function buildSiteTree(reqs) {
+  const tree = {};
+  for (const r of reqs) {
+    let origin, pathname;
+    try {
+      const u = new URL(r.url);
+      origin = u.origin;
+      pathname = u.pathname || '/';
+    } catch (e) {
+      origin = '(other)';
+      pathname = r.url || '/';
+    }
+    if (!tree[origin]) tree[origin] = { label: origin.replace(/^https?:\/\//, ''), children: {}, reqs: [], methods: new Set(), count: 0 };
+    const host = tree[origin];
+    host.count++;
+    host.methods.add(r.method);
+    const segs = pathname.split('/').filter(Boolean);
+    if (segs.length === 0) {
+      host.reqs.push(r);
+    } else {
+      let node = host;
+      for (let i = 0; i < segs.length; i++) {
+        const seg = '/' + segs[i];
+        if (!node.children[seg]) node.children[seg] = { label: seg, children: {}, reqs: [], methods: new Set(), count: 0 };
+        node = node.children[seg];
+        node.count++;
+        node.methods.add(r.method);
+      }
+      node.reqs.push(r);
+    }
+  }
+  return tree;
+}
+
+function collectNodeReqs(node) {
+  let all = [...node.reqs];
+  for (const child of Object.values(node.children)) {
+    all = all.concat(collectNodeReqs(child));
+  }
+  return all;
+}
+
 function Blackwire() {
   // Estado principal
   const [tab, setTab] = useState('projects');
@@ -216,7 +259,9 @@ function Blackwire() {
   const [reqs, setReqs] = useState([]);
   const [selReq, setSelReq] = useState(null);
   const [detTab, setDetTab] = useState('request');
-  const [histSubTab, setHistSubTab] = useState('http'); // 'http' | 'ws'
+  const [histSubTab, setHistSubTab] = useState('http'); // 'http' | 'ws' | 'sitemap'
+  const [smExpanded, setSmExpanded] = useState({});
+  const [smSelNode, setSmSelNode] = useState(null);
 
   // Estado del Repeater
   const [repReqs, setRepReqs] = useState([]);
@@ -1804,6 +1849,41 @@ function Blackwire() {
     if (!cmpA && !cmpB) return [];
     return diffLines(buildCmpText(cmpA, cmpView), buildCmpText(cmpB, cmpView));
   }, [cmpA, cmpB, cmpView]);
+
+  const siteTree = React.useMemo(() => buildSiteTree(reqs), [reqs]);
+  const smNodeReqs = React.useMemo(() => smSelNode ? collectNodeReqs(smSelNode) : [], [smSelNode, reqs]);
+
+  const toggleSmNode = (key) => setSmExpanded(p => ({ ...p, [key]: !p[key] }));
+
+  const renderTreeNode = (key, node, depth, parentKey) => {
+    const fullKey = parentKey ? parentKey + key : key;
+    const expanded = !!smExpanded[fullKey];
+    const hasChildren = Object.keys(node.children).length > 0;
+    const isSelected = smSelNode === node;
+    const methods = [...node.methods].sort();
+    return (
+      <React.Fragment key={fullKey}>
+        <div
+          className={'sm-node' + (isSelected ? ' sel' : '')}
+          style={{ paddingLeft: (depth * 16 + 8) + 'px' }}
+          onClick={() => setSmSelNode(node)}
+        >
+          <span className="sm-toggle" onClick={e => { e.stopPropagation(); if (hasChildren) toggleSmNode(fullKey); }}>
+            {hasChildren ? (expanded ? '\u25BC' : '\u25B6') : '\u00B7'}
+          </span>
+          <span className="sm-label">{node.label}</span>
+          <span className="sm-methods">
+            {methods.map(m => <span key={m} className={'sm-mth mth-' + m}>{m}</span>)}
+          </span>
+          <span className="sm-badge">{node.count}</span>
+        </div>
+        {expanded && Object.entries(node.children)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([k, child]) => renderTreeNode(k, child, depth + 1, fullKey))}
+      </React.Fragment>
+    );
+  };
+
   const themeVars = (THEMES[themeId] && THEMES[themeId].vars)
     ? THEMES[themeId].vars
     : (THEMES.midnight && THEMES.midnight.vars) ? THEMES.midnight.vars : {};
@@ -1958,6 +2038,15 @@ function Blackwire() {
 .cmp-eq{}.cmp-rem{background:rgba(248,81,73,.1);color:var(--red);border-left:3px solid var(--red)}
 .cmp-add{background:rgba(63,185,80,.1);color:var(--green);border-left:3px solid var(--green)}
 .cmp-blank{opacity:0.15;background:var(--bg3)}
+.sm-tree{width:38%;border-right:1px solid var(--brd);display:flex;flex-direction:column;overflow:hidden}
+.sm-right{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.sm-node{padding:4px 8px;cursor:pointer;font-size:11px;font-family:var(--font-mono);display:flex;align-items:center;gap:4px;border-left:2px solid transparent;white-space:nowrap}
+.sm-node:hover{background:var(--bgh)}.sm-node.sel{background:var(--bg3);border-left-color:var(--cyan)}
+.sm-toggle{width:14px;text-align:center;color:var(--txt3);flex-shrink:0;font-size:9px;cursor:pointer}
+.sm-label{flex:1;overflow:hidden;text-overflow:ellipsis;color:var(--txt)}
+.sm-badge{font-size:9px;background:var(--bg3);color:var(--txt3);padding:1px 6px;border-radius:8px;flex-shrink:0}
+.sm-methods{display:flex;gap:2px;flex-shrink:0}
+.sm-mth{font-size:8px;padding:1px 4px;border-radius:3px;font-weight:600}
 .splash{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:16px}
 .splash .logo-i{width:56px;height:56px;font-size:22px;border-radius:10px}
 .splash-spin{width:24px;height:24px;border:2px solid var(--brd);border-top-color:var(--cyan);border-radius:50%;animation:spin .6s linear infinite}
@@ -2070,6 +2159,7 @@ function Blackwire() {
             <div className="hist-sub-tabs">
               <div className={'hist-sub-tab' + (histSubTab === 'http' ? ' act' : '')} onClick={() => setHistSubTab('http')}>HTTP</div>
               <div className={'hist-sub-tab' + (histSubTab === 'ws' ? ' act' : '')} onClick={() => { setHistSubTab('ws'); loadWsConns(); }}>WebSocket</div>
+              <div className={'hist-sub-tab' + (histSubTab === 'sitemap' ? ' act' : '')} onClick={() => setHistSubTab('sitemap')}>Site Map</div>
             </div>
 
             {histSubTab === 'http' && (
@@ -2077,7 +2167,7 @@ function Blackwire() {
                 <div className="panel hist-pnl">
                   <div className="flt-bar">
                     <div className="flt-in-wrap">
-                      <input className={'flt-in' + (httpqlError ? ' flt-err' : '')} placeholder='HTTPQL: req.method.eq:"GET" AND resp.code.lt:400' value={search} onChange={e => setSearch(e.target.value)} />
+                      <input className={'flt-in' + (httpqlError ? ' flt-err' : '')} placeholder='Filter: req.method.eq:"GET" AND resp.code.lt:400' value={search} onChange={e => setSearch(e.target.value)} />
                       {httpqlError && <div className="flt-err-msg">{httpqlError}</div>}
                     </div>
                     <div className="flt-preset-wrap" style={{position:'relative'}}>
@@ -2264,6 +2354,86 @@ function Blackwire() {
                     </React.Fragment>
                   ) : (
                     <div className="empty"><span>Select a frame</span></div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {histSubTab === 'sitemap' && (
+              <div className="hist-content">
+                <div className="panel sm-tree">
+                  <div className="pnl-hdr">
+                    <span>{Object.keys(siteTree).length} hosts</span>
+                    <button className="btn btn-sm btn-s" onClick={() => { setSmExpanded({}); setSmSelNode(null); }}>Collapse All</button>
+                  </div>
+                  <div className="pnl-cnt">
+                    {Object.keys(siteTree).length === 0 ? (
+                      <div className="empty">
+                        <div className="empty-i">🌐</div>
+                        <span>No requests captured</span>
+                      </div>
+                    ) : (
+                      Object.entries(siteTree)
+                        .sort(([a], [b]) => a.localeCompare(b))
+                        .map(([origin, node]) => renderTreeNode(origin, node, 0, ''))
+                    )}
+                  </div>
+                </div>
+                <div className="sm-right">
+                  <div className="panel" style={{ flex: smSelNode && selReq ? 1 : 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                    <div className="pnl-hdr">
+                      <span>{smSelNode ? smNodeReqs.length + ' requests' : 'Select a node'}</span>
+                    </div>
+                    <div className="pnl-cnt">
+                      {smSelNode ? (
+                        <div className="req-list">
+                          {smNodeReqs.map(r => (
+                            <div
+                              key={r.id}
+                              className={'req-item' + (selReq?.id === r.id ? ' sel' : '') + (!r.in_scope ? ' out' : '')}
+                              onClick={() => setSelReq(r)}
+                              onContextMenu={e => showContextMenu(e, r)}
+                            >
+                              <span className={'mth mth-' + r.method}>{r.method}</span>
+                              <span className="url" title={r.url}>{r.url}</span>
+                              <span className={'sts ' + stCls(r.response_status)}>{r.response_status || '-'}</span>
+                              <span className="ts">{fmtTime(r.timestamp)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="empty"><span>Click a node in the tree</span></div>
+                      )}
+                    </div>
+                  </div>
+                  {selReq && smSelNode && (
+                    <div className="panel" style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', borderTop: '1px solid var(--brd)' }}>
+                      <div className="pnl-hdr">
+                        <span>{selReq.method} {selReq.url.substring(0, 60)}</span>
+                        <div className="acts">
+                          <button className="btn btn-sm btn-p" onClick={() => toRep(selReq)}>→ Rep</button>
+                        </div>
+                      </div>
+                      <div className="det-tabs">
+                        <div className={'det-tab' + (detTab === 'request' ? ' act' : '')} onClick={() => setDetTab('request')}>Request</div>
+                        <div className={'det-tab' + (detTab === 'response' ? ' act' : '')} onClick={() => setDetTab('response')}>Response</div>
+                        <div style={{ marginLeft: 'auto', display: 'flex', gap: '6px', alignItems: 'center' }}>
+                          <button className={'btn btn-sm ' + (detTab === 'request' ? (reqFormat === 'raw' ? 'btn-p' : 'btn-s') : (respFormat === 'raw' ? 'btn-p' : 'btn-s'))} onClick={() => detTab === 'request' ? setReqFormat('raw') : setRespFormat('raw')}>Raw</button>
+                          <button className={'btn btn-sm ' + (detTab === 'request' ? (reqFormat === 'pretty' ? 'btn-p' : 'btn-s') : (respFormat === 'pretty' ? 'btn-p' : 'btn-s'))} onClick={() => detTab === 'request' ? setReqFormat('pretty') : setRespFormat('pretty')}>Pretty</button>
+                        </div>
+                      </div>
+                      <div className="code">
+                        {(() => {
+                          const reqF = selReq.body ? formatBody(selReq.body, reqFormat) : { text: '', html: false };
+                          const resF = formatBody(selReq.response_body || '', respFormat);
+                          const ct = detTab === 'request'
+                            ? (selReq.method + ' ' + (() => { try { return new URL(selReq.url).pathname; } catch (e) { return selReq.url; } })() + '\n\n' + fmtH(selReq.headers) + (selReq.body ? '\n\n' + reqF.text : ''))
+                            : ('HTTP ' + selReq.response_status + '\n\n' + fmtH(selReq.response_headers) + '\n\n' + resF.text);
+                          const isH = detTab === 'request' ? reqF.html : resF.html;
+                          return isH ? <div dangerouslySetInnerHTML={{ __html: ct }} /> : ct;
+                        })()}
+                      </div>
+                    </div>
                   )}
                 </div>
               </div>
