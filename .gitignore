@@ -1,4 +1,6 @@
 .current_project
 /projects/*
 /data/*
+.*
+venv/*
 backend/.proxy_config.json
