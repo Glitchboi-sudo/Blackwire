@@ -1,1 +1,1 @@
-{"intercept_enabled": false, "scope_rules": [], "project": "", "extensions": {"match_replace": {"enabled": false, "rules": []}, "webhook_site": {"enabled": false}}}
+{"intercept_enabled": false, "scope_rules": [], "project": "Test", "extensions": {"match_replace": {"enabled": false, "rules": []}, "sensitive_discoverer": {"enabled": true}, "sensitive": {"enabled": true}}}

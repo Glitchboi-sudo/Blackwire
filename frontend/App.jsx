@@ -243,6 +243,157 @@ function collectNodeReqs(node) {
   return all;
 }
 
+function ResizeHandle({ onDrag }) {
+  const ref = useRef(null);
+  const cbRef = useRef(onDrag);
+  cbRef.current = onDrag;
+  const handleMouseDown = (e) => {
+    e.preventDefault();
+    let lastX = e.clientX;
+    const el = ref.current;
+    if (el) el.classList.add('dragging');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    const onMove = (ev) => {
+      const dx = ev.clientX - lastX;
+      lastX = ev.clientX;
+      cbRef.current(dx);
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      if (el) el.classList.remove('dragging');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
+  return React.createElement('div', { ref, className: 'resize-h', onMouseDown: handleMouseDown });
+}
+
+function BodySearchBar({ value, onChange, isRegex, onToggleRegex, matchIdx, matchCount, onPrev, onNext, onClose }) {
+  return React.createElement('div', { className: 'search-bar' },
+    React.createElement('input', {
+      placeholder: isRegex ? 'Regex search...' : 'Search body...',
+      value: value,
+      onChange: e => onChange(e.target.value),
+      onKeyDown: e => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onNext(); }
+        if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); onPrev(); }
+        if (e.key === 'Escape') { e.preventDefault(); onClose(); }
+      },
+      autoFocus: true
+    }),
+    React.createElement('button', { className: 'srch-btn' + (isRegex ? ' act' : ''), onClick: onToggleRegex, title: 'Toggle regex' }, '.*'),
+    React.createElement('span', { className: 'search-info' }, matchCount > 0 ? (matchIdx + 1) + '/' + matchCount : '0/0'),
+    React.createElement('button', { className: 'srch-btn', onClick: onPrev, disabled: matchCount === 0, title: 'Previous match' }, '\u25B2'),
+    React.createElement('button', { className: 'srch-btn', onClick: onNext, disabled: matchCount === 0, title: 'Next match' }, '\u25BC'),
+    React.createElement('button', { className: 'srch-btn', onClick: onClose, title: 'Close search' }, '\u2715')
+  );
+}
+
+function highlightMatches(text, pattern, isRegex, currentIdx) {
+  if (!pattern) return { html: text, count: 0 };
+  try {
+    const safe = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const escaped = isRegex ? pattern : pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp('(' + escaped + ')', 'gi');
+    let count = 0;
+    const html = safe.replace(re, (match) => {
+      const cls = count === currentIdx ? 'search-hl search-cur' : 'search-hl';
+      count++;
+      return '<mark class="' + cls + '">' + match + '</mark>';
+    });
+    return { html, count };
+  } catch (e) {
+    return { html: text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'), count: 0 };
+  }
+}
+
+// --- Sensitive Patterns ---
+const SENS_GENERAL = [
+  { name: 'Certificate/Key', regex: '-----BEGIN', category: 'Data Security', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'Generic API Key', regex: "(?:api).{0,5}(?:key)[^&|;?,]{0,32}?['\"][a-zA-Z0-9_\\-+=\\/\\\\]{10,}['\"]", category: 'Credentials', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'Generic Secret', regex: "(?:secret)[^&|;?,]{0,32}?['\"][a-zA-Z0-9_\\-+=\\/\\\\]{10,}['\"]", category: 'Credentials', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'Generic Token', regex: "(?:token)[^&|;?,]{0,32}?['\"][a-zA-Z0-9_\\-+=\\/\\\\]{10,}['\"]", category: 'Credentials', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'Generic Password', regex: "(?:password|passwd|pwd)[^&|;?,]{0,32}?['\"][^'\"]{6,}['\"]", category: 'Credentials', sections: ['respHeaders','respBody'], enabled: true },
+  { name: '.env Config', regex: '\\.env', category: 'Configuration', sections: ['respBody'], enabled: true },
+  { name: 'Private IPv4', regex: '(?:10\\.(?:[0-9]{1,3}\\.){2}[0-9]{1,3}|172\\.(?:1[6-9]|2[0-9]|3[01])\\.(?:[0-9]{1,3}\\.)[0-9]{1,3}|192\\.168\\.[0-9]{1,3}\\.[0-9]{1,3})', category: 'Network', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'Email Address', regex: '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]{3,128}\\.[a-zA-Z]{2,32}', category: 'Contact', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'Basic Auth Header', regex: 'Basic\\s+[A-Za-z0-9+/=]{10,}', category: 'Credentials', sections: ['reqHeaders','respHeaders'], enabled: true },
+  { name: 'Bearer Token Header', regex: 'Bearer\\s+[A-Za-z0-9._~+/=-]{10,}', category: 'Credentials', sections: ['reqHeaders','respHeaders'], enabled: true },
+  { name: 'JDBC Connection String', regex: 'jdbc:[a-z:]+://[^\\s"\']+', category: 'Configuration', sections: ['respBody'], enabled: true },
+  { name: 'SSH Private Key', regex: '-----BEGIN (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----', category: 'Data Security', sections: ['respBody'], enabled: true },
+];
+
+const SENS_TOKENS = [
+  { name: 'AWS Access Key ID', regex: '(?:A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}', category: 'AWS', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'AWS Secret Key', regex: "(?:aws)[^;]{0,32}?['\"][0-9a-zA-Z/+=]{40}['\"]", category: 'AWS', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'Amazon MWS Token', regex: 'amzn\\.mws\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', category: 'Amazon', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'Google API Key', regex: 'AIza[0-9A-Za-z\\-_]{35}', category: 'Google', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'Google OAuth Token', regex: 'ya29\\.[0-9A-Za-z\\-_]{32,48}', category: 'Google', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'Google OAuth Client ID', regex: '\\.apps\\.googleusercontent\\.com', category: 'Google', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'Google OAuth Client Secret', regex: 'GOCSPX-[0-9a-zA-Z\\-_]{28}', category: 'Google', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'MailGun API Key', regex: 'key-[0-9a-f]{32}', category: 'Email', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'SendGrid API Key', regex: 'SG\\.[0-9A-Za-z\\-_]{22}\\.[0-9A-Za-z\\-_]{43}', category: 'Email', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'NuGet API Key', regex: 'oy2[a-z0-9]{43}', category: 'Package', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'Slack Token', regex: 'x(?:ox[psboare]|app)(?:-[a-zA-Z0-9]{1,64}){1,5}', category: 'Communication', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'Twilio SID', regex: 'SK[0-9a-zA-Z]{32}', category: 'Communication', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'Square Token', regex: 'sq0(?:atp|csp|idp)-[0-9A-Za-z\\-_]{22,43}', category: 'Payment', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'Stripe Secret Key', regex: '[sr]k_(?:live|test)_[0-9a-zA-Z]{24}', category: 'Payment', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'Stripe Webhook Secret', regex: 'whsec_[0-9a-zA-Z]{32}', category: 'Payment', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'GitHub Token', regex: 'gh[pousr]_[A-Za-z0-9]{36}', category: 'Source Control', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'GitHub Fine-grained PAT', regex: 'github_pat_[0-9a-zA-Z]{22}_[0-9a-zA-Z]{59}', category: 'Source Control', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'OpenAI API Key', regex: 'sk-[a-zA-Z0-9]{40,128}', category: 'AI/ML', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'Heroku API Key', regex: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}', category: 'Cloud', sections: ['respHeaders','respBody'], enabled: false },
+  { name: 'Facebook Access Token', regex: 'EAACEdEose0cBA[0-9A-Za-z]+', category: 'Communication', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'Twitter Secret', regex: "(?:twitter)[^;]{0,32}?['\"][0-9a-zA-Z]{35,44}['\"]", category: 'Communication', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'Twitch API Token', regex: "(?:twitch)[^;]{0,32}?['\"][0-9a-z]{30}['\"]", category: 'Communication', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'Mailchimp API Key', regex: '[0-9a-f]{32}-us[0-9]{1,2}', category: 'Email', sections: ['respHeaders','respBody'], enabled: true },
+  { name: 'JWT Token', regex: 'eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}', category: 'Credentials', sections: ['reqHeaders','respHeaders','respBody'], enabled: true },
+];
+
+const SENS_URLS = [
+  { name: 'Slack Webhook', regex: 'hooks\\.slack\\.com/services/T[a-zA-Z0-9_]{8,}/B[a-zA-Z0-9_]{8,}/[a-zA-Z0-9_]{24}', category: 'Webhooks', sections: ['respBody'], enabled: true },
+  { name: 'Teams Webhook', regex: 'outlook\\.office(?:365)?\\.com/webhook/[a-zA-Z0-9\\-@]+', category: 'Webhooks', sections: ['respBody'], enabled: true },
+  { name: 'Teams Incoming Webhook', regex: '\\.webhook\\.office\\.com', category: 'Webhooks', sections: ['respBody'], enabled: true },
+  { name: 'Firebase DB URL', regex: '\\.(?:firebaseio\\.com|firebasedatabase\\.app)', category: 'Cloud', sections: ['respBody'], enabled: true },
+  { name: 'AWS S3 Bucket', regex: 's3(?:\\.[a-z0-9-]+)?\\.amazonaws\\.com(?:/[^\\s"\'<>]+)?', category: 'Cloud Storage', sections: ['respBody'], enabled: true },
+  { name: 'Azure Blob Storage', regex: 'blob\\.core\\.windows\\.net', category: 'Cloud Storage', sections: ['respBody'], enabled: true },
+  { name: 'Google Cloud Storage', regex: 'gs://[a-z\\d\\-]{3,63}', category: 'Cloud Storage', sections: ['respBody'], enabled: true },
+  { name: 'Amazon ARN', regex: 'arn:aws(?:-(?:cn|us-gov|iso-[bcd]))?:[a-zA-Z0-9\\-]+:[a-z0-9\\-]*:[0-9]{0,12}:[a-zA-Z0-9\\-_/:.]+', category: 'AWS', sections: ['respBody'], enabled: true },
+  { name: 'Discord Webhook', regex: 'discord(?:app)?\\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]+', category: 'Webhooks', sections: ['respBody'], enabled: true },
+];
+
+const SENS_FILES = [
+  '.zip','.tar','.gz','.rar','.7z','.bz2','.xz','.tar.gz','.tgz',
+  '.pem','.crt','.cer','.der','.p12','.pfx','.key','.csr','.jks','.keystore',
+  '.kdbx','.kdb','.1pif',
+  '.cfg','.conf','.config','.ini','.properties','.yaml','.yml','.toml','.xml','.json','.env',
+  '.sql','.sqlite','.db','.mdb','.dump','.bak','.bkp',
+  '.doc','.docx','.xls','.xlsx','.csv','.pdf',
+  '.log','.swp','.swo','.DS_Store','.htaccess','.htpasswd','.npmrc','.pypirc',
+  '.git','.svn','.hg',
+].map(ext => ({ name: ext, regex: ext.replace(/\./g, '\\.') + '(?:\\?|$|#)', category: 'Files', sections: ['reqUrl'], enabled: true }));
+
+const SENS_COLORS = {
+  'AWS': 'var(--orange)', 'Google': 'var(--blue)', 'Payment': 'var(--green)',
+  'Credentials': 'var(--red)', 'Communication': 'var(--purple)', 'Cloud': 'var(--cyan)',
+  'Network': 'var(--txt2)', 'Contact': 'var(--txt2)', 'Data Security': 'var(--red)',
+  'Configuration': 'var(--orange)', 'Source Control': 'var(--purple)',
+  'Email': 'var(--blue)', 'Package': 'var(--txt2)', 'AI/ML': 'var(--green)',
+  'Webhooks': 'var(--cyan)', 'Cloud Storage': 'var(--cyan)', 'Files': 'var(--txt3)',
+  'Amazon': 'var(--orange)',
+};
+
+const SENS_DEFAULT_PATTERNS = () => ({
+  general: SENS_GENERAL.map(p => ({...p})),
+  tokens: SENS_TOKENS.map(p => ({...p})),
+  urls: SENS_URLS.map(p => ({...p})),
+  files: SENS_FILES.map(p => ({...p})),
+});
+
 function Blackwire() {
   // Estado principal
   const [tab, setTab] = useState('projects');
@@ -370,9 +521,90 @@ function Blackwire() {
   const [cmpB, setCmpB] = useState(null);
   const [cmpView, setCmpView] = useState('request');
 
+  // Resizable panels
+  const [histPanelW, setHistPanelW] = useState(44);
+  const [repSideW, setRepSideW] = useState(200);
+  const [repSplitPct, setRepSplitPct] = useState(50);
+  const [intPendW, setIntPendW] = useState(280);
+  const [wsConnsW, setWsConnsW] = useState(220);
+  const [wsFramesW, setWsFramesW] = useState(300);
+  const [chepyInW, setChepyInW] = useState(30);
+  const [chepyRecW, setChepyRecW] = useState(30);
+  const [collSideW, setCollSideW] = useState(200);
+  const [collStepsW, setCollStepsW] = useState(350);
+  const [smTreeW, setSmTreeW] = useState(38);
+
+  // Body search
+  const [histBodySearch, setHistBodySearch] = useState('');
+  const [histBodySearchIdx, setHistBodySearchIdx] = useState(0);
+  const [histBodySearchRegex, setHistBodySearchRegex] = useState(false);
+  const [histBodySearchCount, setHistBodySearchCount] = useState(0);
+  const [showHistSearch, setShowHistSearch] = useState(false);
+  const [repBodySearch, setRepBodySearch] = useState('');
+  const [repBodySearchIdx, setRepBodySearchIdx] = useState(0);
+  const [repBodySearchRegex, setRepBodySearchRegex] = useState(false);
+  const [repBodySearchCount, setRepBodySearchCount] = useState(0);
+  const [showRepSearch, setShowRepSearch] = useState(false);
+
+  // Sensitive 
+  const [sensResults, setSensResults] = useState([]);
+  const [sensScanning, setSensScanning] = useState(false);
+  const [sensPct, setSensPct] = useState(0);
+  const [sensFilter, setSensFilter] = useState('');
+  const [sensUnique, setSensUnique] = useState(false);
+  const [sensSelResult, setSensSelResult] = useState(null);
+  const [sensSubTab, setSensSubTab] = useState('logger');
+  const [sensPatterns, setSensPatterns] = useState(SENS_DEFAULT_PATTERNS);
+  const [sensScopeOnly, setSensScopeOnly] = useState(false);
+  const [sensMaxSize, setSensMaxSize] = useState(10000000);
+  const [sensBatch, setSensBatch] = useState(4);
+  const sensStopRef = useRef(false);
+  const sensDetailRef = useRef(null);
+  const [sensSelDetail, setSensSelDetail] = useState(null);
+
+  // Intruder
+  const [intMethod, setIntMethod] = useState('GET');
+  const [intUrl, setIntUrl] = useState('');
+  const [intHeaders, setIntHeaders] = useState('');
+  const [intBody, setIntBody] = useState('');
+  const [intPositions, setIntPositions] = useState([]);
+  const [intAttackType, setIntAttackType] = useState('targeted');
+  const [intPayloads, setIntPayloads] = useState({});
+  const [intResults, setIntResults] = useState([]);
+  const [intRunning, setIntRunning] = useState(false);
+  const [intPct, setIntPct] = useState(0);
+  const [intConcurrency, setIntConcurrency] = useState(1);
+  const [intDelay, setIntDelay] = useState(0);
+  const [intRandomDelay, setIntRandomDelay] = useState(false);
+  const [intDelayMin, setIntDelayMin] = useState(100);
+  const [intDelayMax, setIntDelayMax] = useState(500);
+  const [intFollowRedirects, setIntFollowRedirects] = useState(false);
+  const [intTimeout, setIntTimeout] = useState(30);
+  const [intMaxRetries, setIntMaxRetries] = useState(0);
+  const [intSubTab, setIntSubTab] = useState('positions');
+  const [intSelResult, setIntSelResult] = useState(null);
+  const intStopRef = useRef(false);
+  const [intTotal, setIntTotal] = useState(0);
+  const [intDone, setIntDone] = useState(0);
+  const [intStartTime, setIntStartTime] = useState(null);
+  const [intSelPayloadSet, setIntSelPayloadSet] = useState(0);
+  const [intSortCol, setIntSortCol] = useState('#');
+  const [intSortDir, setIntSortDir] = useState('asc');
+  const [intFilter, setIntFilter] = useState('');
+  const intHeadersRef = useRef(null);
+  const intBodyRef = useRef(null);
+  const [intAttacks, setIntAttacks] = useState([]);
+  const [intSelAttack, setIntSelAttack] = useState(null);
+
   const wsRef = useRef(null);
   const repBodyEditRef = useRef(null);
   const repBodyCaretRef = useRef(null);
+  const histContentRef = useRef(null);
+  const histCodeRef = useRef(null);
+  const repCodeRef = useRef(null);
+  const repCntRef = useRef(null);
+  const smContentRef = useRef(null);
+  const chepyCntRef = useRef(null);
   const webhookExt = extensions.find(e => e.name === 'webhook_site');
 
   const getSelectedText = () => {
@@ -497,6 +729,35 @@ function Blackwire() {
       return () => window.removeEventListener('click', handleClick);
     }
   }, [contextMenu]);
+
+  // Scroll to current search match in history/repeater
+  useEffect(() => {
+    const el = histCodeRef.current;
+    if (el) {
+      const cur = el.querySelector('.search-cur');
+      if (cur) cur.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  }, [histBodySearchIdx, histBodySearch]);
+
+  useEffect(() => {
+    const el = repCodeRef.current;
+    if (el) {
+      const cur = el.querySelector('.search-cur');
+      if (cur) cur.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  }, [repBodySearchIdx, repBodySearch]);
+
+  // Scroll to highlighted match in sensitive detail
+  useEffect(() => {
+    if (!sensSelDetail || !sensSelResult) return;
+    requestAnimationFrame(() => {
+      const el = sensDetailRef.current;
+      if (el) {
+        const cur = el.querySelector('.search-cur');
+        if (cur) cur.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      }
+    });
+  }, [sensSelDetail, sensSelResult]);
 
   // Lazy-load full request detail when selected
   useEffect(() => {
@@ -1276,6 +1537,364 @@ function Blackwire() {
     toast('Sent to Repeater', 'success');
   };
 
+  // --- Intruder functions ---
+  const toIntruder = r => {
+    setIntMethod(r.method || 'GET');
+    setIntUrl(r.url || '');
+    setIntHeaders(Object.entries(r.headers || {}).map(([k, v]) => k + ': ' + v).join('\n'));
+    setIntBody(r.body || '');
+    setIntPositions([]);
+    setIntSubTab('positions');
+    setTab('intruder');
+    toast('Sent to Intruder', 'success');
+  };
+
+  const parseIntPositions = (url, headers, body) => {
+    const positions = [];
+    const marker = /\u00a7([^\u00a7]*)\u00a7/g;
+    let idx = 0;
+    let m;
+    const scan = (text, section) => {
+      marker.lastIndex = 0;
+      while ((m = marker.exec(text)) !== null) {
+        positions.push({ idx: idx++, name: m[1] || ('pos' + idx), section, start: m.index, end: m.index + m[0].length });
+      }
+    };
+    scan(url, 'url');
+    scan(headers, 'headers');
+    scan(body, 'body');
+    return positions;
+  };
+
+  useEffect(() => {
+    const p = parseIntPositions(intUrl, intHeaders, intBody);
+    setIntPositions(p);
+    // Initialize payload sets for new positions
+    setIntPayloads(prev => {
+      const next = {};
+      p.forEach((pos, i) => {
+        next[i] = prev[i] || { type: 'list', items: '', from: 0, to: 99, step: 1, padLen: 0, charset: 'abcdefghijklmnopqrstuvwxyz', minLen: 1, maxLen: 3, urlEncode: false, base64: false, hash: '', prefix: '', suffix: '' };
+      });
+      return next;
+    });
+  }, [intUrl, intHeaders, intBody]);
+
+  const generatePayloadList = (cfg) => {
+    let items = [];
+    if (cfg.type === 'list') {
+      items = (cfg.items || '').split('\n').filter(l => l.length > 0);
+    } else if (cfg.type === 'numbers') {
+      const from = Number(cfg.from) || 0;
+      const to = Number(cfg.to) || 0;
+      const step = Math.max(1, Number(cfg.step) || 1);
+      const pad = Number(cfg.padLen) || 0;
+      for (let n = from; n <= to; n += step) {
+        let s = String(n);
+        if (pad > 0) while (s.length < pad) s = '0' + s;
+        items.push(s);
+      }
+    } else if (cfg.type === 'bruteforce') {
+      const chars = (cfg.charset || 'a').split('');
+      const minL = Math.max(1, Number(cfg.minLen) || 1);
+      const maxL = Math.min(8, Number(cfg.maxLen) || 3);
+      const gen = (prefix, len) => {
+        if (prefix.length === len) { items.push(prefix); return; }
+        for (const c of chars) gen(prefix + c, len);
+      };
+      for (let l = minL; l <= maxL; l++) gen('', l);
+      if (items.length > 500000) items = items.slice(0, 500000); // safety cap
+    }
+    // Processing
+    items = items.map(v => {
+      if (cfg.prefix) v = cfg.prefix + v;
+      if (cfg.suffix) v = v + cfg.suffix;
+      if (cfg.urlEncode) v = encodeURIComponent(v);
+      if (cfg.base64) v = btoa(v);
+      return v;
+    });
+    return items;
+  };
+
+  const generateAttackCombinations = () => {
+    const positions = parseIntPositions(intUrl, intHeaders, intBody);
+    if (positions.length === 0) return [];
+    const payloadSets = positions.map((_, i) => generatePayloadList(intPayloads[i] || { type: 'list', items: '' }));
+    const combos = [];
+
+    if (intAttackType === 'targeted') {
+      // For each position, iterate its payloads while others keep original value
+      for (let pi = 0; pi < positions.length; pi++) {
+        for (const val of payloadSets[pi]) {
+          const payloads = {};
+          positions.forEach((_, i) => { payloads[i] = i === pi ? val : null; }); // null = keep original
+          combos.push({ payloads, label: val });
+        }
+      }
+    } else if (intAttackType === 'broadcast') {
+      // Same payload in all positions
+      const list = payloadSets[0] || [];
+      for (const val of list) {
+        const payloads = {};
+        positions.forEach((_, i) => { payloads[i] = val; });
+        combos.push({ payloads, label: val });
+      }
+    } else if (intAttackType === 'parallel') {
+      // Zip all lists
+      const minLen = Math.min(...payloadSets.map(s => s.length));
+      for (let j = 0; j < minLen; j++) {
+        const payloads = {};
+        positions.forEach((_, i) => { payloads[i] = payloadSets[i][j]; });
+        combos.push({ payloads, label: payloadSets.map(s => s[j]).join(' | ') });
+      }
+    } else if (intAttackType === 'matrix') {
+      // Cartesian product
+      const cart = (arr) => {
+        if (arr.length === 0) return [[]];
+        const [first, ...rest] = arr;
+        const restCombos = cart(rest);
+        const result = [];
+        for (const v of first) for (const rc of restCombos) result.push([v, ...rc]);
+        return result;
+      };
+      const products = cart(payloadSets);
+      for (const combo of products) {
+        const payloads = {};
+        positions.forEach((_, i) => { payloads[i] = combo[i]; });
+        combos.push({ payloads, label: combo.join(' | ') });
+      }
+      if (combos.length > 1000000) combos.length = 1000000; // safety cap
+    }
+    return combos;
+  };
+
+  const buildIntRequest = (combo) => {
+    const marker = /\u00a7([^\u00a7]*)\u00a7/g;
+    let posIdx = 0;
+    const replaceMarkers = (text, section) => {
+      const startIdx = posIdx;
+      // count markers in this section
+      let count = 0;
+      marker.lastIndex = 0;
+      let mm;
+      while ((mm = marker.exec(text)) !== null) count++;
+      const result = text.replace(marker, () => {
+        const val = combo.payloads[startIdx + (posIdx - startIdx)];
+        const orig = '';
+        posIdx++;
+        return val !== null && val !== undefined ? val : orig;
+      });
+      return result;
+    };
+    posIdx = 0;
+    const url = replaceMarkers(intUrl, 'url');
+    const headersText = replaceMarkers(intHeaders, 'headers');
+    const body = replaceMarkers(intBody, 'body');
+
+    let h = {};
+    try {
+      headersText.split('\n').forEach(l => {
+        const [k, ...v] = l.split(':');
+        if (k && v.length) h[k.trim()] = v.join(':').trim();
+      });
+    } catch (e) {}
+    // Auto Content-Length
+    if (body) {
+      const len = new TextEncoder().encode(body).length;
+      const clKey = Object.keys(h).find(k => k.toLowerCase() === 'content-length');
+      if (clKey) h[clKey] = String(len); else h['Content-Length'] = String(len);
+    } else {
+      const clKey = Object.keys(h).find(k => k.toLowerCase() === 'content-length');
+      if (clKey) delete h[clKey];
+    }
+    return { method: intMethod, url, headers: h, body: body || null };
+  };
+
+  const runIntruderAttack = async () => {
+    const combos = generateAttackCombinations();
+    if (combos.length === 0) { toast('No payload combinations to run', 'error'); return; }
+    intStopRef.current = false;
+    setIntRunning(true);
+    setIntResults([]);
+    setIntDone(0);
+    setIntTotal(combos.length);
+    setIntPct(0);
+    setIntStartTime(Date.now());
+    setIntSubTab('results');
+
+    const conc = Math.max(1, Math.min(50, intConcurrency));
+    let done = 0;
+
+    for (let i = 0; i < combos.length; i += conc) {
+      if (intStopRef.current) break;
+      const batch = combos.slice(i, i + conc);
+      const results = await Promise.all(batch.map(async (combo, bi) => {
+        const reqData = buildIntRequest(combo);
+        let retries = 0;
+        let resp;
+        while (true) {
+          try {
+            resp = await api.post('/api/repeater/send-raw', { ...reqData, follow_redirects: intFollowRedirects });
+          } catch (e) {
+            resp = { error: String(e) };
+          }
+          if (!resp.error || retries >= intMaxRetries) break;
+          retries++;
+        }
+        return {
+          num: i + bi + 1,
+          payload: combo.label,
+          status: resp.status_code || 0,
+          length: resp.size || 0,
+          time: resp.elapsed ? Math.round(resp.elapsed * 1000) : 0,
+          error: resp.error || '',
+          request: reqData,
+          response: resp
+        };
+      }));
+      done += results.length;
+      setIntResults(prev => [...prev, ...results]);
+      setIntDone(done);
+      setIntPct(Math.round((done / combos.length) * 100));
+
+      // Delay between batches
+      if (i + conc < combos.length && !intStopRef.current) {
+        let delay = intDelay;
+        if (intRandomDelay) delay = intDelayMin + Math.random() * (intDelayMax - intDelayMin);
+        if (delay > 0) await new Promise(r => setTimeout(r, delay));
+      }
+    }
+    setIntRunning(false);
+  };
+
+  const stopIntruderAttack = () => {
+    intStopRef.current = true;
+    setIntRunning(false);
+  };
+
+  const intComputeTotal = () => {
+    try {
+      const positions = parseIntPositions(intUrl, intHeaders, intBody);
+      if (positions.length === 0) return 0;
+      const payloadSets = positions.map((_, i) => generatePayloadList(intPayloads[i] || { type: 'list', items: '' }));
+      if (intAttackType === 'targeted') return payloadSets.reduce((s, l) => s + l.length, 0);
+      if (intAttackType === 'broadcast') return (payloadSets[0] || []).length;
+      if (intAttackType === 'parallel') return Math.min(...payloadSets.map(s => s.length));
+      if (intAttackType === 'matrix') return payloadSets.reduce((s, l) => s * l.length, 1);
+    } catch (e) {}
+    return 0;
+  };
+
+  const intSorted = React.useMemo(() => {
+    let arr = [...intResults];
+    if (intFilter) {
+      const f = intFilter.toLowerCase();
+      arr = arr.filter(r => r.payload.toLowerCase().includes(f) || String(r.status).includes(f) || (r.error && r.error.toLowerCase().includes(f)));
+    }
+    const col = intSortCol;
+    const dir = intSortDir === 'asc' ? 1 : -1;
+    arr.sort((a, b) => {
+      if (col === '#') return (a.num - b.num) * dir;
+      if (col === 'payload') return a.payload.localeCompare(b.payload) * dir;
+      if (col === 'status') return (a.status - b.status) * dir;
+      if (col === 'length') return (a.length - b.length) * dir;
+      if (col === 'time') return (a.time - b.time) * dir;
+      return 0;
+    });
+    return arr;
+  }, [intResults, intFilter, intSortCol, intSortDir]);
+  const loadIntAttacks = async () => {
+    try {
+      const r = await api.get('/api/intruder/attacks');
+      setIntAttacks(Array.isArray(r) ? r : []);
+    } catch (e) { setIntAttacks([]); }
+  };
+
+  const saveIntAttack = async (name) => {
+    const config = { method: intMethod, url: intUrl, headers: intHeaders, body: intBody, attackType: intAttackType,
+      payloads: intPayloads, concurrency: intConcurrency, delay: intDelay, randomDelay: intRandomDelay,
+      delayMin: intDelayMin, delayMax: intDelayMax, followRedirects: intFollowRedirects, timeout: intTimeout, maxRetries: intMaxRetries };
+    const r = await api.post('/api/intruder/attacks', { name, config, results: intResults, total: intResults.length });
+    if (r.id) {
+      setIntSelAttack(r.id);
+      loadIntAttacks();
+      toast('Attack saved', 'success');
+    }
+  };
+
+  const loadIntAttack = async (id) => {
+    const r = await api.get('/api/intruder/attacks/' + id);
+    if (r.error) { toast('Failed to load', 'error'); return; }
+    setIntSelAttack(id);
+    // Restore config
+    const c = r.config || {};
+    setIntMethod(c.method || 'GET');
+    setIntUrl(c.url || '');
+    setIntHeaders(c.headers || '');
+    setIntBody(c.body || '');
+    setIntAttackType(c.attackType || 'targeted');
+    setIntPayloads(c.payloads || {});
+    setIntConcurrency(c.concurrency || 1);
+    setIntDelay(c.delay || 0);
+    setIntRandomDelay(c.randomDelay || false);
+    setIntDelayMin(c.delayMin || 100);
+    setIntDelayMax(c.delayMax || 500);
+    setIntFollowRedirects(c.followRedirects || false);
+    setIntTimeout(c.timeout || 30);
+    setIntMaxRetries(c.maxRetries || 0);
+    // Restore results
+    setIntResults(r.results || []);
+    setIntTotal(r.total || 0);
+    setIntDone(r.total || 0);
+    setIntPct(r.total > 0 ? 100 : 0);
+    setIntSelResult(null);
+    setIntSubTab('results');
+  };
+
+  const renameIntAttack = async (id) => {
+    const atk = intAttacks.find(a => a.id === id);
+    const n = prompt('Rename attack:', atk ? atk.name : '');
+    if (!n) return;
+    await api.put('/api/intruder/attacks/' + id, { name: n });
+    loadIntAttacks();
+  };
+
+  const deleteIntAttack = async (id) => {
+    await api.del('/api/intruder/attacks/' + id);
+    if (intSelAttack === id) setIntSelAttack(null);
+    loadIntAttacks();
+    toast('Attack deleted', 'success');
+  };
+
+  const intRanRef = useRef(false);
+  // Auto-save results when attack finishes
+  useEffect(() => {
+    if (intRunning) { intRanRef.current = true; return; }
+    if (!intRanRef.current) return;
+    intRanRef.current = false;
+    if (intResults.length > 0 && intDone > 0) {
+      // Auto-save
+      const name = intMethod + ' ' + (intUrl.length > 40 ? intUrl.slice(0, 40) + '...' : intUrl) + ' (' + intResults.length + ')';
+      const config = { method: intMethod, url: intUrl, headers: intHeaders, body: intBody, attackType: intAttackType,
+        payloads: intPayloads, concurrency: intConcurrency, delay: intDelay, randomDelay: intRandomDelay,
+        delayMin: intDelayMin, delayMax: intDelayMax, followRedirects: intFollowRedirects, timeout: intTimeout, maxRetries: intMaxRetries };
+      if (intSelAttack) {
+        // Update existing
+        api.put('/api/intruder/attacks/' + intSelAttack, { config, results: intResults }).then(() => loadIntAttacks());
+      } else {
+        // Create new
+        api.post('/api/intruder/attacks', { name, config, results: intResults, total: intResults.length }).then(r => {
+          if (r && r.id) { setIntSelAttack(r.id); loadIntAttacks(); }
+        });
+      }
+    }
+  }, [intRunning]);
+
+  // Load attacks list when switching to intruder tab
+  useEffect(() => {
+    if (tab === 'intruder' && curPrj) loadIntAttacks();
+  }, [tab, curPrj]);
+  // --- End Intruder functions ---
+
   const saveRep = async () => {
     const n = prompt('Name:');
     if (!n) return;
@@ -1774,7 +2393,7 @@ function Blackwire() {
     const source = contextMenu.source;
     setContextMenu(null);
     // For history list items, fetch full detail on demand for actions needing body/headers
-    const needsFull = ['repeater','copy-curl','copy-body','send-to-cipher','compare-a','compare-b','add-to-collection'];
+    const needsFull = ['repeater','intruder','copy-curl','copy-body','send-to-cipher','compare-a','compare-b','add-to-collection'];
     if (source === 'history' && needsFull.includes(action) && (!norm.headers || Object.keys(norm.headers).length === 0)) {
       try {
         const full = await api.get('/api/requests/' + req.id + '/detail');
@@ -1787,6 +2406,9 @@ function Blackwire() {
     switch (action) {
       case 'repeater':
         toRep({ method: norm.method, url: norm.url, headers: norm.headers, body: norm.body });
+        break;
+      case 'intruder':
+        toIntruder({ method: norm.method, url: norm.url, headers: norm.headers, body: norm.body });
         break;
       case 'favorite':
         if (source === 'history' && req.id) await togSave(req.id);
@@ -1870,6 +2492,118 @@ function Blackwire() {
     return 'HTTP ' + (req.response_status || '(no response)') + '\n' + fmtH(req.response_headers) + '\n\n' + (req.response_body || '');
   };
 
+  // --- Sensitive scan logic ---
+  const runSensitiveScan = async () => {
+    sensStopRef.current = false;
+    setSensScanning(true);
+    setSensResults([]);
+    setSensPct(0);
+    setSensSelResult(null);
+    setSensSelDetail(null);
+
+    const allPatterns = [
+      ...sensPatterns.general.filter(p => p.enabled),
+      ...sensPatterns.tokens.filter(p => p.enabled),
+      ...sensPatterns.urls.filter(p => p.enabled),
+      ...sensPatterns.files.filter(p => p.enabled),
+    ];
+
+    let targets = reqs;
+    if (sensScopeOnly) targets = targets.filter(r => r.in_scope);
+
+    const results = [];
+    const total = targets.length;
+    let done = 0;
+
+    const processBatch = async (batch) => {
+      const details = await Promise.all(batch.map(async r => {
+        try {
+          const d = await api.get('/api/requests/' + r.id + '/detail');
+          return d;
+        } catch { return null; }
+      }));
+
+      for (const d of details) {
+        if (!d || sensStopRef.current) continue;
+        const sections = {
+          reqUrl: d.url || '',
+          reqHeaders: d.headers || '',
+          reqBody: d.body || '',
+          respHeaders: d.response_headers || '',
+          respBody: d.response_body || '',
+        };
+
+        if (sensMaxSize > 0 && (sections.respBody.length > sensMaxSize)) {
+          sections.respBody = sections.respBody.slice(0, sensMaxSize);
+        }
+
+        for (const pat of allPatterns) {
+          try {
+            const re = new RegExp(pat.regex, 'gi');
+            for (const secKey of pat.sections) {
+              const text = sections[secKey];
+              if (!text) continue;
+              let m;
+              while ((m = re.exec(text)) !== null) {
+                results.push({
+                  match: m[0].length > 200 ? m[0].slice(0, 200) + '...' : m[0],
+                  patternName: pat.name,
+                  category: pat.category,
+                  url: d.url || '',
+                  method: d.method || '',
+                  requestId: d.id,
+                  section: secKey,
+                });
+                if (results.length > 50000) break;
+              }
+            }
+          } catch { /* invalid regex, skip */ }
+        }
+      }
+    };
+
+    for (let i = 0; i < total; i += sensBatch) {
+      if (sensStopRef.current) break;
+      const batch = targets.slice(i, i + sensBatch);
+      await processBatch(batch);
+      done += batch.length;
+      setSensPct(Math.round((done / total) * 100));
+      setSensResults([...results]);
+    }
+
+    setSensScanning(false);
+    setSensPct(100);
+    setSensResults([...results]);
+  };
+
+  const stopSensitiveScan = () => { sensStopRef.current = true; };
+
+  const sensFiltered = React.useMemo(() => {
+    let r = sensResults;
+    if (sensFilter) {
+      const fl = sensFilter.toLowerCase();
+      r = r.filter(x => x.match.toLowerCase().includes(fl) || x.patternName.toLowerCase().includes(fl) || x.url.toLowerCase().includes(fl) || x.category.toLowerCase().includes(fl));
+    }
+    if (sensUnique) {
+      const seen = new Set();
+      r = r.filter(x => {
+        const key = x.match + '||' + x.patternName;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    }
+    return r;
+  }, [sensResults, sensFilter, sensUnique]);
+
+  const loadSensDetail = async (result) => {
+    setSensSelResult(result);
+    try {
+      const d = await api.get('/api/requests/' + result.requestId + '/detail');
+      setSensSelDetail(d);
+    } catch { setSensSelDetail(null); }
+  };
+
   const cmpDiff = React.useMemo(() => {
     if (!cmpA && !cmpB) return [];
     return diffLines(buildCmpText(cmpA, cmpView), buildCmpText(cmpB, cmpView));
@@ -1939,7 +2673,7 @@ function Blackwire() {
 .tab-badge{background:var(--red);color:#fff;padding:1px 5px;border-radius:8px;font-size:9px}
 .main{flex:1;display:flex;overflow:hidden}
 .panel{display:flex;flex-direction:column;overflow:hidden}.pnl-hdr{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--bg2);border-bottom:1px solid var(--brd);font-size:12px;font-weight:500}
-.pnl-cnt{flex:1;overflow:auto}.hist-pnl{width:44%;border-right:1px solid var(--brd)}.det-pnl{flex:1;display:flex;flex-direction:column}
+.pnl-cnt{flex:1;overflow:auto}.hist-pnl{flex-shrink:0;border-right:1px solid var(--brd);overflow:hidden}.det-pnl{flex:1;display:flex;flex-direction:column;min-width:0}
 .req-list{font-family:var(--font-mono);font-size:11px}.req-item{display:grid;grid-template-columns:60px 1fr 60px 55px;gap:10px;padding:8px 14px;border-bottom:1px solid var(--brd);cursor:pointer;align-items:center}
 .req-item:hover{background:var(--bgh)}.req-item.sel{background:var(--bg3);border-left:3px solid var(--blue)}.req-item.out{opacity:.4}
 .mth{font-weight:600;padding:2px 6px;border-radius:3px;text-align:center;font-size:10px}
@@ -1981,7 +2715,7 @@ function Blackwire() {
 .prj-name{font-weight:600;font-size:14px;margin-bottom:3px}.cur-badge{background:var(--cyan);color:#000;padding:1px 6px;border-radius:3px;font-size:9px;margin-left:6px}
 .prj-desc{color:var(--txt2);font-size:12px}.prj-date{color:var(--txt3);font-size:10px;margin-top:3px}
 .int-pnl{display:flex;flex-direction:column;width:100%;height:100%}.int-ctrl{display:flex;gap:10px;padding:14px;background:var(--bg2);border-bottom:1px solid var(--brd)}
-.int-cnt{display:flex;flex:1;overflow:hidden}.pend-list{width:280px;border-right:1px solid var(--brd);display:flex;flex-direction:column}
+.int-cnt{display:flex;flex:1;overflow:hidden}.pend-list{flex-shrink:0;border-right:1px solid var(--brd);display:flex;flex-direction:column}
 .pend-item{display:flex;gap:10px;padding:10px 14px;border-bottom:1px solid var(--brd);cursor:pointer;align-items:center}
 .pend-item:hover{background:var(--bgh)}.pend-item.sel{background:var(--bg3);border-left:3px solid var(--orange)}
 .int-edit{flex:1;display:flex;flex-direction:column;overflow:hidden}.ed-row{display:flex;gap:10px;padding:10px 14px;background:var(--bg2);border-bottom:1px solid var(--brd)}
@@ -1994,7 +2728,7 @@ function Blackwire() {
 .scp-rule.dis{opacity:.4}.rul-type{padding:3px 8px;border-radius:3px;font-size:10px;font-weight:600}
 .rul-inc{background:rgba(63,185,80,.15);color:var(--green)}.rul-exc{background:rgba(248,81,73,.15);color:var(--red)}
 .rul-pat{flex:1;font-family:var(--font-mono);font-size:12px}.rul-acts{display:flex;gap:6px}
-.rep-cnt{display:flex;width:100%;height:100%;overflow:hidden}.rep-side{width:200px;border-right:1px solid var(--brd);display:flex;flex-direction:column;overflow:hidden}
+.rep-cnt{display:flex;width:100%;height:100%;overflow:hidden}.rep-side{flex-shrink:0;border-right:1px solid var(--brd);display:flex;flex-direction:column;overflow:hidden}
 .rep-list{flex:1;overflow-y:auto;overflow-x:hidden}.rep-item{display:flex;gap:6px;padding:10px 14px;border-bottom:1px solid var(--brd);cursor:pointer;align-items:center}
 .rep-item:hover{background:var(--bgh)}.rep-item.sel{background:var(--bg3);border-left:3px solid var(--purple)}.rep-item .name{font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rep-main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}.req-bar{display:flex;gap:10px;padding:10px 14px;background:var(--bg2);border-bottom:1px solid var(--brd);flex-shrink:0}
@@ -2015,7 +2749,7 @@ function Blackwire() {
 .context-menu-item:hover{background:var(--bgh)}
 .context-menu-divider{height:1px;background:var(--brd);margin:4px 0}
 .chepy-cnt{display:flex;width:100%;height:100%}.chepy-col{display:flex;flex-direction:column;overflow:hidden}
-.chepy-in-col{width:30%;border-right:1px solid var(--brd)}.chepy-recipe-col{width:30%;border-right:1px solid var(--brd)}.chepy-out-col{flex:1}
+.chepy-in-col{flex-shrink:0;border-right:1px solid var(--brd)}.chepy-recipe-col{flex-shrink:0;border-right:1px solid var(--brd)}.chepy-out-col{flex:1;min-width:0}
 .chepy-add{display:flex;flex-direction:column;border-bottom:1px solid var(--brd);max-height:40%}.chepy-ops-list{flex:1;overflow:auto;padding:0 8px 8px}
 .chepy-avail-op{padding:5px 10px;font-size:11px;cursor:pointer;border-radius:4px;color:var(--txt2);font-family:var(--font-mono)}.chepy-avail-op:hover{background:var(--bg3);color:var(--cyan)}
 .chepy-steps{flex:1;overflow:auto;padding:8px}
@@ -2026,7 +2760,7 @@ function Blackwire() {
 .chepy-step-params{padding:6px 10px 10px;border-top:1px solid var(--brd);display:flex;flex-direction:column;gap:6px}
 .chepy-param{display:flex;align-items:center;gap:8px}.chepy-param-lbl{font-size:10px;color:var(--txt2);min-width:60px}
 .ws-cnt{display:flex;width:100%;height:100%}
-.ws-conns{width:220px;border-right:1px solid var(--brd)}.ws-frames{width:300px;border-right:1px solid var(--brd)}.ws-detail{flex:1;display:flex;flex-direction:column}
+.ws-conns{flex-shrink:0;border-right:1px solid var(--brd)}.ws-frames{flex-shrink:0;border-right:1px solid var(--brd)}.ws-detail{flex:1;display:flex;flex-direction:column}
 .ws-conn-item{padding:10px 14px;border-bottom:1px solid var(--brd);cursor:pointer;font-size:11px}
 .ws-conn-item:hover{background:var(--bgh)}.ws-conn-item.sel{background:var(--bg3);border-left:3px solid var(--cyan)}
 .ws-conn-url{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono);font-size:11px}
@@ -2036,7 +2770,7 @@ function Blackwire() {
 .ws-dir{font-weight:700;font-size:14px;width:20px;text-align:center}.ws-dir-up{color:var(--green)}.ws-dir-down{color:var(--orange)}
 .ws-frame-body{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono)}
 .coll-cnt{display:flex;width:100%;height:100%}
-.coll-side{width:200px;border-right:1px solid var(--brd)}.coll-steps{width:350px;border-right:1px solid var(--brd)}.coll-exec{flex:1;display:flex;flex-direction:column}
+.coll-side{flex-shrink:0;border-right:1px solid var(--brd)}.coll-steps{flex-shrink:0;border-right:1px solid var(--brd)}.coll-exec{flex:1;display:flex;flex-direction:column;min-width:0}
 .coll-item{display:flex;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--brd);cursor:pointer;font-size:12px}
 .coll-item:hover{background:var(--bgh)}.coll-item.sel{background:var(--bg3);border-left:3px solid var(--purple)}
 .coll-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -2063,7 +2797,7 @@ function Blackwire() {
 .cmp-eq{}.cmp-rem{background:rgba(248,81,73,.1);color:var(--red);border-left:3px solid var(--red)}
 .cmp-add{background:rgba(63,185,80,.1);color:var(--green);border-left:3px solid var(--green)}
 .cmp-blank{opacity:0.15;background:var(--bg3)}
-.sm-tree{width:38%;border-right:1px solid var(--brd);display:flex;flex-direction:column;overflow:hidden}
+.sm-tree{flex-shrink:0;border-right:1px solid var(--brd);display:flex;flex-direction:column;overflow:hidden}
 .sm-right{flex:1;display:flex;flex-direction:column;overflow:hidden}
 .sm-node{padding:4px 8px;cursor:pointer;font-size:11px;font-family:var(--font-mono);display:flex;align-items:center;gap:4px;border-left:2px solid transparent;white-space:nowrap}
 .sm-node:hover{background:var(--bgh)}.sm-node.sel{background:var(--bg3);border-left-color:var(--cyan)}
@@ -2076,6 +2810,55 @@ function Blackwire() {
 .splash .logo-i{width:56px;height:56px;font-size:22px;border-radius:10px}
 .splash-spin{width:24px;height:24px;border:2px solid var(--brd);border-top-color:var(--cyan);border-radius:50%;animation:spin .6s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
+.resize-h{width:6px;cursor:col-resize;background:transparent;flex-shrink:0;position:relative;z-index:5;transition:background .15s}
+.resize-h:hover,.resize-h.dragging{background:var(--blue)}
+.resize-h::after{content:'';position:absolute;top:0;bottom:0;left:2px;width:2px;background:var(--brd);transition:background .15s}
+.resize-h:hover::after,.resize-h.dragging::after{background:var(--blue)}
+.search-bar{display:flex;align-items:center;gap:6px;padding:4px 10px;background:var(--bg2);border-top:1px solid var(--brd);flex-shrink:0}
+.search-bar input{flex:1;padding:4px 8px;background:var(--bg3);border:1px solid var(--brd);border-radius:4px;color:var(--txt);font-size:11px;font-family:var(--font-mono);outline:none;min-width:0}
+.search-bar input:focus{border-color:var(--blue)}
+.search-info{font-size:10px;color:var(--txt2);white-space:nowrap}
+.search-hl{background:rgba(210,153,34,.35);color:inherit;border-radius:2px;padding:0 1px}
+.search-cur{background:rgba(88,166,255,.5);outline:1px solid var(--blue)}
+.srch-btn{padding:2px 6px;background:var(--bg3);border:1px solid var(--brd);border-radius:3px;color:var(--txt2);cursor:pointer;font-size:10px;line-height:1}
+.srch-btn:hover{background:var(--bgh)}.srch-btn.act{background:rgba(57,197,207,.2);border-color:var(--cyan);color:var(--cyan)}
+.sens-cnt{display:flex;flex-direction:column;width:100%;height:100%}
+.sens-toolbar{display:flex;align-items:center;gap:8px;padding:8px 14px;background:var(--bg2);border-bottom:1px solid var(--brd)}
+.sens-filter-bar{display:flex;align-items:center;gap:10px;padding:6px 14px;background:var(--bg2);border-bottom:1px solid var(--brd)}
+.sens-results{flex:1;overflow:auto}
+.sens-row{display:grid;grid-template-columns:90px 1fr 1fr;gap:10px;padding:8px 14px;border-bottom:1px solid var(--brd);cursor:pointer;align-items:start;font-size:11px}
+.sens-row:hover{background:var(--bgh)}.sens-row.sel{background:var(--bg3);border-left:3px solid var(--orange)}
+.sens-row-hdr{font-weight:600;font-size:10px;color:var(--txt3);text-transform:uppercase;cursor:default;background:var(--bg2);position:sticky;top:0;z-index:1}
+.sens-row-hdr:hover{background:var(--bg2)}
+.sens-cat{font-size:9px;padding:2px 6px;border-radius:3px;font-weight:600;text-transform:uppercase;white-space:nowrap}
+.sens-match{font-family:var(--font-mono);color:var(--orange);word-break:break-all;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sens-pname{font-weight:500;color:var(--txt)}.sens-purl{color:var(--txt3);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sens-detail{height:40%;border-top:1px solid var(--brd);display:flex;flex-direction:column;overflow:hidden;flex-shrink:0}
+.sens-progress{height:3px;background:var(--bg3);border-radius:2px;overflow:hidden}.sens-progress-bar{height:100%;background:var(--cyan);transition:width .3s}
+.sens-opt-section{background:var(--bg2);border:1px solid var(--brd);border-radius:8px;padding:14px;margin-bottom:12px}
+.sens-pat-row{display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid var(--brd);font-size:11px}
+.sens-pat-row:last-child{border-bottom:none}
+.sens-section-badge{font-size:8px;padding:1px 4px;border-radius:3px;background:var(--bg3);color:var(--txt3);white-space:nowrap}
+.int-cnt{display:flex;flex-direction:column;width:100%;height:100%}
+.int-positions{flex:1;display:flex;flex-direction:column;overflow:auto;padding:14px;gap:10px}
+.int-editor{font-family:var(--font-mono);font-size:12px;background:var(--bg);border:1px solid var(--brd);border-radius:6px;padding:10px;resize:vertical;min-height:80px;color:var(--txt);width:100%}
+.int-payloads{flex:1;overflow:auto;padding:14px}
+.int-resource{flex:1;overflow:auto;padding:14px}
+.int-results-cnt{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.int-results{flex:1;overflow:auto}
+.int-row{display:grid;grid-template-columns:50px 1fr 70px 80px 70px 1fr;gap:8px;padding:6px 14px;border-bottom:1px solid var(--brd);cursor:pointer;align-items:center;font-size:11px}
+.int-row:hover{background:var(--bgh)}.int-row.sel{background:var(--bg3);border-left:3px solid var(--cyan)}
+.int-row-hdr{font-weight:600;font-size:10px;color:var(--txt3);text-transform:uppercase;cursor:pointer;background:var(--bg2);position:sticky;top:0;z-index:1}
+.int-row-hdr:hover{background:var(--bg2)}
+.int-status{font-weight:600;font-family:var(--font-mono)}
+.int-status.s2{color:var(--green)}.int-status.s3{color:var(--cyan)}.int-status.s4{color:var(--orange)}.int-status.s5{color:var(--red)}
+.int-payload-txt{font-family:var(--font-mono);color:var(--cyan);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.int-detail{height:40%;border-top:1px solid var(--brd);display:flex;flex-direction:column;overflow:hidden;flex-shrink:0}
+.int-progress{height:3px;background:var(--bg3);border-radius:2px;overflow:hidden}.int-progress-bar{height:100%;background:var(--cyan);transition:width .3s}
+.int-section{background:var(--bg2);border:1px solid var(--brd);border-radius:8px;padding:14px;margin-bottom:12px}
+.int-section h4{margin:0 0 10px 0;font-size:12px;color:var(--txt2)}
+.int-stats{display:flex;gap:16px;align-items:center;font-size:11px;color:var(--txt3)}
+.int-pos-tag{display:inline-flex;align-items:center;gap:4px;font-size:10px;padding:2px 8px;background:var(--bg3);border:1px solid var(--brd);border-radius:4px;color:var(--orange);font-family:var(--font-mono)}
       `}} />
 
       {!appReady ? (
@@ -2129,9 +2912,11 @@ function Blackwire() {
             <div className={'tab' + (tab === 'history' ? ' act' : '')} onClick={() => setTab('history')}>History</div>
             <div className={'tab' + (tab === 'collections' ? ' act' : '')} onClick={() => { setTab('collections'); loadColls(); }}>Collections</div>
             <div className={'tab' + (tab === 'repeater' ? ' act' : '')} onClick={() => setTab('repeater')}>Repeater</div>
+            <div className={'tab' + (tab === 'intruder' ? ' act' : '')} onClick={() => setTab('intruder')}>Intruder</div>
             <div className={'tab' + (tab === 'git' ? ' act' : '')} onClick={() => setTab('git')}>Git</div>
             <div className={'tab' + (tab === 'chepy' ? ' act' : '')} onClick={() => setTab('chepy')}>Cipher</div>
             <div className={'tab' + (tab === 'compare' ? ' act' : '')} onClick={() => setTab('compare')}>Compare</div>
+            <div className={'tab' + (tab === 'sensitive' ? ' act' : '')} onClick={() => setTab('sensitive')}>Sensitive</div>
             <div className={'tab' + (tab === 'extensions' ? ' act' : '')} onClick={() => setTab('extensions')}>Extensions</div>
           </React.Fragment>
         )}
@@ -2189,8 +2974,8 @@ function Blackwire() {
             </div>
 
             {histSubTab === 'http' && (
-              <div className="hist-content">
-                <div className="panel hist-pnl">
+              <div className="hist-content" ref={histContentRef}>
+                <div className="panel hist-pnl" style={{ width: histPanelW + '%' }}>
                   <div className="flt-bar">
                     <div className="flt-in-wrap">
                       <input className={'flt-in' + (httpqlError ? ' flt-err' : '')} placeholder='Filter: req.method.eq:"GET" AND resp.code.lt:400' value={search} onChange={e => setSearch(e.target.value)} />
@@ -2250,6 +3035,13 @@ function Blackwire() {
                   </div>
                 </div>
 
+                <ResizeHandle onDrag={(dx) => {
+                  const el = histContentRef.current;
+                  if (!el) return;
+                  const dpct = (dx / el.offsetWidth) * 100;
+                  setHistPanelW(prev => Math.max(20, Math.min(80, prev + dpct)));
+                }} />
+
                 <div className="panel det-pnl">
                   {selReq ? (
                     <React.Fragment>
@@ -2278,21 +3070,44 @@ function Blackwire() {
                       {!selReqFull ? (
                         <div className="empty"><div className="splash-spin" style={{margin:'20px auto'}} /></div>
                       ) : (
-                      <div className="code">
+                      <div className="code" ref={histCodeRef}>
                         {(() => {
                           const d = selReqFull;
                           const reqFormatted = d.body ? formatBody(d.body, reqFormat) : { text: '', html: false };
                           const respFormatted = formatBody(d.response_body || '', respFormat);
-                          const content = detTab === 'request'
+                          const rawContent = detTab === 'request'
                             ? (d.method + ' ' + (() => {
                                 try { return new URL(d.url).pathname; } catch (e) { return d.url; }
                               })() + '\n\n' + fmtH(d.headers) + (d.body ? '\n\n' + reqFormatted.text : ''))
                             : ('HTTP ' + d.response_status + '\n\n' + fmtH(d.response_headers) + '\n\n' + respFormatted.text);
                           const isHtml = detTab === 'request' ? reqFormatted.html : respFormatted.html;
-                          return isHtml ? <div dangerouslySetInnerHTML={{ __html: content }} /> : content;
+                          if (histBodySearch) {
+                            const plainText = isHtml ? rawContent.replace(/<[^>]*>/g, '') : rawContent;
+                            const hl = highlightMatches(plainText, histBodySearch, histBodySearchRegex, histBodySearchIdx);
+                            if (hl.count !== histBodySearchCount) setTimeout(() => setHistBodySearchCount(hl.count), 0);
+                            return <div dangerouslySetInnerHTML={{ __html: hl.html }} />;
+                          }
+                          return isHtml ? <div dangerouslySetInnerHTML={{ __html: rawContent }} /> : rawContent;
                         })()}
                       </div>
                       )}
+                      <div className="search-bar" style={{ borderTop: '1px solid var(--brd)' }}>
+                        <input
+                          placeholder={histBodySearchRegex ? 'Regex search...' : 'Search body...'}
+                          value={histBodySearch}
+                          onChange={e => { setHistBodySearch(e.target.value); setHistBodySearchIdx(0); }}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); setHistBodySearchIdx(i => histBodySearchCount > 0 ? (i + 1) % histBodySearchCount : 0); }
+                            if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); setHistBodySearchIdx(i => histBodySearchCount > 0 ? (i - 1 + histBodySearchCount) % histBodySearchCount : 0); }
+                            if (e.key === 'Escape') { setHistBodySearch(''); setHistBodySearchIdx(0); setHistBodySearchCount(0); }
+                          }}
+                        />
+                        <button className={'srch-btn' + (histBodySearchRegex ? ' act' : '')} onClick={() => { setHistBodySearchRegex(!histBodySearchRegex); setHistBodySearchIdx(0); }} title="Toggle regex">.*</button>
+                        <span className="search-info">{histBodySearchCount > 0 ? (histBodySearchIdx + 1) + '/' + histBodySearchCount : '0/0'}</span>
+                        <button className="srch-btn" onClick={() => setHistBodySearchIdx(i => histBodySearchCount > 0 ? (i - 1 + histBodySearchCount) % histBodySearchCount : 0)} disabled={histBodySearchCount === 0}>▲</button>
+                        <button className="srch-btn" onClick={() => setHistBodySearchIdx(i => histBodySearchCount > 0 ? (i + 1) % histBodySearchCount : 0)} disabled={histBodySearchCount === 0}>▼</button>
+                        <button className="srch-btn" onClick={() => { setHistBodySearch(''); setHistBodySearchIdx(0); setHistBodySearchCount(0); }}>✕</button>
+                      </div>
                     </React.Fragment>
                   ) : (
                     <div className="empty">
@@ -2305,7 +3120,7 @@ function Blackwire() {
 
             {histSubTab === 'ws' && (
               <div className="ws-cnt">
-                <div className="ws-conns panel">
+                <div className="ws-conns panel" style={{ width: wsConnsW + 'px' }}>
                   <div className="pnl-hdr">
                     <span>Connections ({wsConns.length})</span>
                     <button className="btn btn-sm btn-s" onClick={loadWsConns}>&#8635;</button>
@@ -2328,7 +3143,8 @@ function Blackwire() {
                     )}
                   </div>
                 </div>
-                <div className="ws-frames panel">
+                <ResizeHandle onDrag={(dx) => setWsConnsW(w => Math.max(120, Math.min(400, w + dx)))} />
+                <div className="ws-frames panel" style={{ width: wsFramesW + 'px' }}>
                   <div className="pnl-hdr">
                     <span>Frames {selWsConn ? '(' + wsFrames.length + ')' : ''}</span>
                   </div>
@@ -2352,6 +3168,7 @@ function Blackwire() {
                     )}
                   </div>
                 </div>
+                <ResizeHandle onDrag={(dx) => setWsFramesW(w => Math.max(150, Math.min(500, w + dx)))} />
                 <div className="ws-detail panel">
                   {selWsFrame ? (
                     <React.Fragment>
@@ -2387,8 +3204,8 @@ function Blackwire() {
             )}
 
             {histSubTab === 'sitemap' && (
-              <div className="hist-content">
-                <div className="panel sm-tree">
+              <div className="hist-content" ref={smContentRef}>
+                <div className="panel sm-tree" style={{ width: smTreeW + '%' }}>
                   <div className="pnl-hdr">
                     <span>{Object.keys(siteTree).length} hosts</span>
                     <button className="btn btn-sm btn-s" onClick={() => { setSmExpanded({}); setSmSelNode(null); }}>Collapse All</button>
@@ -2406,6 +3223,12 @@ function Blackwire() {
                     )}
                   </div>
                 </div>
+                <ResizeHandle onDrag={(dx) => {
+                  const el = smContentRef.current;
+                  if (!el) return;
+                  const dpct = (dx / el.offsetWidth) * 100;
+                  setSmTreeW(prev => Math.max(15, Math.min(70, prev + dpct)));
+                }} />
                 <div className="sm-right">
                   <div className="panel" style={{ flex: smSelNode && selReq ? 1 : 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
                     <div className="pnl-hdr">
@@ -2487,7 +3310,7 @@ function Blackwire() {
               )}
             </div>
             <div className="int-cnt">
-              <div className="pend-list">
+              <div className="pend-list" style={{ width: intPendW + 'px' }}>
                 <div className="pnl-hdr">
                   <span>Pending ({pending.length})</span>
                 </div>
@@ -2504,6 +3327,7 @@ function Blackwire() {
                   </div>
                 )}
               </div>
+              <ResizeHandle onDrag={(dx) => setIntPendW(w => Math.max(150, Math.min(500, w + dx)))} />
               <div className="int-edit">
                 {selPend && editReq ? (
                   <React.Fragment>
@@ -2578,8 +3402,8 @@ function Blackwire() {
         )}
 
         {tab === 'repeater' && curPrj && (
-          <div className="rep-cnt">
-            <div className="rep-side">
+          <div className="rep-cnt" ref={repCntRef}>
+            <div className="rep-side" style={{ width: repSideW + 'px' }}>
               <div className="pnl-hdr">
                 <span>Saved</span>
                 <button className="btn btn-sm btn-p" onClick={saveRep}>+</button>
@@ -2600,6 +3424,7 @@ function Blackwire() {
                 ))}
               </div>
             </div>
+            <ResizeHandle onDrag={(dx) => setRepSideW(w => Math.max(100, Math.min(400, w + dx)))} />
             <div className="rep-main">
               <div className="req-bar">
                 <button className="btn btn-s" onClick={() => navigateHistory(-1)} disabled={repHistoryIndex <= 0} title="Previous">◀</button>
@@ -2624,7 +3449,7 @@ function Blackwire() {
                   <option value="follow">Auto Follow</option>
                 </select>
               </div>
-              <div className="rep-edit">
+              <div className="rep-edit" style={{ gridTemplateColumns: repSplitPct + '% 1fr' }}>
                 <div className="ed-pane">
                   <div className="ed-hdr">
                     <span>Headers</span>
@@ -2697,6 +3522,11 @@ function Blackwire() {
                         {fmtH(repResp.headers)}
                       </div>
                       {(() => {
+                        if (repBodySearch) {
+                          const hl = highlightMatches(repRespBody, repBodySearch, repBodySearchRegex, repBodySearchIdx);
+                          if (hl.count !== repBodySearchCount) setTimeout(() => setRepBodySearchCount(hl.count), 0);
+                          return <div className="code" ref={repCodeRef} style={{ flex: 1, overflow: 'auto' }} dangerouslySetInnerHTML={{ __html: hl.html }} />;
+                        }
                         const highlighted = colorizeBody(repRespBody);
                         return highlighted.html
                           ? <div className="code" style={{ flex: 1, overflow: 'auto' }} dangerouslySetInnerHTML={{ __html: highlighted.text }} />
@@ -2708,6 +3538,23 @@ function Blackwire() {
                               placeholder="Response body will appear here"
                             />;
                       })()}
+                      <div className="search-bar" style={{ borderTop: '1px solid var(--brd)' }}>
+                        <input
+                          placeholder={repBodySearchRegex ? 'Regex search...' : 'Search body...'}
+                          value={repBodySearch}
+                          onChange={e => { setRepBodySearch(e.target.value); setRepBodySearchIdx(0); }}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); setRepBodySearchIdx(i => repBodySearchCount > 0 ? (i + 1) % repBodySearchCount : 0); }
+                            if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); setRepBodySearchIdx(i => repBodySearchCount > 0 ? (i - 1 + repBodySearchCount) % repBodySearchCount : 0); }
+                            if (e.key === 'Escape') { setRepBodySearch(''); setRepBodySearchIdx(0); setRepBodySearchCount(0); }
+                          }}
+                        />
+                        <button className={'srch-btn' + (repBodySearchRegex ? ' act' : '')} onClick={() => { setRepBodySearchRegex(!repBodySearchRegex); setRepBodySearchIdx(0); }} title="Toggle regex">.*</button>
+                        <span className="search-info">{repBodySearchCount > 0 ? (repBodySearchIdx + 1) + '/' + repBodySearchCount : '0/0'}</span>
+                        <button className="srch-btn" onClick={() => setRepBodySearchIdx(i => repBodySearchCount > 0 ? (i - 1 + repBodySearchCount) % repBodySearchCount : 0)} disabled={repBodySearchCount === 0}>▲</button>
+                        <button className="srch-btn" onClick={() => setRepBodySearchIdx(i => repBodySearchCount > 0 ? (i + 1) % repBodySearchCount : 0)} disabled={repBodySearchCount === 0}>▼</button>
+                        <button className="srch-btn" onClick={() => { setRepBodySearch(''); setRepBodySearchIdx(0); setRepBodySearchCount(0); }}>✕</button>
+                      </div>
                     </>
                   ) : (
                     <div className="code">Send a request</div>
@@ -2869,7 +3716,7 @@ function Blackwire() {
                 <span>No extensions installed</span>
               </div>
             )}
-            {extensions.map(ext => (
+            {extensions.filter(ext => ext.name !== 'sensitive').map(ext => (
               <div key={ext.name} style={{ background: 'var(--bg2)', border: '1px solid var(--brd)', borderRadius: '8px', padding: '16px', marginBottom: '12px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
                   <div>
@@ -2904,7 +3751,7 @@ function Blackwire() {
 
         {tab === 'collections' && curPrj && (
           <div className="coll-cnt">
-            <div className="coll-side panel">
+            <div className="coll-side panel" style={{ width: collSideW + 'px' }}>
               <div className="pnl-hdr">
                 <span>Collections</span>
                 <button className="btn btn-sm btn-p" onClick={createColl}>+</button>
@@ -2925,7 +3772,8 @@ function Blackwire() {
                 )}
               </div>
             </div>
-            <div className="coll-steps panel">
+            <ResizeHandle onDrag={(dx) => setCollSideW(w => Math.max(100, Math.min(400, w + dx)))} />
+            <div className="coll-steps panel" style={{ width: collStepsW + 'px' }}>
               <div className="pnl-hdr">
                 <span>Steps {selColl ? '(' + collItems.length + ')' : ''}</span>
               </div>
@@ -2969,6 +3817,7 @@ function Blackwire() {
                 )}
               </div>
             </div>
+            <ResizeHandle onDrag={(dx) => setCollStepsW(w => Math.max(150, Math.min(600, w + dx)))} />
             <div className="coll-exec panel">
               {selColl && collItems.length > 0 ? (
                 <React.Fragment>
@@ -3080,8 +3929,8 @@ function Blackwire() {
         )}
 
         {tab === 'chepy' && curPrj && (
-          <div className="chepy-cnt">
-            <div className="chepy-col chepy-in-col">
+          <div className="chepy-cnt" ref={chepyCntRef}>
+            <div className="chepy-col chepy-in-col" style={{ width: chepyInW + '%' }}>
               <div className="pnl-hdr">
                 <span>Input</span>
                 <button className="btn btn-sm btn-s" onClick={() => setChepyIn('')}>Clear</button>
@@ -3095,7 +3944,14 @@ function Blackwire() {
               />
             </div>
 
-            <div className="chepy-col chepy-recipe-col">
+            <ResizeHandle onDrag={(dx) => {
+              const el = chepyCntRef.current;
+              if (!el) return;
+              const dpct = (dx / el.offsetWidth) * 100;
+              setChepyInW(prev => Math.max(15, Math.min(50, prev + dpct)));
+            }} />
+
+            <div className="chepy-col chepy-recipe-col" style={{ width: chepyRecW + '%' }}>
               <div className="pnl-hdr">
                 <span>Recipe</span>
                 <div style={{ display: 'flex', gap: '6px' }}>
@@ -3166,6 +4022,13 @@ function Blackwire() {
               </div>
             </div>
 
+            <ResizeHandle onDrag={(dx) => {
+              const el = chepyCntRef.current;
+              if (!el) return;
+              const dpct = (dx / el.offsetWidth) * 100;
+              setChepyRecW(prev => Math.max(15, Math.min(50, prev + dpct)));
+            }} />
+
             <div className="chepy-col chepy-out-col">
               <div className="pnl-hdr">
                 <span>Output</span>
@@ -3181,6 +4044,550 @@ function Blackwire() {
                 <div className="code">{chepyOut || 'Output will appear here after baking'}</div>
               )}
             </div>
+          </div>
+        )}
+
+        {tab === 'sensitive' && curPrj && (
+          <div className="sens-cnt">
+            <div className="det-tabs" style={{ justifyContent: 'flex-start', gap: 0 }}>
+              <div className={'det-tab' + (sensSubTab === 'logger' ? ' act' : '')} onClick={() => setSensSubTab('logger')}>Logger</div>
+              <div className={'det-tab' + (sensSubTab === 'options' ? ' act' : '')} onClick={() => setSensSubTab('options')}>Options</div>
+            </div>
+
+            {sensSubTab === 'logger' && (
+              <React.Fragment>
+                <div className="sens-toolbar">
+                  <button className="btn btn-sm btn-g" onClick={runSensitiveScan} disabled={sensScanning || reqs.length === 0}>
+                    {sensScanning ? '...' : '\u25B6'} Scan
+                  </button>
+                  <button className="btn btn-sm btn-d" onClick={stopSensitiveScan} disabled={!sensScanning}>
+                    {'\u25A0'} Stop
+                  </button>
+                  <button className="btn btn-sm btn-s" onClick={() => { setSensResults([]); setSensSelResult(null); setSensSelDetail(null); setSensPct(0); }}>
+                    Clear
+                  </button>
+                  <div className="sens-progress" style={{ flex: 1 }}>
+                    <div className="sens-progress-bar" style={{ width: sensPct + '%' }} />
+                  </div>
+                  <span style={{ fontSize: '10px', color: 'var(--txt2)', whiteSpace: 'nowrap' }}>
+                    {sensScanning ? sensPct + '%' : sensResults.length + ' findings'}
+                  </span>
+                </div>
+
+                <div className="sens-filter-bar">
+                  <input
+                    placeholder="Filter results..."
+                    value={sensFilter}
+                    onChange={e => setSensFilter(e.target.value)}
+                    style={{ flex: 1, padding: '4px 8px', background: 'var(--bg3)', border: '1px solid var(--brd)', borderRadius: '4px', color: 'var(--txt)', fontSize: '11px', fontFamily: 'var(--font-mono)', outline: 'none' }}
+                  />
+                  <label style={{ fontSize: '10px', color: 'var(--txt2)', display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={sensUnique} onChange={e => setSensUnique(e.target.checked)} />
+                    Unique
+                  </label>
+                  <span style={{ fontSize: '10px', color: 'var(--txt3)' }}>
+                    {sensFiltered.length}{sensFiltered.length !== sensResults.length ? ' / ' + sensResults.length : ''}
+                  </span>
+                </div>
+
+                <div className="sens-results">
+                  <div className="sens-row sens-row-hdr">
+                    <span>Category</span>
+                    <span>Match</span>
+                    <span>Pattern / URL</span>
+                  </div>
+                  {sensFiltered.length === 0 && !sensScanning && (
+                    <div className="empty" style={{ padding: '40px 0' }}>
+                      <div className="empty-i">{sensResults.length === 0 ? '\uD83D\uDD0D' : '\uD83D\uDD0E'}</div>
+                      <span>{sensResults.length === 0 ? 'Click Scan to analyze captured traffic' : 'No results match your filter'}</span>
+                    </div>
+                  )}
+                  {sensFiltered.map((r, i) => (
+                    <div key={i} className={'sens-row' + (sensSelResult === r ? ' sel' : '')} onClick={() => loadSensDetail(r)}>
+                      <span className="sens-cat" style={{ background: (SENS_COLORS[r.category] || 'var(--txt3)') + '22', color: SENS_COLORS[r.category] || 'var(--txt3)' }}>
+                        {r.category}
+                      </span>
+                      <span className="sens-match" title={r.match}>{r.match}</span>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 }}>
+                        <span className="sens-pname">{r.patternName}</span>
+                        <span className="sens-purl" title={r.url}>{r.method} {r.url}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {sensSelResult && (
+                  <div className="sens-detail">
+                    <div className="pnl-hdr">
+                      <span style={{ fontSize: '11px' }}>
+                        <span className="sens-cat" style={{ background: (SENS_COLORS[sensSelResult.category] || 'var(--txt3)') + '22', color: SENS_COLORS[sensSelResult.category] || 'var(--txt3)', marginRight: '8px' }}>
+                          {sensSelResult.category}
+                        </span>
+                        {sensSelResult.patternName} — <span style={{ color: 'var(--txt3)' }}>{sensSelResult.section}</span>
+                      </span>
+                      <button className="btn btn-sm btn-s" onClick={() => { setSensSelResult(null); setSensSelDetail(null); }}>Close</button>
+                    </div>
+                    <div ref={sensDetailRef} style={{ flex: 1, overflow: 'auto', padding: '10px', fontFamily: 'var(--font-mono)', fontSize: '11px', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                      {sensSelDetail ? (() => {
+                        const secMap = {
+                          reqUrl: sensSelDetail.url || '',
+                          reqHeaders: sensSelDetail.headers || '',
+                          reqBody: sensSelDetail.body || '',
+                          respHeaders: sensSelDetail.response_headers || '',
+                          respBody: sensSelDetail.response_body || '',
+                        };
+                        const text = secMap[sensSelResult.section] || '';
+                        const hl = highlightMatches(text, sensSelResult.match.replace(/\.\.\.$/, ''), false, 0);
+                        return React.createElement('div', { dangerouslySetInnerHTML: { __html: hl.html } });
+                      })() : <span style={{ color: 'var(--txt3)' }}>Loading...</span>}
+                    </div>
+                  </div>
+                )}
+              </React.Fragment>
+            )}
+
+            {sensSubTab === 'options' && (
+              <div style={{ flex: 1, overflow: 'auto', padding: '16px' }}>
+                <div className="sens-opt-section">
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+                    <span style={{ fontWeight: 600, fontSize: '12px' }}>Scanner Config</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '11px' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      Batch Size:
+                      <input type="number" min="1" max="20" value={sensBatch} onChange={e => setSensBatch(Math.max(1, parseInt(e.target.value) || 4))}
+                        style={{ width: '50px', padding: '3px 6px', background: 'var(--bg3)', border: '1px solid var(--brd)', borderRadius: '4px', color: 'var(--txt)', fontSize: '11px' }} />
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      Max Resp Size:
+                      <input type="number" min="0" value={sensMaxSize} onChange={e => setSensMaxSize(parseInt(e.target.value) || 0)}
+                        style={{ width: '90px', padding: '3px 6px', background: 'var(--bg3)', border: '1px solid var(--brd)', borderRadius: '4px', color: 'var(--txt)', fontSize: '11px' }} />
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+                      <input type="checkbox" checked={sensScopeOnly} onChange={e => setSensScopeOnly(e.target.checked)} />
+                      Scope only
+                    </label>
+                  </div>
+                </div>
+
+                {[
+                  { key: 'general', label: 'General Patterns', defaults: SENS_GENERAL },
+                  { key: 'tokens', label: 'Token Patterns', defaults: SENS_TOKENS },
+                  { key: 'urls', label: 'URL Patterns', defaults: SENS_URLS },
+                  { key: 'files', label: 'File Extension Patterns', defaults: SENS_FILES },
+                ].map(grp => (
+                  <div key={grp.key} className="sens-opt-section">
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                      <span style={{ fontWeight: 600, fontSize: '12px' }}>{grp.label} ({sensPatterns[grp.key].filter(p => p.enabled).length}/{sensPatterns[grp.key].length})</span>
+                      <div style={{ display: 'flex', gap: '6px' }}>
+                        <button className="btn btn-sm btn-s" onClick={() => setSensPatterns(prev => ({ ...prev, [grp.key]: prev[grp.key].map(p => ({ ...p, enabled: true })) }))}>All</button>
+                        <button className="btn btn-sm btn-s" onClick={() => setSensPatterns(prev => ({ ...prev, [grp.key]: prev[grp.key].map(p => ({ ...p, enabled: false })) }))}>None</button>
+                        <button className="btn btn-sm btn-s" onClick={() => {
+                          const name = prompt('Pattern name:');
+                          if (!name) return;
+                          const regex = prompt('Regex:');
+                          if (!regex) return;
+                          const category = prompt('Category:', grp.key === 'files' ? 'Files' : 'Custom');
+                          setSensPatterns(prev => ({
+                            ...prev,
+                            [grp.key]: [...prev[grp.key], { name, regex, category: category || 'Custom', sections: grp.key === 'files' ? ['reqUrl'] : ['respHeaders','respBody'], enabled: true }]
+                          }));
+                        }}>+ Add</button>
+                        <button className="btn btn-sm btn-s" onClick={() => setSensPatterns(prev => ({ ...prev, [grp.key]: grp.defaults.map(p => ({...p})) }))}>Reset</button>
+                      </div>
+                    </div>
+                    <div style={{ maxHeight: '300px', overflow: 'auto' }}>
+                      {sensPatterns[grp.key].map((pat, pi) => (
+                        <div key={pi} className="sens-pat-row">
+                          <input type="checkbox" checked={pat.enabled} onChange={e => {
+                            const val = e.target.checked;
+                            const gk = grp.key;
+                            const idx = pi;
+                            setSensPatterns(prev => ({
+                              ...prev,
+                              [gk]: prev[gk].map((p, j) => j === idx ? { ...p, enabled: val } : p)
+                            }));
+                          }} />
+                          <span style={{ flex: '0 0 180px', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={pat.name}>{pat.name}</span>
+                          <span style={{ flex: 1, fontFamily: 'var(--font-mono)', color: 'var(--txt3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '10px' }} title={pat.regex}>{pat.regex}</span>
+                          <span className="sens-section-badge">{pat.sections.join(', ')}</span>
+                          <button className="btn btn-sm btn-s" style={{ padding: '1px 5px', fontSize: '9px' }} onClick={() => {
+                            setSensPatterns(prev => {
+                              const next = { ...prev, [grp.key]: prev[grp.key].filter((_, j) => j !== pi) };
+                              return next;
+                            });
+                          }}>{'\u2715'}</button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab === 'intruder' && curPrj && (
+          <div style={{ display: 'flex', width: '100%', height: '100%' }}>
+            <div className="rep-side" style={{ width: '200px', minWidth: '160px' }}>
+              <div className="pnl-hdr">
+                <span>Attacks</span>
+                <button className="btn btn-sm btn-p" onClick={() => { setIntSelAttack(null); setIntMethod('GET'); setIntUrl(''); setIntHeaders(''); setIntBody(''); setIntResults([]); setIntDone(0); setIntTotal(0); setIntPct(0); setIntSelResult(null); setIntSubTab('positions'); }}>+ New</button>
+              </div>
+              <div className="rep-list">
+                {intAttacks.map(a => (
+                  <div key={a.id} className={'rep-item' + (intSelAttack === a.id ? ' sel' : '')} onClick={() => loadIntAttack(a.id)}>
+                    <div style={{ flex: 1, overflow: 'hidden' }}>
+                      <div style={{ fontSize: 11, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}</div>
+                      <div style={{ fontSize: 9, color: 'var(--txt3)' }}>{a.total} results {'\u00b7'} {a.created_at ? new Date(a.created_at).toLocaleDateString() : ''}</div>
+                    </div>
+                    {intSelAttack === a.id && (
+                      <div style={{ display: 'flex', gap: 2 }} onClick={e => e.stopPropagation()}>
+                        <button className="btn btn-sm btn-s" onClick={() => renameIntAttack(a.id)} style={{ padding: '2px 5px', fontSize: 10 }}>{'\u270e'}</button>
+                        <button className="btn btn-sm btn-d" onClick={() => deleteIntAttack(a.id)} style={{ padding: '2px 5px', fontSize: 10 }}>{'\u2715'}</button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {intAttacks.length === 0 && (
+                  <div style={{ padding: 14, fontSize: 11, color: 'var(--txt3)', textAlign: 'center' }}>No saved attacks</div>
+                )}
+              </div>
+            </div>
+            <div className="int-cnt" style={{ flex: 1, minWidth: 0 }}>
+            <div className="det-tabs" style={{ justifyContent: 'flex-start', gap: 0 }}>
+              <div className={'det-tab' + (intSubTab === 'positions' ? ' act' : '')} onClick={() => setIntSubTab('positions')}>Positions</div>
+              <div className={'det-tab' + (intSubTab === 'payloads' ? ' act' : '')} onClick={() => setIntSubTab('payloads')}>Payloads</div>
+              <div className={'det-tab' + (intSubTab === 'resource' ? ' act' : '')} onClick={() => setIntSubTab('resource')}>Resource Pool</div>
+              <div className={'det-tab' + (intSubTab === 'results' ? ' act' : '')} onClick={() => setIntSubTab('results')}>Results {intResults.length > 0 ? '(' + intResults.length + ')' : ''}</div>
+            </div>
+
+            {intSubTab === 'positions' && (
+              <div className="int-positions">
+                <div className="int-section">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                    <label style={{ fontSize: 11, color: 'var(--txt2)' }}>Attack Type:</label>
+                    <select className="sel" value={intAttackType} onChange={e => setIntAttackType(e.target.value)} style={{ fontSize: 11, padding: '4px 8px' }}>
+                      <option value="targeted">Targeted</option>
+                      <option value="broadcast">Broadcast</option>
+                      <option value="parallel">Parallel</option>
+                      <option value="matrix">Matrix</option>
+                    </select>
+                    <span style={{ fontSize: 10, color: 'var(--txt3)', flex: 1 }}>
+                      {intAttackType === 'targeted' && 'Tests each position one at a time with a single payload set'}
+                      {intAttackType === 'broadcast' && 'Same payload in all positions simultaneously'}
+                      {intAttackType === 'parallel' && 'Different payload per position, iterated in parallel (zip)'}
+                      {intAttackType === 'matrix' && 'Cartesian product of all payload sets — tests every combination'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="int-section">
+                  <h4>Request</h4>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                    <select className="mth-sel" value={intMethod} onChange={e => setIntMethod(e.target.value)} style={{ fontSize: 11 }}>
+                      <option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option><option>HEAD</option><option>OPTIONS</option>
+                    </select>
+                    <input className="url-in" placeholder="https://example.com/api/endpoint" value={intUrl} onChange={e => setIntUrl(e.target.value)} style={{ flex: 1 }} />
+                  </div>
+                  <label style={{ fontSize: 10, color: 'var(--txt3)', display: 'block', marginBottom: 4 }}>Headers</label>
+                  <textarea ref={intHeadersRef} className="int-editor" rows={4} value={intHeaders} onChange={e => setIntHeaders(e.target.value)}
+                    placeholder={'Content-Type: application/json\nAuthorization: Bearer \u00a7token\u00a7'} />
+                  <label style={{ fontSize: 10, color: 'var(--txt3)', display: 'block', marginBottom: 4, marginTop: 8 }}>Body</label>
+                  <textarea ref={intBodyRef} className="int-editor" rows={6} value={intBody} onChange={e => setIntBody(e.target.value)}
+                    placeholder={'{"username":"\u00a7user\u00a7","password":"\u00a7pass\u00a7"}'} />
+                </div>
+
+                <div className="int-section">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <button className="btn btn-sm btn-p" onClick={() => {
+                      const ref = intBodyRef.current || intHeadersRef.current;
+                      if (!ref) return;
+                      const start = ref.selectionStart;
+                      const end = ref.selectionEnd;
+                      if (start === end) { toast('Select text first', 'error'); return; }
+                      const val = ref.value;
+                      const selected = val.substring(start, end);
+                      const nv = val.substring(0, start) + '\u00a7' + selected + '\u00a7' + val.substring(end);
+                      if (ref === intBodyRef.current) setIntBody(nv);
+                      else setIntHeaders(nv);
+                    }}>{'\u00a7'} Add {'\u00a7'}</button>
+                    <button className="btn btn-sm btn-s" onClick={() => {
+                      setIntUrl(intUrl.replace(/\u00a7[^\u00a7]*\u00a7/g, m => m.slice(1, -1)));
+                      setIntHeaders(intHeaders.replace(/\u00a7[^\u00a7]*\u00a7/g, m => m.slice(1, -1)));
+                      setIntBody(intBody.replace(/\u00a7[^\u00a7]*\u00a7/g, m => m.slice(1, -1)));
+                    }}>Clear {'\u00a7'}</button>
+                    <span style={{ fontSize: 11, color: 'var(--txt2)' }}>Positions found: <strong style={{ color: 'var(--orange)' }}>{intPositions.length}</strong></span>
+                  </div>
+                  {intPositions.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                      {intPositions.map((p, i) => (
+                        <span key={i} className="int-pos-tag">#{i + 1}: {p.name} <span style={{ color: 'var(--txt3)', fontSize: 9 }}>({p.section})</span></span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {intSubTab === 'payloads' && (
+              <div className="int-payloads">
+                <div className="int-section">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                    <label style={{ fontSize: 11, color: 'var(--txt2)' }}>Payload Set:</label>
+                    <select className="sel" value={intSelPayloadSet} onChange={e => setIntSelPayloadSet(Number(e.target.value))} style={{ fontSize: 11, padding: '4px 8px' }}>
+                      {intPositions.map((p, i) => (
+                        <option key={i} value={i}>Position #{i + 1}: {p.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  {intPositions.length === 0 && (
+                    <div className="empty" style={{ padding: 30 }}>
+                      <div className="empty-i">{'\u00a7'}</div>
+                      <span>Add position markers in the Positions tab first</span>
+                    </div>
+                  )}
+                  {intPositions.length > 0 && (() => {
+                    const idx = intSelPayloadSet;
+                    const cfg = intPayloads[idx] || { type: 'list', items: '' };
+                    const updateCfg = (key, val) => setIntPayloads(prev => ({ ...prev, [idx]: { ...prev[idx], [key]: val } }));
+                    return React.createElement(React.Fragment, null,
+                      React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 } },
+                        React.createElement('label', { style: { fontSize: 11, color: 'var(--txt2)' } }, 'Payload Type:'),
+                        React.createElement('select', { className: 'sel', value: cfg.type, onChange: e => updateCfg('type', e.target.value), style: { fontSize: 11, padding: '4px 8px' } },
+                          React.createElement('option', { value: 'list' }, 'Simple List'),
+                          React.createElement('option', { value: 'numbers' }, 'Numbers'),
+                          React.createElement('option', { value: 'bruteforce' }, 'Brute Forcer')
+                        )
+                      ),
+                      cfg.type === 'list' && React.createElement('div', { className: 'int-section' },
+                        React.createElement('h4', null, 'Simple List'),
+                        React.createElement('textarea', { className: 'int-editor', rows: 12, value: cfg.items || '', onChange: e => updateCfg('items', e.target.value),
+                          placeholder: 'Enter one payload per line...' }),
+                        React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 } },
+                          React.createElement('button', { className: 'btn btn-sm btn-s', onClick: () => {
+                            const input = document.createElement('input');
+                            input.type = 'file'; input.accept = '.txt,.csv,.lst,.list';
+                            input.onchange = e => {
+                              const f = e.target.files[0]; if (!f) return;
+                              const reader = new FileReader();
+                              reader.onload = ev => updateCfg('items', (cfg.items ? cfg.items + '\n' : '') + ev.target.result);
+                              reader.readAsText(f);
+                            };
+                            input.click();
+                          }}, 'Load File'),
+                          React.createElement('button', { className: 'btn btn-sm btn-s', onClick: async () => {
+                            try { const t = await navigator.clipboard.readText(); updateCfg('items', (cfg.items ? cfg.items + '\n' : '') + t); } catch(e) { toast('Clipboard access denied', 'error'); }
+                          }}, 'Paste'),
+                          React.createElement('button', { className: 'btn btn-sm btn-d', onClick: () => updateCfg('items', '') }, 'Clear'),
+                          React.createElement('span', { style: { fontSize: 10, color: 'var(--txt3)', marginLeft: 'auto' } },
+                            'Items: ' + ((cfg.items || '').split('\n').filter(l => l.length > 0).length))
+                        )
+                      ),
+                      cfg.type === 'numbers' && React.createElement('div', { className: 'int-section' },
+                        React.createElement('h4', null, 'Numbers Range'),
+                        React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 } },
+                          React.createElement('label', { style: { fontSize: 10, color: 'var(--txt3)' } }, 'From:', React.createElement('input', { type: 'number', className: 'int-editor', style: { marginTop: 4, padding: 6, minHeight: 'auto' }, value: cfg.from || 0, onChange: e => updateCfg('from', Number(e.target.value)) })),
+                          React.createElement('label', { style: { fontSize: 10, color: 'var(--txt3)' } }, 'To:', React.createElement('input', { type: 'number', className: 'int-editor', style: { marginTop: 4, padding: 6, minHeight: 'auto' }, value: cfg.to || 99, onChange: e => updateCfg('to', Number(e.target.value)) })),
+                          React.createElement('label', { style: { fontSize: 10, color: 'var(--txt3)' } }, 'Step:', React.createElement('input', { type: 'number', className: 'int-editor', style: { marginTop: 4, padding: 6, minHeight: 'auto' }, value: cfg.step || 1, onChange: e => updateCfg('step', Number(e.target.value)) })),
+                          React.createElement('label', { style: { fontSize: 10, color: 'var(--txt3)' } }, 'Pad digits (0=none):', React.createElement('input', { type: 'number', className: 'int-editor', style: { marginTop: 4, padding: 6, minHeight: 'auto' }, value: cfg.padLen || 0, onChange: e => updateCfg('padLen', Number(e.target.value)) }))
+                        ),
+                        React.createElement('div', { style: { fontSize: 10, color: 'var(--txt3)', marginTop: 8 } },
+                          'Will generate ' + (Math.max(0, Math.floor(((cfg.to || 99) - (cfg.from || 0)) / Math.max(1, cfg.step || 1)) + 1)) + ' payloads')
+                      ),
+                      cfg.type === 'bruteforce' && React.createElement('div', { className: 'int-section' },
+                        React.createElement('h4', null, 'Brute Forcer'),
+                        React.createElement('label', { style: { fontSize: 10, color: 'var(--txt3)', display: 'block', marginBottom: 4 } }, 'Character Set:'),
+                        React.createElement('input', { className: 'int-editor', style: { minHeight: 'auto', padding: 6 }, value: cfg.charset || 'abcdefghijklmnopqrstuvwxyz', onChange: e => updateCfg('charset', e.target.value) }),
+                        React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 } },
+                          React.createElement('label', { style: { fontSize: 10, color: 'var(--txt3)' } }, 'Min Length:', React.createElement('input', { type: 'number', className: 'int-editor', style: { marginTop: 4, padding: 6, minHeight: 'auto' }, value: cfg.minLen || 1, onChange: e => updateCfg('minLen', Number(e.target.value)) })),
+                          React.createElement('label', { style: { fontSize: 10, color: 'var(--txt3)' } }, 'Max Length:', React.createElement('input', { type: 'number', className: 'int-editor', style: { marginTop: 4, padding: 6, minHeight: 'auto' }, value: cfg.maxLen || 3, onChange: e => updateCfg('maxLen', Number(e.target.value)) }))
+                        ),
+                        React.createElement('div', { style: { fontSize: 10, color: 'var(--txt3)', marginTop: 8 } },
+                          (() => { const c = (cfg.charset || 'a').length; const mn = Math.max(1, cfg.minLen || 1); const mx = Math.min(8, cfg.maxLen || 3); let t = 0; for (let l = mn; l <= mx; l++) t += Math.pow(c, l); return 'Will generate ~' + (t > 500000 ? '500,000 (capped)' : t.toLocaleString()) + ' payloads'; })()
+                        )
+                      ),
+                      React.createElement('div', { className: 'int-section', style: { marginTop: 12 } },
+                        React.createElement('h4', null, 'Payload Processing'),
+                        React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center' } },
+                          React.createElement('label', { style: { fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 } },
+                            React.createElement('input', { type: 'checkbox', checked: cfg.urlEncode || false, onChange: e => updateCfg('urlEncode', e.target.checked) }),
+                            'URL-encode'),
+                          React.createElement('label', { style: { fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 } },
+                            React.createElement('input', { type: 'checkbox', checked: cfg.base64 || false, onChange: e => updateCfg('base64', e.target.checked) }),
+                            'Base64')
+                        ),
+                        React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 } },
+                          React.createElement('label', { style: { fontSize: 10, color: 'var(--txt3)' } }, 'Prefix:', React.createElement('input', { className: 'int-editor', style: { marginTop: 4, padding: 6, minHeight: 'auto' }, value: cfg.prefix || '', onChange: e => updateCfg('prefix', e.target.value) })),
+                          React.createElement('label', { style: { fontSize: 10, color: 'var(--txt3)' } }, 'Suffix:', React.createElement('input', { className: 'int-editor', style: { marginTop: 4, padding: 6, minHeight: 'auto' }, value: cfg.suffix || '', onChange: e => updateCfg('suffix', e.target.value) }))
+                        )
+                      )
+                    );
+                  })()}
+                </div>
+              </div>
+            )}
+
+            {intSubTab === 'resource' && (
+              <div className="int-resource">
+                <div className="int-section">
+                  <h4>Throttle Settings</h4>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                    <label style={{ fontSize: 11, color: 'var(--txt2)' }}>Concurrent Requests (1-50):
+                      <input type="number" className="int-editor" style={{ marginTop: 4, padding: 6, minHeight: 'auto' }}
+                        value={intConcurrency} onChange={e => setIntConcurrency(Math.max(1, Math.min(50, Number(e.target.value) || 1)))} min={1} max={50} />
+                    </label>
+                    <label style={{ fontSize: 11, color: 'var(--txt2)' }}>Fixed Delay Between Batches (ms):
+                      <input type="number" className="int-editor" style={{ marginTop: 4, padding: 6, minHeight: 'auto' }}
+                        value={intDelay} onChange={e => setIntDelay(Math.max(0, Number(e.target.value) || 0))} min={0} />
+                    </label>
+                  </div>
+                  <div style={{ marginTop: 10 }}>
+                    <label style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <input type="checkbox" checked={intRandomDelay} onChange={e => setIntRandomDelay(e.target.checked)} />
+                      Random delay instead
+                    </label>
+                    {intRandomDelay && (
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 8, marginLeft: 20 }}>
+                        <label style={{ fontSize: 10, color: 'var(--txt3)' }}>Min (ms):
+                          <input type="number" className="int-editor" style={{ marginTop: 4, padding: 6, minHeight: 'auto' }}
+                            value={intDelayMin} onChange={e => setIntDelayMin(Number(e.target.value) || 0)} />
+                        </label>
+                        <label style={{ fontSize: 10, color: 'var(--txt3)' }}>Max (ms):
+                          <input type="number" className="int-editor" style={{ marginTop: 4, padding: 6, minHeight: 'auto' }}
+                            value={intDelayMax} onChange={e => setIntDelayMax(Number(e.target.value) || 0)} />
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="int-section">
+                  <h4>Connection Settings</h4>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                    <label style={{ fontSize: 11, color: 'var(--txt2)' }}>Request Timeout (seconds):
+                      <input type="number" className="int-editor" style={{ marginTop: 4, padding: 6, minHeight: 'auto' }}
+                        value={intTimeout} onChange={e => setIntTimeout(Math.max(1, Number(e.target.value) || 30))} min={1} />
+                    </label>
+                    <label style={{ fontSize: 11, color: 'var(--txt2)' }}>Max Retries on Error:
+                      <input type="number" className="int-editor" style={{ marginTop: 4, padding: 6, minHeight: 'auto' }}
+                        value={intMaxRetries} onChange={e => setIntMaxRetries(Math.max(0, Number(e.target.value) || 0))} min={0} />
+                    </label>
+                  </div>
+                  <label style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 6, marginTop: 10 }}>
+                    <input type="checkbox" checked={intFollowRedirects} onChange={e => setIntFollowRedirects(e.target.checked)} />
+                    Follow redirects
+                  </label>
+                </div>
+
+                <div className="int-section">
+                  <h4>Attack Preview</h4>
+                  <div style={{ fontSize: 11, color: 'var(--txt2)', lineHeight: 1.8 }}>
+                    <div>Attack type: <strong>{intAttackType.replace('_', ' ')}</strong></div>
+                    <div>Positions: <strong>{intPositions.length}</strong></div>
+                    <div>Total requests: <strong style={{ color: 'var(--cyan)' }}>{intComputeTotal().toLocaleString()}</strong></div>
+                    {intComputeTotal() > 0 && intConcurrency > 0 && (
+                      <div>Estimated time: <strong>~{(() => {
+                        const total = intComputeTotal();
+                        const batches = Math.ceil(total / intConcurrency);
+                        const avgDelay = intRandomDelay ? (intDelayMin + intDelayMax) / 2 : intDelay;
+                        const secs = batches * 0.5 + batches * avgDelay / 1000;
+                        if (secs < 60) return Math.round(secs) + 's';
+                        if (secs < 3600) return Math.round(secs / 60) + ' min';
+                        return (secs / 3600).toFixed(1) + ' hr';
+                      })()}</strong></div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {intSubTab === 'results' && (
+              <div className="int-results-cnt">
+                <div className="sens-toolbar">
+                  <button className="btn btn-sm btn-p" onClick={runIntruderAttack} disabled={intRunning || intPositions.length === 0}>{'\u25b6'} Start Attack</button>
+                  <button className="btn btn-sm btn-d" onClick={stopIntruderAttack} disabled={!intRunning}>{'\u25a0'} Stop</button>
+                  <button className="btn btn-sm btn-s" onClick={() => { setIntResults([]); setIntDone(0); setIntPct(0); setIntSelResult(null); }}>Clear</button>
+                  <div className="int-progress" style={{ flex: 1, marginLeft: 8, marginRight: 8 }}>
+                    <div className="int-progress-bar" style={{ width: intPct + '%' }} />
+                  </div>
+                  <span style={{ fontSize: 10, color: 'var(--txt3)', whiteSpace: 'nowrap' }}>{intPct}%</span>
+                </div>
+                <div className="int-stats" style={{ padding: '4px 14px', background: 'var(--bg2)', borderBottom: '1px solid var(--brd)' }}>
+                  <span>{intDone}/{intTotal} requests</span>
+                  {intStartTime && intDone > 0 && <span>{(intDone / ((Date.now() - intStartTime) / 1000)).toFixed(1)} req/s</span>}
+                  {intStartTime && <span>Elapsed: {Math.round((Date.now() - intStartTime) / 1000)}s</span>}
+                  <div style={{ flex: 1 }} />
+                  <input className="int-editor" style={{ minHeight: 'auto', padding: '3px 8px', width: 180, resize: 'none', fontSize: 10 }}
+                    placeholder="Filter results..." value={intFilter} onChange={e => setIntFilter(e.target.value)} />
+                </div>
+                <div className="int-results">
+                  <div className="int-row int-row-hdr" onClick={e => {
+                    const col = e.target.dataset.col;
+                    if (!col) return;
+                    setIntSortCol(col);
+                    setIntSortDir(prev => intSortCol === col ? (prev === 'asc' ? 'desc' : 'asc') : 'asc');
+                  }}>
+                    <span data-col="#"># {intSortCol === '#' ? (intSortDir === 'asc' ? '\u25b2' : '\u25bc') : ''}</span>
+                    <span data-col="payload">Payload {intSortCol === 'payload' ? (intSortDir === 'asc' ? '\u25b2' : '\u25bc') : ''}</span>
+                    <span data-col="status">Status {intSortCol === 'status' ? (intSortDir === 'asc' ? '\u25b2' : '\u25bc') : ''}</span>
+                    <span data-col="length">Length {intSortCol === 'length' ? (intSortDir === 'asc' ? '\u25b2' : '\u25bc') : ''}</span>
+                    <span data-col="time">Time {intSortCol === 'time' ? (intSortDir === 'asc' ? '\u25b2' : '\u25bc') : ''}</span>
+                    <span>Error</span>
+                  </div>
+                  {intSorted.map(r => (
+                    <div key={r.num} className={'int-row' + (intSelResult && intSelResult.num === r.num ? ' sel' : '')}
+                      onClick={() => setIntSelResult(prev => prev && prev.num === r.num ? null : r)}>
+                      <span style={{ color: 'var(--txt3)' }}>{r.num}</span>
+                      <span className="int-payload-txt" title={r.payload}>{r.payload}</span>
+                      <span className={'int-status s' + String(r.status).charAt(0)}>{r.status || '-'}</span>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10 }}>{r.length > 0 ? r.length.toLocaleString() : '-'}</span>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10 }}>{r.time > 0 ? r.time + 'ms' : '-'}</span>
+                      <span style={{ color: 'var(--red)', fontSize: 10, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.error}>{r.error}</span>
+                    </div>
+                  ))}
+                  {intResults.length === 0 && !intRunning && (
+                    <div className="empty" style={{ padding: 40 }}>
+                      <div className="empty-i">{'\u26a1'}</div>
+                      <span>Click "Start Attack" to begin</span>
+                    </div>
+                  )}
+                </div>
+                {intSelResult && (
+                  <div className="int-detail">
+                    <div className="det-tabs" style={{ justifyContent: 'flex-start', gap: 0, flexShrink: 0 }}>
+                      <div className="det-tab act" style={{ fontSize: 10 }}>Request / Response #{intSelResult.num}</div>
+                      <div style={{ flex: 1 }} />
+                      <button className="btn btn-sm btn-s" style={{ margin: '2px 6px', fontSize: 9 }} onClick={() => toRep(intSelResult.request)}>Send to Repeater</button>
+                      <button className="btn btn-sm btn-s" style={{ margin: '2px 6px', fontSize: 9, padding: '2px 6px' }} onClick={() => setIntSelResult(null)}>{'\u2715'}</button>
+                    </div>
+                    <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+                      <div style={{ flex: 1, overflow: 'auto', padding: 10, borderRight: '1px solid var(--brd)' }}>
+                        <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--cyan)', marginBottom: 6 }}>Request</div>
+                        <pre style={{ fontFamily: 'var(--font-mono)', fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: 'var(--txt)', margin: 0 }}>
+                          {intSelResult.request.method + ' ' + intSelResult.request.url + '\n'}
+                          {Object.entries(intSelResult.request.headers || {}).map(([k, v]) => k + ': ' + v + '\n')}
+                          {intSelResult.request.body ? '\n' + intSelResult.request.body : ''}
+                        </pre>
+                      </div>
+                      <div style={{ flex: 1, overflow: 'auto', padding: 10 }}>
+                        <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--green)', marginBottom: 6 }}>Response</div>
+                        {intSelResult.response.error ? (
+                          <div style={{ color: 'var(--red)', fontSize: 11 }}>{intSelResult.response.error}</div>
+                        ) : (
+                          <pre style={{ fontFamily: 'var(--font-mono)', fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: 'var(--txt)', margin: 0 }}>
+                            {'HTTP ' + intSelResult.response.status_code + ' (' + intSelResult.time + 'ms, ' + intSelResult.length + ' bytes)\n'}
+                            {Object.entries(intSelResult.response.headers || {}).map(([k, v]) => k + ': ' + v + '\n')}
+                            {intSelResult.response.body ? '\n' + intSelResult.response.body : ''}
+                          </pre>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
           </div>
         )}
 
@@ -3247,6 +4654,11 @@ function Blackwire() {
           {contextMenu.source !== 'websocket' && (
             <div className="context-menu-item" onClick={() => handleContextAction('repeater')}>
               Send to Repeater
+            </div>
+          )}
+          {contextMenu.source !== 'websocket' && (
+            <div className="context-menu-item" onClick={() => handleContextAction('intruder')}>
+              Send to Intruder
             </div>
           )}
           <div className="context-menu-item" onClick={() => handleContextAction('add-to-collection')}>

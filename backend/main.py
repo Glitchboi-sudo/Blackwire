@@ -303,6 +303,10 @@ async def init_db(name: str):
         await db.execute("""CREATE TABLE IF NOT EXISTS filter_presets (
             id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
             query TEXT NOT NULL, ast_json TEXT NOT NULL, created_at TEXT NOT NULL)""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS intruder_attacks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+            config TEXT NOT NULL, results TEXT NOT NULL,
+            total INTEGER DEFAULT 0, created_at TEXT NOT NULL)""")
         # Performance indexes
         await db.execute("CREATE INDEX IF NOT EXISTS idx_req_saved ON requests(saved)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_req_scope ON requests(in_scope)")
@@ -1605,6 +1609,62 @@ async def receive_intercept(data: dict = Body(...)):
         "headers": data.get("headers", {}), "body": data.get("body"), "timestamp": datetime.now().isoformat()}
     await broadcast({"type": "intercept_new", "data": intercepted_requests[rid]})
     return {"status": "intercepted", "request_id": rid}
+
+
+# --- Intruder Attacks ---
+@app.get("/api/intruder/attacks")
+async def list_intruder_attacks():
+    async with await get_db() as db:
+        cursor = await db.execute("SELECT id, name, total, created_at FROM intruder_attacks ORDER BY id DESC")
+        rows = await cursor.fetchall()
+        return [{"id": r[0], "name": r[1], "total": r[2], "created_at": r[3]} for r in rows]
+
+@app.post("/api/intruder/attacks")
+async def save_intruder_attack(data: dict = Body(...)):
+    async with await get_db() as db:
+        await db.execute(
+            "INSERT INTO intruder_attacks (name, config, results, total, created_at) VALUES (?,?,?,?,?)",
+            (data.get("name", "Attack"), json.dumps(data.get("config", {})),
+             json.dumps(data.get("results", [])), data.get("total", 0),
+             datetime.now().isoformat()))
+        await db.commit()
+        cursor = await db.execute("SELECT last_insert_rowid()")
+        aid = (await cursor.fetchone())[0]
+        return {"id": aid, "status": "saved"}
+
+@app.get("/api/intruder/attacks/{aid}")
+async def get_intruder_attack(aid: int):
+    async with await get_db() as db:
+        cursor = await db.execute("SELECT id, name, config, results, total, created_at FROM intruder_attacks WHERE id = ?", (aid,))
+        r = await cursor.fetchone()
+        if not r:
+            return {"error": "not found"}
+        return {"id": r[0], "name": r[1], "config": json.loads(r[2]), "results": json.loads(r[3]), "total": r[4], "created_at": r[5]}
+
+@app.put("/api/intruder/attacks/{aid}")
+async def update_intruder_attack(aid: int, data: dict = Body(...)):
+    async with await get_db() as db:
+        fields = []
+        vals = []
+        if "name" in data:
+            fields.append("name = ?"); vals.append(data["name"])
+        if "results" in data:
+            fields.append("results = ?"); vals.append(json.dumps(data["results"]))
+            fields.append("total = ?"); vals.append(len(data["results"]))
+        if "config" in data:
+            fields.append("config = ?"); vals.append(json.dumps(data["config"]))
+        if fields:
+            vals.append(aid)
+            await db.execute("UPDATE intruder_attacks SET " + ", ".join(fields) + " WHERE id = ?", vals)
+            await db.commit()
+        return {"status": "updated"}
+
+@app.delete("/api/intruder/attacks/{aid}")
+async def delete_intruder_attack(aid: int):
+    async with await get_db() as db:
+        await db.execute("DELETE FROM intruder_attacks WHERE id = ?", (aid,))
+        await db.commit()
+        return {"status": "deleted"}
 
 
 if __name__ == "__main__":
