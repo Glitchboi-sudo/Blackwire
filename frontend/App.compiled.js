@@ -1531,8 +1531,13 @@ function Blackwire() {
 
   const toRep = r => {
     setRepM(r.method);
-    setRepU(r.url);
-    setRepH(Object.entries(r.headers || {}).map(([k, v]) => k + ': ' + v).join('\n'));
+    const url = r.url || '';
+    setRepU(url);
+    const hdrs = Object.entries(r.headers || {}).map(([k, v]) => k + ': ' + v);
+    if (url && !hdrs.some(h => /^host\s*:/i.test(h))) {
+      try { hdrs.unshift('Host: ' + new URL(url).host); } catch (e) {}
+    }
+    setRepH(hdrs.join('\n'));
     setRepB(r.body || '');
     setTab('repeater');
     toast('Sent to Repeater', 'success');
@@ -2489,7 +2494,14 @@ function Blackwire() {
 
   const stCls = s => !s ? '' : s < 300 ? 'st2' : s < 400 ? 'st3' : s < 500 ? 'st4' : 'st5';
   const fmtTime = t => t ? new Date(t).toLocaleTimeString('en-US', { hour12: false }) : '';
-  const fmtH = h => h ? Object.entries(h).map(([k, v]) => k + ': ' + (Array.isArray(v) ? v.join(', ') : v)).join('\n') : '';
+  const fmtH = (h, url) => {
+    if (!h) return '';
+    const lines = Object.entries(h).map(([k, v]) => k + ': ' + (Array.isArray(v) ? v.join(', ') : v));
+    if (url && !lines.some(l => /^host\s*:/i.test(l))) {
+      try { lines.unshift('Host: ' + new URL(url).host); } catch (e) {}
+    }
+    return lines.join('\n');
+  };
   const colorizeHeaders = text => {
     if (!text) return '';
     return text.split('\n').map(line => {
@@ -2498,12 +2510,12 @@ function Blackwire() {
       return '<span class="hdr-key">' + escapeHtml(line.slice(0, ci)) + '</span><span class="hdr-sep">:</span><span class="hdr-val">' + escapeHtml(line.slice(ci + 1)) + '</span>';
     }).join('\n');
   };
-  const fmtHHtml = h => colorizeHeaders(fmtH(h));
+  const fmtHHtml = (h, url) => colorizeHeaders(fmtH(h, url));
 
   const buildCmpText = (req, view) => {
     if (!req) return '';
     if (view === 'request') {
-      return req.method + ' ' + req.url + '\n' + fmtH(req.headers) + (req.body ? '\n\n' + req.body : '');
+      return req.method + ' ' + req.url + '\n' + fmtH(req.headers, req.url) + (req.body ? '\n\n' + req.body : '');
     }
     return 'HTTP ' + (req.response_status || '(no response)') + '\n' + fmtH(req.response_headers) + '\n\n' + (req.response_body || '');
   };
@@ -3100,7 +3112,7 @@ function Blackwire() {
                           const rawContent = detTab === 'request'
                             ? (escapeHtml(d.method + ' ' + (() => {
                                 try { return new URL(d.url).pathname; } catch (e) { return d.url; }
-                              })()) + '\n\n' + fmtHHtml(d.headers) + (d.body ? '\n\n' + (reqFormatted.html ? reqFormatted.text : escapeHtml(reqFormatted.text)) : ''))
+                              })()) + '\n\n' + fmtHHtml(d.headers, d.url) + (d.body ? '\n\n' + (reqFormatted.html ? reqFormatted.text : escapeHtml(reqFormatted.text)) : ''))
                             : (escapeHtml('HTTP ' + d.response_status) + '\n\n' + fmtHHtml(d.response_headers) + '\n\n' + (respFormatted.html ? respFormatted.text : escapeHtml(respFormatted.text)));
                           if (histBodySearch) {
                             const plainText = rawContent.replace(/<[^>]*>/g, '');
@@ -3302,7 +3314,7 @@ function Blackwire() {
                           const reqF = d.body ? formatBody(d.body, reqFormat) : { text: '', html: false };
                           const resF = formatBody(d.response_body || '', respFormat);
                           const ct = detTab === 'request'
-                            ? (escapeHtml(d.method + ' ' + (() => { try { return new URL(d.url).pathname; } catch (e) { return d.url; } })()) + '\n\n' + fmtHHtml(d.headers) + (d.body ? '\n\n' + (reqF.html ? reqF.text : escapeHtml(reqF.text)) : ''))
+                            ? (escapeHtml(d.method + ' ' + (() => { try { return new URL(d.url).pathname; } catch (e) { return d.url; } })()) + '\n\n' + fmtHHtml(d.headers, d.url) + (d.body ? '\n\n' + (reqF.html ? reqF.text : escapeHtml(reqF.text)) : ''))
                             : (escapeHtml('HTTP ' + d.response_status) + '\n\n' + fmtHHtml(d.response_headers) + '\n\n' + (resF.html ? resF.text : escapeHtml(resF.text)));
                           return React.createElement('div', { dangerouslySetInnerHTML: { __html: ct },} );
                         })()
@@ -3367,7 +3379,7 @@ function Blackwire() {
                       )
                       , React.createElement('input', { className: "url-in", value: editReq.url, onChange: e => setEditReq({ ...editReq, url: e.target.value }),} )
                     )
-                    , React.createElement('textarea', { className: "ed-ta", placeholder: "Headers", style: { height: '30%' }, value: fmtH(editReq.headers), onChange: e => {
+                    , React.createElement('textarea', { className: "ed-ta", placeholder: "Headers", style: { height: '30%' }, value: fmtH(editReq.headers, editReq.url), onChange: e => {
                       const h = {};
                       e.target.value.split('\n').forEach(l => {
                         const [k, ...v] = l.split(':');
@@ -4597,7 +4609,7 @@ function Blackwire() {
                       , React.createElement('div', { style: { flex: 1, overflow: 'auto', padding: 10, borderRight: '1px solid var(--brd)' },}
                         , React.createElement('div', { style: { fontSize: 10, fontWeight: 600, color: 'var(--cyan)', marginBottom: 6 },}, "Request")
                         , React.createElement('pre', { style: { fontFamily: 'var(--font-mono)', fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: 'var(--txt)', margin: 0 },
-                          dangerouslySetInnerHTML: { __html: escapeHtml(intSelResult.request.method + ' ' + intSelResult.request.url) + '\n' + fmtHHtml(intSelResult.request.headers) + (intSelResult.request.body ? '\n\n' + escapeHtml(intSelResult.request.body) : '') },} )
+                          dangerouslySetInnerHTML: { __html: escapeHtml(intSelResult.request.method + ' ' + intSelResult.request.url) + '\n' + fmtHHtml(intSelResult.request.headers, intSelResult.request.url) + (intSelResult.request.body ? '\n\n' + escapeHtml(intSelResult.request.body) : '') },} )
                       )
                       , React.createElement('div', { style: { flex: 1, overflow: 'auto', padding: 10 },}
                         , React.createElement('div', { style: { fontSize: 10, fontWeight: 600, color: 'var(--green)', marginBottom: 6 },}, "Response")
