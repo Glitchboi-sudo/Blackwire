@@ -1541,8 +1541,14 @@ function Blackwire() {
   // --- Intruder functions ---
   const toIntruder = r => {
     setIntMethod(r.method || 'GET');
-    setIntUrl(r.url || '');
-    setIntHeaders(Object.entries(r.headers || {}).map(([k, v]) => k + ': ' + v).join('\n'));
+    const url = r.url || '';
+    setIntUrl(url);
+    const hdrs = Object.entries(r.headers || {}).map(([k, v]) => k + ': ' + v);
+    const hasHost = hdrs.some(h => h.match(/^host\s*:/i));
+    if (!hasHost && url) {
+      try { const u = new URL(url); hdrs.unshift('Host: ' + u.host); } catch (e) {}
+    }
+    setIntHeaders(hdrs.join('\n'));
     setIntBody(r.body || '');
     setIntPositions([]);
     setIntSubTab('positions');
@@ -2484,6 +2490,15 @@ function Blackwire() {
   const stCls = s => !s ? '' : s < 300 ? 'st2' : s < 400 ? 'st3' : s < 500 ? 'st4' : 'st5';
   const fmtTime = t => t ? new Date(t).toLocaleTimeString('en-US', { hour12: false }) : '';
   const fmtH = h => h ? Object.entries(h).map(([k, v]) => k + ': ' + (Array.isArray(v) ? v.join(', ') : v)).join('\n') : '';
+  const colorizeHeaders = text => {
+    if (!text) return '';
+    return text.split('\n').map(line => {
+      const ci = line.indexOf(':');
+      if (ci === -1) return escapeHtml(line);
+      return '<span class="hdr-key">' + escapeHtml(line.slice(0, ci)) + '</span><span class="hdr-sep">:</span><span class="hdr-val">' + escapeHtml(line.slice(ci + 1)) + '</span>';
+    }).join('\n');
+  };
+  const fmtHHtml = h => colorizeHeaders(fmtH(h));
 
   const buildCmpText = (req, view) => {
     if (!req) return '';
@@ -2842,7 +2857,13 @@ function Blackwire() {
 .sens-section-badge{font-size:8px;padding:1px 4px;border-radius:3px;background:var(--bg3);color:var(--txt3);white-space:nowrap}
 .int-cnt{display:flex;flex-direction:column;width:100%;height:100%}
 .int-positions{flex:1;display:flex;flex-direction:column;overflow:auto;padding:14px;gap:10px}
-.int-editor{font-family:var(--font-mono);font-size:12px;background:var(--bg);border:1px solid var(--brd);border-radius:6px;padding:10px;resize:vertical;min-height:80px;color:var(--txt);width:100%}
+.int-editor{font-family:var(--font-mono);font-size:12px;background:var(--bg);border:1px solid var(--brd);border-radius:6px;padding:10px;resize:vertical;min-height:80px;color:var(--txt);width:100%;box-sizing:border-box}
+.hdr-key{color:var(--cyan);font-weight:500}
+.hdr-sep{color:var(--txt3)}
+.hdr-val{color:var(--orange)}
+.hdr-wrap{position:relative;width:100%;display:flex;flex-direction:column}
+.hdr-highlight{position:absolute;top:0;left:0;right:0;bottom:0;margin:0;border:1px solid transparent;white-space:pre-wrap;word-wrap:break-word;overflow:hidden;pointer-events:none;box-sizing:border-box}
+.hdr-ta{background:transparent!important;color:transparent!important;caret-color:var(--txt);position:relative;z-index:1;flex:1}
 .int-payloads{flex:1;overflow:auto;padding:14px}
 .int-resource{flex:1;overflow:auto;padding:14px}
 .int-results-cnt{flex:1;display:flex;flex-direction:column;overflow:hidden}
@@ -3077,18 +3098,17 @@ function Blackwire() {
                           const reqFormatted = d.body ? formatBody(d.body, reqFormat) : { text: '', html: false };
                           const respFormatted = formatBody(d.response_body || '', respFormat);
                           const rawContent = detTab === 'request'
-                            ? (d.method + ' ' + (() => {
+                            ? (escapeHtml(d.method + ' ' + (() => {
                                 try { return new URL(d.url).pathname; } catch (e) { return d.url; }
-                              })() + '\n\n' + fmtH(d.headers) + (d.body ? '\n\n' + reqFormatted.text : ''))
-                            : ('HTTP ' + d.response_status + '\n\n' + fmtH(d.response_headers) + '\n\n' + respFormatted.text);
-                          const isHtml = detTab === 'request' ? reqFormatted.html : respFormatted.html;
+                              })()) + '\n\n' + fmtHHtml(d.headers) + (d.body ? '\n\n' + (reqFormatted.html ? reqFormatted.text : escapeHtml(reqFormatted.text)) : ''))
+                            : (escapeHtml('HTTP ' + d.response_status) + '\n\n' + fmtHHtml(d.response_headers) + '\n\n' + (respFormatted.html ? respFormatted.text : escapeHtml(respFormatted.text)));
                           if (histBodySearch) {
-                            const plainText = isHtml ? rawContent.replace(/<[^>]*>/g, '') : rawContent;
+                            const plainText = rawContent.replace(/<[^>]*>/g, '');
                             const hl = highlightMatches(plainText, histBodySearch, histBodySearchRegex, histBodySearchIdx);
                             if (hl.count !== histBodySearchCount) setTimeout(() => setHistBodySearchCount(hl.count), 0);
                             return React.createElement('div', { dangerouslySetInnerHTML: { __html: hl.html },} );
                           }
-                          return isHtml ? React.createElement('div', { dangerouslySetInnerHTML: { __html: rawContent },} ) : rawContent;
+                          return React.createElement('div', { dangerouslySetInnerHTML: { __html: rawContent },} );
                         })()
                       )
                       )
@@ -3282,10 +3302,9 @@ function Blackwire() {
                           const reqF = d.body ? formatBody(d.body, reqFormat) : { text: '', html: false };
                           const resF = formatBody(d.response_body || '', respFormat);
                           const ct = detTab === 'request'
-                            ? (d.method + ' ' + (() => { try { return new URL(d.url).pathname; } catch (e) { return d.url; } })() + '\n\n' + fmtH(d.headers) + (d.body ? '\n\n' + reqF.text : ''))
-                            : ('HTTP ' + d.response_status + '\n\n' + fmtH(d.response_headers) + '\n\n' + resF.text);
-                          const isH = detTab === 'request' ? reqF.html : resF.html;
-                          return isH ? React.createElement('div', { dangerouslySetInnerHTML: { __html: ct },} ) : ct;
+                            ? (escapeHtml(d.method + ' ' + (() => { try { return new URL(d.url).pathname; } catch (e) { return d.url; } })()) + '\n\n' + fmtHHtml(d.headers) + (d.body ? '\n\n' + (reqF.html ? reqF.text : escapeHtml(reqF.text)) : ''))
+                            : (escapeHtml('HTTP ' + d.response_status) + '\n\n' + fmtHHtml(d.response_headers) + '\n\n' + (resF.html ? resF.text : escapeHtml(resF.text)));
+                          return React.createElement('div', { dangerouslySetInnerHTML: { __html: ct },} );
                         })()
                       )
                       )
@@ -3455,7 +3474,10 @@ function Blackwire() {
                   , React.createElement('div', { className: "ed-hdr",}
                     , React.createElement('span', null, "Headers")
                   )
-                  , React.createElement('textarea', { className: "ed-ta", style: { height: '40%' }, value: repH, onChange: e => setRepH(e.target.value),} )
+                  , React.createElement('div', { className: "hdr-wrap", style: { height: '40%' },}
+                    , React.createElement('pre', { className: "hdr-highlight ed-ta" , 'aria-hidden': "true", style: { pointerEvents: 'none' }, dangerouslySetInnerHTML: { __html: (repH ? colorizeHeaders(repH) : '') + '\n' },} )
+                    , React.createElement('textarea', { className: "ed-ta hdr-ta" , value: repH, onChange: e => setRepH(e.target.value), spellCheck: "false",} )
+                  )
                   , React.createElement('div', { className: "ed-hdr",}
                     , React.createElement('span', null, "Body")
                     , React.createElement('div', { style: { display: 'flex', gap: '4px' },}
@@ -3519,9 +3541,7 @@ function Blackwire() {
                           )
                         )
                       )
-                      , React.createElement('div', { className: "code", style: { height: '100px', minHeight: '60px', overflow: 'auto', flexShrink: 0, borderBottom: '1px solid var(--brd)' },}
-                        , fmtH(repResp.headers)
-                      )
+                      , React.createElement('div', { className: "code", style: { height: '100px', minHeight: '60px', overflow: 'auto', flexShrink: 0, borderBottom: '1px solid var(--brd)' }, dangerouslySetInnerHTML: { __html: fmtHHtml(repResp.headers) },} )
                       , (() => {
                         if (repBodySearch) {
                           const hl = highlightMatches(repRespBody, repBodySearch, repBodySearchRegex, repBodySearchIdx);
@@ -4138,6 +4158,14 @@ function Blackwire() {
                           respBody: sensSelDetail.response_body || '',
                         };
                         const text = secMap[sensSelResult.section] || '';
+                        const isHdr = sensSelResult.section === 'reqHeaders' || sensSelResult.section === 'respHeaders';
+                        if (isHdr) {
+                          const base = colorizeHeaders(text);
+                          const mt = escapeHtml(sensSelResult.match.replace(/\.\.\.$/, ''));
+                          const re = mt ? new RegExp('(' + mt.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi') : null;
+                          const html = re ? base.replace(re, '<span class="search-hl">$1</span>') : base;
+                          return React.createElement('div', { dangerouslySetInnerHTML: { __html: html } });
+                        }
                         const hl = highlightMatches(text, sensSelResult.match.replace(/\.\.\.$/, ''), false, 0);
                         return React.createElement('div', { dangerouslySetInnerHTML: { __html: hl.html } });
                       })() : React.createElement('span', { style: { color: 'var(--txt3)' },}, "Loading...")
@@ -4292,8 +4320,11 @@ function Blackwire() {
                     , React.createElement('input', { className: "url-in", placeholder: "https://example.com/api/endpoint", value: intUrl, onChange: e => setIntUrl(e.target.value), style: { flex: 1 },} )
                   )
                   , React.createElement('label', { style: { fontSize: 10, color: 'var(--txt3)', display: 'block', marginBottom: 4 },}, "Headers")
-                  , React.createElement('textarea', { ref: intHeadersRef, className: "int-editor", rows: 4, value: intHeaders, onChange: e => setIntHeaders(e.target.value),
-                    placeholder: 'Content-Type: application/json\nAuthorization: Bearer \u00a7token\u00a7',} )
+                  , React.createElement('div', { className: "hdr-wrap",}
+                    , React.createElement('pre', { className: "hdr-highlight int-editor" , 'aria-hidden': "true", dangerouslySetInnerHTML: { __html: (intHeaders ? colorizeHeaders(intHeaders) : '') + '\n' },} )
+                    , React.createElement('textarea', { ref: intHeadersRef, className: "int-editor hdr-ta" , rows: 4, value: intHeaders, onChange: e => setIntHeaders(e.target.value),
+                      placeholder: 'Content-Type: application/json\nAuthorization: Bearer \u00a7token\u00a7', spellCheck: "false",} )
+                  )
                   , React.createElement('label', { style: { fontSize: 10, color: 'var(--txt3)', display: 'block', marginBottom: 4, marginTop: 8 },}, "Body")
                   , React.createElement('textarea', { ref: intBodyRef, className: "int-editor", rows: 6, value: intBody, onChange: e => setIntBody(e.target.value),
                     placeholder: '{"username":"\u00a7user\u00a7","password":"\u00a7pass\u00a7"}',} )
@@ -4565,22 +4596,16 @@ function Blackwire() {
                     , React.createElement('div', { style: { display: 'flex', flex: 1, overflow: 'hidden' },}
                       , React.createElement('div', { style: { flex: 1, overflow: 'auto', padding: 10, borderRight: '1px solid var(--brd)' },}
                         , React.createElement('div', { style: { fontSize: 10, fontWeight: 600, color: 'var(--cyan)', marginBottom: 6 },}, "Request")
-                        , React.createElement('pre', { style: { fontFamily: 'var(--font-mono)', fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: 'var(--txt)', margin: 0 },}
-                          , intSelResult.request.method + ' ' + intSelResult.request.url + '\n'
-                          , Object.entries(intSelResult.request.headers || {}).map(([k, v]) => k + ': ' + v + '\n')
-                          , intSelResult.request.body ? '\n' + intSelResult.request.body : ''
-                        )
+                        , React.createElement('pre', { style: { fontFamily: 'var(--font-mono)', fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: 'var(--txt)', margin: 0 },
+                          dangerouslySetInnerHTML: { __html: escapeHtml(intSelResult.request.method + ' ' + intSelResult.request.url) + '\n' + fmtHHtml(intSelResult.request.headers) + (intSelResult.request.body ? '\n\n' + escapeHtml(intSelResult.request.body) : '') },} )
                       )
                       , React.createElement('div', { style: { flex: 1, overflow: 'auto', padding: 10 },}
                         , React.createElement('div', { style: { fontSize: 10, fontWeight: 600, color: 'var(--green)', marginBottom: 6 },}, "Response")
                         , intSelResult.response.error ? (
                           React.createElement('div', { style: { color: 'var(--red)', fontSize: 11 },}, intSelResult.response.error)
                         ) : (
-                          React.createElement('pre', { style: { fontFamily: 'var(--font-mono)', fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: 'var(--txt)', margin: 0 },}
-                            , 'HTTP ' + intSelResult.response.status_code + ' (' + intSelResult.time + 'ms, ' + intSelResult.length + ' bytes)\n'
-                            , Object.entries(intSelResult.response.headers || {}).map(([k, v]) => k + ': ' + v + '\n')
-                            , intSelResult.response.body ? '\n' + intSelResult.response.body : ''
-                          )
+                          React.createElement('pre', { style: { fontFamily: 'var(--font-mono)', fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: 'var(--txt)', margin: 0 },
+                            dangerouslySetInnerHTML: { __html: escapeHtml('HTTP ' + intSelResult.response.status_code + ' (' + intSelResult.time + 'ms, ' + intSelResult.length + ' bytes)') + '\n' + fmtHHtml(intSelResult.response.headers) + (intSelResult.response.body ? '\n\n' + escapeHtml(intSelResult.response.body) : '') },} )
                         )
                       )
                     )
@@ -4613,11 +4638,11 @@ function Blackwire() {
                     , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: () => setCmpA(null),}, "Clear")
                   )
                   , React.createElement('div', { className: "cmp-body",}
-                    , cmpDiff.map((d, i) => (
-                      React.createElement('div', { key: i, className: 'cmp-line ' + (d.type === 'equal' ? 'cmp-eq' : d.type === 'removed' ? 'cmp-rem' : 'cmp-blank'),}
-                        , d.type === 'added' ? '\u00A0' : (_nullishCoalesce(d.lineA, () => ( '')))
-                      )
-                    ))
+                    , cmpDiff.map((d, i) => {
+                      const txt = d.type === 'added' ? null : (_nullishCoalesce(d.lineA, () => ( '')));
+                      return React.createElement('div', { key: i, className: 'cmp-line ' + (d.type === 'equal' ? 'cmp-eq' : d.type === 'removed' ? 'cmp-rem' : 'cmp-blank'),
+                        dangerouslySetInnerHTML: { __html: txt == null ? '\u00A0' : colorizeHeaders(txt) },} );
+                    })
                   )
                 )
                 , React.createElement('div', { className: "cmp-side",}
@@ -4626,11 +4651,11 @@ function Blackwire() {
                     , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: () => setCmpB(null),}, "Clear")
                   )
                   , React.createElement('div', { className: "cmp-body",}
-                    , cmpDiff.map((d, i) => (
-                      React.createElement('div', { key: i, className: 'cmp-line ' + (d.type === 'equal' ? 'cmp-eq' : d.type === 'added' ? 'cmp-add' : 'cmp-blank'),}
-                        , d.type === 'removed' ? '\u00A0' : (_nullishCoalesce(d.lineB, () => ( '')))
-                      )
-                    ))
+                    , cmpDiff.map((d, i) => {
+                      const txt = d.type === 'removed' ? null : (_nullishCoalesce(d.lineB, () => ( '')));
+                      return React.createElement('div', { key: i, className: 'cmp-line ' + (d.type === 'equal' ? 'cmp-eq' : d.type === 'added' ? 'cmp-add' : 'cmp-blank'),
+                        dangerouslySetInnerHTML: { __html: txt == null ? '\u00A0' : colorizeHeaders(txt) },} );
+                    })
                   )
                 )
               )
