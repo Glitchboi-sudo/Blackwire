@@ -98,7 +98,7 @@ def register():
 2. **Dynamic JSX** → UIs complejas sin recompilar frontend (ejemplos: [webhook_site.ui.jsx](backend/extensions/webhook_site.ui.jsx), [headers_injector.ui.jsx](backend/extensions/headers_injector.ui.jsx))
 3. **Custom React** → Componentes hardcoded para casos especiales (legacy)
 
-📚 **Documentación completa**: [Sistema de Extensiones Wiki](Blackwire.wiki/07-Sistema-de-Extensiones.md)
+📚 **Documentación completa**: [Sistema de Extensiones Wiki](https://github.com/Glitchboi-sudo/Blackwire/wiki/07-Sistema-de-Extensiones)
 
 ---
 
