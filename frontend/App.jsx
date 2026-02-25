@@ -3648,6 +3648,7 @@ function Blackwire() {
           <React.Fragment>
             <div className={'tab' + (tab === 'scope' ? ' act' : '')} onClick={() => setTab('scope')}>Scope</div>
             <div className={'tab' + (tab === 'history' ? ' act' : '')} onClick={() => setTab('history')}>History</div>
+            <div className={'tab' + (tab === 'intercept' ? ' act' : '')} onClick={() => setTab('intercept')}>Interceptor</div>
             <div className={'tab' + (tab === 'collections' ? ' act' : '')} onClick={() => { setTab('collections'); loadColls(); }}>Collections</div>
             <div className={'tab' + (tab === 'repeater' ? ' act' : '')} onClick={() => setTab('repeater')}>Repeater</div>
             <div className={'tab' + (tab === 'intruder' ? ' act' : '')} onClick={() => setTab('intruder')}>Intruder</div>
