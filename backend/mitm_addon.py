@@ -25,6 +25,8 @@ def vlog(msg: str):
 BACKEND_URL = "http://127.0.0.1:5000"
 CONFIG_PATH = Path(__file__).parent / ".proxy_config.json"
 EXTENSIONS_DIR = Path(__file__).parent / "extensions"
+_BACKEND_DIR = Path(__file__).parent.resolve()
+_SAFE_ID_RE = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
 
 FILTERED_EXTENSIONS = {
     '.png', '.jpg', '.jpeg', '.gif', '.ico', '.svg', '.webp',
@@ -86,8 +88,8 @@ def match_scope(url: str, rules: list) -> bool:
         if rule_type == "include":
             has_include = True
 
-        # Convert glob to regex
-        regex = pattern.replace(".", r"\.").replace("*", ".*")
+        # Convert glob to regex: escape all regex metacharacters except *, then replace * with .*
+        regex = ".*".join(re.escape(part) for part in pattern.split("*"))
 
         try:
             if re.match(regex, host) or re.match(regex, full_url):
@@ -149,7 +151,14 @@ def send_to_backend(endpoint: str, data: dict, retries: int = 2):
 
 def wait_for_action(request_id: str, timeout: int = 300) -> dict:
     """Wait for user action on intercepted request"""
-    action_file = Path(__file__).parent / f".action_{request_id}.json"
+    if not _SAFE_ID_RE.fullmatch(request_id):
+        ctx.log.warn(f"[blackwire][intercept] unsafe request_id rejected: {request_id!r}")
+        return {"action": "forward"}
+    action_file = _BACKEND_DIR / f".action_{request_id}.json"
+    # Defence-in-depth: verify the resolved path stays inside _BACKEND_DIR
+    if action_file.resolve().parent != _BACKEND_DIR:
+        ctx.log.warn(f"[blackwire][intercept] path traversal blocked for {request_id!r}")
+        return {"action": "forward"}
 
     start = time.time()
     last_log = 0
