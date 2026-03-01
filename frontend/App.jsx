@@ -1051,13 +1051,7 @@ function Blackwire() {
   };
 
   const whkToRepeater = r => {
-    const hdrs = r.headers || {};
-    setRepM(r.method || 'GET');
-    setRepU(r.url || '');
-    setRepH(Object.entries(hdrs).map(([k, v]) => k + ': ' + v).join('\n'));
-    setRepB(r.content || '');
-    setTab('repeater');
-    toast('Sent to Repeater', 'success');
+    toRep({ method: r.method || 'GET', url: r.url || '', headers: r.headers || {}, body: r.content || null });
   };
 
   // whkContextAction removed - unified into handleContextAction
@@ -1265,28 +1259,39 @@ function Blackwire() {
     toast('Intercept ' + (r.enabled ? 'ON' : 'OFF'), 'success');
   };
 
+  const advanceQueue = (id, remaining) => {
+    if (selPend?.id !== id) return;
+    const next = remaining[0] ?? null;
+    setSelPend(next);
+    setEditReq(next ? { ...next, rawHeaders: fmtH(next.headers, next.url) } : null);
+  };
+
   const fwdReq = async (id, mod = null) => {
     await api.post('/api/intercept/' + id + '/forward', mod);
-    setPending(p => p.filter(r => r.id !== id));
-    if (selPend?.id === id) setSelPend(null);
+    const remaining = pending.filter(r => r.id !== id);
+    setPending(remaining);
+    advanceQueue(id, remaining);
   };
 
   const dropReq = async id => {
     await api.post('/api/intercept/' + id + '/drop');
-    setPending(p => p.filter(r => r.id !== id));
-    if (selPend?.id === id) setSelPend(null);
+    const remaining = pending.filter(r => r.id !== id);
+    setPending(remaining);
+    advanceQueue(id, remaining);
   };
 
   const fwdAll = async () => {
     await api.post('/api/intercept/forward-all');
     setPending([]);
     setSelPend(null);
+    setEditReq(null);
   };
 
   const dropAll = async () => {
     await api.post('/api/intercept/drop-all');
     setPending([]);
     setSelPend(null);
+    setEditReq(null);
   };
 
   const addRule = async () => {
@@ -1767,16 +1772,22 @@ function Blackwire() {
     // Guardar en historial de navegación
     saveToHistory(requestData, r);
 
-    // Auto-save: siempre crear nueva entrada (no actualizar existente)
-    let host = repU;
-    try { host = new URL(repU).host; } catch (e) {}
-    const timestamp = new Date().toLocaleTimeString();
-    const autoName = `${repM} ${host} [${timestamp}]`;
-    const newItem = await api.post('/api/repeater', { name: autoName, method: repM, url: repU, headers: h, body: repB, last_response: r });
-    const items = await api.get('/api/repeater');
-    setRepReqs(items);
-    // Seleccionar el item recién creado
-    if (newItem && newItem.id) setSelRep(newItem.id);
+    if (selRep) {
+      // Actualizar el tab existente con la request/response más reciente
+      await api.put('/api/repeater/' + selRep, { method: repM, url: repU, headers: h, body: repB, last_response: r });
+      const items = await api.get('/api/repeater');
+      setRepReqs(items);
+    } else {
+      // Sin tab activo: crear uno nuevo
+      let host = repU;
+      try { host = new URL(repU).host; } catch (e) {}
+      const timestamp = new Date().toLocaleTimeString();
+      const autoName = `${repM} ${host} [${timestamp}]`;
+      const newItem = await api.post('/api/repeater', { name: autoName, method: repM, url: repU, headers: h, body: repB, last_response: r });
+      const items = await api.get('/api/repeater');
+      setRepReqs(items);
+      if (newItem && newItem.id) setSelRep(newItem.id);
+    }
   };
 
   const followRedirect = async () => {
@@ -1805,16 +1816,27 @@ function Blackwire() {
     saveToHistory(requestData, r);
   };
 
-  const toRep = r => {
-    setRepM(r.method);
+  const toRep = async r => {
     const url = r.url || '';
-    setRepU(url);
-    const hdrs = Object.entries(r.headers || {}).map(([k, v]) => k + ': ' + v);
-    if (url && !hdrs.some(h => /^host\s*:/i.test(h))) {
-      try { hdrs.unshift('Host: ' + new URL(url).host); } catch (e) {}
+    const hdrs = { ...(r.headers || {}) };
+    if (url && !Object.keys(hdrs).some(k => /^host$/i.test(k))) {
+      try { hdrs['Host'] = new URL(url).host; } catch (e) {}
     }
-    setRepH(hdrs.join('\n'));
+    let host = url;
+    try { host = new URL(url).host; } catch (e) {}
+    const name = `${r.method} ${host}`;
+    const newItem = await api.post('/api/repeater', { name, method: r.method, url, headers: hdrs, body: r.body || null });
+    const items = await api.get('/api/repeater');
+    setRepReqs(items);
+    setRepM(r.method);
+    setRepU(url);
+    setRepH(Object.entries(hdrs).map(([k, v]) => k + ': ' + v).join('\n'));
     setRepB(r.body || '');
+    setRepResp(null);
+    setRepRespBody('');
+    setRepHistory([]);
+    setRepHistoryIndex(-1);
+    if (newItem && newItem.id) setSelRep(newItem.id);
     setTab('repeater');
     toast('Sent to Repeater', 'success');
   };
@@ -2211,6 +2233,8 @@ function Blackwire() {
       setRepResp(null);
       setRepRespBody('');
     }
+    setRepHistory([]);
+    setRepHistoryIndex(-1);
   };
 
   const renameRepItem = async id => {
@@ -2589,185 +2613,132 @@ function Blackwire() {
     return React.createElement(component, { ext, updateExtCfg, toast, ...otherProps });
   }
 
-  const syntaxHighlightJSON = json => {
-    json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, match => {
-      let cls = 'json-number';
-      if (/^"/.test(match)) {
-        if (/:$/.test(match)) {
-          cls = 'json-key';
-        } else {
-          cls = 'json-string';
-        }
-      } else if (/true|false/.test(match)) {
-        cls = 'json-bool';
-      } else if (/null/.test(match)) {
-        cls = 'json-null';
+  // Token-based highlighter: applies all rules to the original text simultaneously,
+  // never processing already-highlighted HTML. Rules are [cssClass, regex] pairs;
+  // earlier rules take priority when tokens overlap at the same position.
+  const buildHighlighter = rules => text => {
+    const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const tokens = [];
+    for (const [cls, regex] of rules) {
+      const flags = regex.flags.includes('g') ? regex.flags : regex.flags + 'g';
+      const r = new RegExp(regex.source, flags);
+      r.lastIndex = 0;
+      let m;
+      while ((m = r.exec(text)) !== null) {
+        if (m[0].length === 0) { r.lastIndex++; continue; }
+        tokens.push({ start: m.index, end: m.index + m[0].length, cls });
       }
-      return '<span class="' + cls + '">' + match + '</span>';
-    });
+    }
+    tokens.sort((a, b) => a.start - b.start || b.end - a.end);
+    let html = '', pos = 0;
+    for (const { start, end, cls } of tokens) {
+      if (start < pos) continue;
+      html += esc(text.slice(pos, start));
+      html += '<span class="' + cls + '">' + esc(text.slice(start, end)) + '</span>';
+      pos = end;
+    }
+    return html + esc(text.slice(pos));
   };
 
-  const syntaxHighlightXML = xml => {
-    const esc = xml.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return esc
-      .replace(/(&lt;\/?)([\w:.-]+)/g, '$1<span class="json-key">$2</span>')
-      .replace(/([\w:.-]+)(=)(&quot;|")/g, '<span class="json-bool">$1</span>$2$3')
-      .replace(/(&quot;|")(.*?)(&quot;|")/g, '$1<span class="json-string">$2</span>$3')
-      .replace(/(&lt;!--.*?--&gt;)/g, '<span class="json-null">$1</span>');
-  };
+  const syntaxHighlightJSON = buildHighlighter([
+    ['json-key',    /"(?:\\u[0-9a-fA-F]{4}|\\[^u]|[^\\"])*"(?=\s*:)/g],
+    ['json-string', /"(?:\\u[0-9a-fA-F]{4}|\\[^u]|[^\\"])*"/g],
+    ['json-bool',   /\b(?:true|false)\b/g],
+    ['json-null',   /\bnull\b/g],
+    ['json-number', /-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?/g],
+  ]);
 
-  const syntaxHighlightProto = text => {
-    const esc = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return esc
-      .replace(/^(\/\/.*)/gm, '<span class="json-null">$1</span>')
-      .replace(/(field \d+)/g, '<span class="json-key">$1</span>')
-      .replace(/\((varint|string|bytes|message|fixed32|fixed64)\)/g, '(<span class="json-bool">$1</span>)')
-      .replace(/: (.+)$/gm, (m, val) => {
-        if (/^\d+(\.\d+)?$/.test(val)) return ': <span class="json-number">' + val + '</span>';
-        return ': <span class="json-string">' + val + '</span>';
-      });
-  };
+  const syntaxHighlightXML = buildHighlighter([
+    ['json-null',   /<!--[\s\S]*?-->/g],
+    ['json-string', /"[^"]*"|'[^']*'/g],
+    ['json-bool',   /\b[\w:.-]+(?==)/g],
+    ['json-key',    /<\/?[\w:.-]+/g],
+  ]);
+
+  const syntaxHighlightProto = buildHighlighter([
+    ['json-null',   /\/\/[^\n]*/gm],
+    ['json-key',    /\bfield \d+\b/g],
+    ['json-bool',   /\b(?:varint|string|bytes|message|fixed32|fixed64)\b/g],
+    ['json-number', /(?<=:\s*)\d+(?:\.\d+)?(?=\s*$)/gm],
+    ['json-string', /(?<=:\s*).+$/gm],
+  ]);
 
   // Sistema de syntax highlighting avanzado para múltiples lenguajes
-  const syntaxHighlightHTML = html => {
-    const esc = html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return esc
-      // Comentarios HTML
-      .replace(/(&lt;!--.*?--&gt;)/gs, '<span class="json-null">$1</span>')
-      // Doctype
-      .replace(/(&lt;!DOCTYPE[^&]*&gt;)/gi, '<span class="json-null">$1</span>')
-      // Tags y atributos
-      .replace(/(&lt;\/?)([\w:.-]+)/g, '$1<span class="json-key">$2</span>')
-      .replace(/([\w:.-]+)(=)/g, '<span class="json-bool">$1</span>$2')
-      .replace(/(&quot;|")(.*?)(&quot;|")/g, '$1<span class="json-string">$2</span>$3');
-  };
+  const syntaxHighlightHTML = buildHighlighter([
+    ['json-null',   /<!--[\s\S]*?-->/g],
+    ['json-null',   /<!DOCTYPE[^>]*>/gi],
+    ['json-string', /"[^"]*"|'[^']*'/g],
+    ['json-bool',   /\b[\w:-]+(?==)/g],
+    ['json-key',    /<\/?[\w:-]+/g],
+  ]);
 
-  const syntaxHighlightCSS = css => {
-    const esc = css.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return esc
-      // Comentarios
-      .replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="json-null">$1</span>')
-      // Selectores
-      .replace(/^([^{]+)(\{)/gm, (m, selector, brace) => {
-        return '<span class="json-key">' + selector.trim() + '</span>' + brace;
-      })
-      // Propiedades
-      .replace(/([a-z-]+)(\s*:)/gi, '<span class="json-bool">$1</span>$2')
-      // Valores
-      .replace(/:\s*([^;}\n]+)/g, (m, val) => {
-        if (/^#[0-9a-f]{3,8}$/i.test(val.trim())) {
-          return ': <span class="json-string">' + val + '</span>';
-        }
-        if (/^[\d.]+(%|px|em|rem|vh|vw|pt|cm|mm|in)?$/i.test(val.trim())) {
-          return ': <span class="json-number">' + val + '</span>';
-        }
-        return ': ' + val;
-      });
-  };
+  const syntaxHighlightCSS = buildHighlighter([
+    ['json-null',   /\/\*[\s\S]*?\*\//g],
+    ['json-null',   /@[\w-]+/g],
+    ['json-string', /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g],
+    ['json-string', /#[0-9a-fA-F]{3,8}\b/g],
+    ['json-number', /\b\d+\.?\d*(?:px|em|rem|vw|vh|%|pt|cm|mm|in|s|ms|deg|fr|ch|ex|vmin|vmax)\b/gi],
+    ['json-key',    /^[^{};@\n][^{};@\n]*(?=\s*\{)/gm],
+    ['json-bool',   /\b[\w-]+(?=\s*:)/g],
+  ]);
 
-  const syntaxHighlightJS = js => {
-    const esc = js.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return esc
-      // Comentarios de línea
-      .replace(/(\/\/.*$)/gm, '<span class="json-null">$1</span>')
-      // Comentarios de bloque
-      .replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="json-null">$1</span>')
-      // Strings (comillas dobles y simples)
-      .replace(/("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)/g, '<span class="json-string">$1</span>')
-      // Números
-      .replace(/\b(\d+\.?\d*(?:[eE][+-]?\d+)?)\b/g, '<span class="json-number">$1</span>')
-      // Keywords
-      .replace(/\b(const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|try|catch|finally|throw|new|class|extends|import|export|from|default|async|await|yield|typeof|instanceof|delete|void|null|undefined|true|false|this|super|static|get|set)\b/g, '<span class="json-bool">$1</span>')
-      // Funciones
-      .replace(/\b([a-zA-Z_$][\w$]*)\s*(?=\()/g, '<span class="json-key">$1</span>');
-  };
+  const syntaxHighlightJS = buildHighlighter([
+    ['json-null',   /\/\/[^\n]*/gm],
+    ['json-null',   /\/\*[\s\S]*?\*\//g],
+    ['json-string', /`(?:\\[\s\S]|[^`\\])*`/g],
+    ['json-string', /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g],
+    ['json-number', /\b\d+\.?\d*(?:[eE][+-]?\d+)?\b/g],
+    ['json-bool',   /\b(?:const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|try|catch|finally|throw|new|class|extends|import|export|from|default|async|await|yield|typeof|instanceof|delete|void|null|undefined|true|false|this|super|static|get|set)\b/g],
+    ['json-key',    /\b[a-zA-Z_$][\w$]*(?=\s*\()/g],
+  ]);
 
-  const syntaxHighlightPython = py => {
-    const esc = py.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return esc
-      // Comentarios
-      .replace(/(#.*$)/gm, '<span class="json-null">$1</span>')
-      // Strings (triple quoted, double, single)
-      .replace(/("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g, '<span class="json-string">$1</span>')
-      // Números
-      .replace(/\b(\d+\.?\d*(?:[eE][+-]?\d+)?)\b/g, '<span class="json-number">$1</span>')
-      // Keywords
-      .replace(/\b(def|class|if|elif|else|for|while|return|import|from|as|try|except|finally|with|lambda|yield|async|await|pass|break|continue|raise|assert|del|global|nonlocal|and|or|not|in|is|None|True|False)\b/g, '<span class="json-bool">$1</span>')
-      // Funciones y clases
-      .replace(/\b(def|class)\s+([a-zA-Z_]\w*)/g, '$1 <span class="json-key">$2</span>');
-  };
+  const syntaxHighlightPython = buildHighlighter([
+    ['json-null',   /#[^\n]*/gm],
+    ['json-string', /"""[\s\S]*?"""|'''[\s\S]*?'''/g],
+    ['json-string', /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g],
+    ['json-number', /\b\d+\.?\d*(?:[eE][+-]?\d+)?\b/g],
+    ['json-bool',   /\b(?:def|class|if|elif|else|for|while|return|import|from|as|try|except|finally|with|lambda|yield|async|await|pass|break|continue|raise|assert|del|global|nonlocal|and|or|not|in|is|None|True|False)\b/g],
+    ['json-key',    /\b[a-zA-Z_]\w*(?=\s*\()/g],
+  ]);
 
-  const syntaxHighlightPHP = php => {
-    const esc = php.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return esc
-      // Comentarios
-      .replace(/(\/\/.*$|#.*$)/gm, '<span class="json-null">$1</span>')
-      .replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="json-null">$1</span>')
-      // Strings
-      .replace(/("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g, '<span class="json-string">$1</span>')
-      // Variables
-      .replace(/(\$[a-zA-Z_]\w*)/g, '<span class="json-key">$1</span>')
-      // Números
-      .replace(/\b(\d+\.?\d*)\b/g, '<span class="json-number">$1</span>')
-      // Keywords
-      .replace(/\b(function|return|if|else|elseif|for|foreach|while|do|switch|case|break|continue|try|catch|finally|throw|new|class|extends|implements|public|private|protected|static|const|namespace|use|as|trait|interface|abstract|final|echo|print|include|require|include_once|require_once|array|true|false|null)\b/g, '<span class="json-bool">$1</span>');
-  };
+  const syntaxHighlightPHP = buildHighlighter([
+    ['json-null',   /\/\/[^\n]*|#[^\n]*/gm],
+    ['json-null',   /\/\*[\s\S]*?\*\//g],
+    ['json-string', /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g],
+    ['json-key',    /\$[a-zA-Z_]\w*/g],
+    ['json-number', /\b\d+\.?\d*\b/g],
+    ['json-bool',   /\b(?:function|return|if|else|elseif|for|foreach|while|do|switch|case|break|continue|try|catch|finally|throw|new|class|extends|implements|public|private|protected|static|const|namespace|use|as|trait|interface|abstract|final|echo|print|include|require|include_once|require_once|array|true|false|null)\b/g],
+  ]);
 
-  const syntaxHighlightSQL = sql => {
-    const esc = sql.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return esc
-      // Comentarios
-      .replace(/(--.*$)/gm, '<span class="json-null">$1</span>')
-      .replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="json-null">$1</span>')
-      // Strings
-      .replace(/('(?:''|[^'])*')/g, '<span class="json-string">$1</span>')
-      // Números
-      .replace(/\b(\d+\.?\d*)\b/g, '<span class="json-number">$1</span>')
-      // Keywords
-      .replace(/\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|BETWEEN|IS|NULL|JOIN|LEFT|RIGHT|INNER|OUTER|ON|GROUP BY|HAVING|ORDER BY|ASC|DESC|LIMIT|OFFSET|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|TABLE|ALTER|DROP|INDEX|VIEW|DATABASE|SCHEMA|PRIMARY KEY|FOREIGN KEY|REFERENCES|CONSTRAINT|UNIQUE|DEFAULT|AUTO_INCREMENT|CASCADE|TRUNCATE|UNION|ALL|DISTINCT|AS|CASE|WHEN|THEN|ELSE|END)\b/gi, '<span class="json-bool">$1</span>');
-  };
+  const syntaxHighlightSQL = buildHighlighter([
+    ['json-null',   /--[^\n]*/gm],
+    ['json-null',   /\/\*[\s\S]*?\*\//g],
+    ['json-string', /'(?:''|[^'])*'/g],
+    ['json-number', /\b\d+\.?\d*\b/g],
+    ['json-bool',   /\b(?:SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|BETWEEN|IS|NULL|JOIN|LEFT|RIGHT|INNER|OUTER|FULL|CROSS|ON|GROUP|ORDER|BY|HAVING|LIMIT|OFFSET|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|TABLE|ALTER|DROP|INDEX|VIEW|DATABASE|SCHEMA|PRIMARY|FOREIGN|KEY|REFERENCES|CONSTRAINT|UNIQUE|DEFAULT|AUTO_INCREMENT|CASCADE|TRUNCATE|UNION|ALL|DISTINCT|AS|CASE|WHEN|THEN|ELSE|END)\b/gi],
+  ]);
 
-  const syntaxHighlightYAML = yaml => {
-    const esc = yaml.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return esc
-      // Comentarios
-      .replace(/(#.*$)/gm, '<span class="json-null">$1</span>')
-      // Keys (antes de :)
-      .replace(/^(\s*)([a-zA-Z_][\w]*)\s*:/gm, '$1<span class="json-key">$2</span>:')
-      // Strings (quoted)
-      .replace(/("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g, '<span class="json-string">$1</span>')
-      // Booleanos y null
-      .replace(/:\s*(true|false|null|yes|no|on|off)\b/gi, ': <span class="json-bool">$1</span>')
-      // Números
-      .replace(/:\s*(-?\d+\.?\d*)/g, ': <span class="json-number">$1</span>');
-  };
+  const syntaxHighlightYAML = buildHighlighter([
+    ['json-null',   /#[^\n]*/gm],
+    ['json-string', /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g],
+    ['json-key',    /^[ \t]*[\w-]+(?=\s*:)/gm],
+    ['json-bool',   /\b(?:true|false|null|yes|no|on|off)\b/gi],
+    ['json-number', /\b-?\d+\.?\d*\b/g],
+  ]);
 
-  const syntaxHighlightGraphQL = gql => {
-    const esc = gql.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return esc
-      // Comentarios
-      .replace(/(#.*$)/gm, '<span class="json-null">$1</span>')
-      // Strings
-      .replace(/("(?:\\.|[^"\\])*")/g, '<span class="json-string">$1</span>')
-      // Keywords
-      .replace(/\b(query|mutation|subscription|fragment|on|type|interface|union|enum|input|schema|extend|implements|directive|scalar)\b/g, '<span class="json-bool">$1</span>')
-      // Tipos y fields
-      .replace(/\b([A-Z][a-zA-Z0-9]*)\b/g, '<span class="json-key">$1</span>');
-  };
+  const syntaxHighlightGraphQL = buildHighlighter([
+    ['json-null',   /#[^\n]*/gm],
+    ['json-string', /"(?:\\.|[^"\\])*"/g],
+    ['json-bool',   /\b(?:query|mutation|subscription|fragment|on|type|interface|union|enum|input|schema|extend|implements|directive|scalar)\b/g],
+    ['json-key',    /\b[A-Z][a-zA-Z0-9]*\b/g],
+  ]);
 
-  const syntaxHighlightShell = sh => {
-    const esc = sh.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return esc
-      // Comentarios
-      .replace(/(#.*$)/gm, '<span class="json-null">$1</span>')
-      // Strings
-      .replace(/("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g, '<span class="json-string">$1</span>')
-      // Variables
-      .replace(/(\$\{?[a-zA-Z_]\w*\}?|\$\d+)/g, '<span class="json-key">$1</span>')
-      // Comandos comunes
-      .replace(/\b(echo|cd|ls|mkdir|rm|cp|mv|cat|grep|awk|sed|find|chmod|chown|sudo|apt|yum|npm|yarn|git|docker|curl|wget|ssh|scp|tar|zip|unzip|ps|kill|top|df|du|if|then|else|elif|fi|for|while|do|done|case|esac|function|return|export|source|alias)\b/g, '<span class="json-bool">$1</span>');
-  };
+  const syntaxHighlightShell = buildHighlighter([
+    ['json-null',   /#[^\n]*/gm],
+    ['json-string', /"(?:\\.|[^"\\])*"|'[^']*'/g],
+    ['json-key',    /\$\{?[a-zA-Z_]\w*\}?|\$\d+/g],
+    ['json-bool',   /\b(?:echo|cd|ls|mkdir|rm|cp|mv|cat|grep|awk|sed|find|chmod|chown|sudo|apt|yum|npm|yarn|git|docker|curl|wget|ssh|scp|tar|zip|unzip|ps|kill|top|df|du|if|then|else|elif|fi|for|while|do|done|case|esac|function|return|export|source|alias)\b/g],
+  ]);
 
   const escapeHtml = s => String(s)
     .replace(/&/g, '&amp;')
@@ -3446,11 +3417,27 @@ function Blackwire() {
 .prj-card:hover{background:var(--bg3);border-color:var(--blue)}.prj-card.cur{border-color:var(--cyan)}
 .prj-name{font-weight:600;font-size:14px;margin-bottom:3px}.cur-badge{background:var(--cyan);color:#000;padding:1px 6px;border-radius:3px;font-size:9px;margin-left:6px}
 .prj-desc{color:var(--txt2);font-size:12px}.prj-date{color:var(--txt3);font-size:10px;margin-top:3px}
-.int-pnl{display:flex;flex-direction:column;width:100%;height:100%}.int-ctrl{display:flex;gap:10px;padding:14px;background:var(--bg2);border-bottom:1px solid var(--brd)}
-.int-cnt{display:flex;flex:1;overflow:hidden}.pend-list{flex-shrink:0;border-right:1px solid var(--brd);display:flex;flex-direction:column}
-.pend-item{display:flex;gap:10px;padding:10px 14px;border-bottom:1px solid var(--brd);cursor:pointer;align-items:center}
-.pend-item:hover{background:var(--bgh)}.pend-item.sel{background:var(--bg3);border-left:3px solid var(--orange)}
-.int-edit{flex:1;display:flex;flex-direction:column;overflow:hidden}.ed-row{display:flex;gap:10px;padding:10px 14px;background:var(--bg2);border-bottom:1px solid var(--brd)}
+.icept-pnl{display:flex;flex-direction:column;width:100%;height:100%}
+.icept-bar{display:flex;align-items:center;gap:6px;padding:8px 12px;background:var(--bg2);border-bottom:1px solid var(--brd);flex-shrink:0}
+.icept-toggle{display:inline-flex;align-items:center;gap:7px;padding:5px 13px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid transparent;transition:all 0.15s;font-family:var(--font-sans)}
+.icept-toggle.on{background:rgba(239,68,68,.12);color:#f87171;border-color:rgba(239,68,68,.3)}
+.icept-toggle.off{background:var(--bg3);color:var(--txt3);border-color:var(--brd)}
+.icept-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.icept-sep{width:1px;height:18px;background:var(--brd);margin:0 2px;flex-shrink:0}
+.icept-body{display:flex;flex:1;overflow:hidden}
+.icept-queue{flex-shrink:0;border-right:1px solid var(--brd);display:flex;flex-direction:column;overflow:hidden}
+.icept-queue-list{flex:1;overflow-y:auto}
+.icept-item{display:flex;gap:8px;padding:8px 12px;border-bottom:1px solid var(--brd);cursor:pointer;align-items:flex-start;min-width:0}
+.icept-item:hover{background:var(--bgh)}.icept-item.sel{background:var(--bg3);border-left:3px solid var(--orange)}
+.icept-item .mth{flex-shrink:0;margin-top:1px;font-size:9px}
+.icept-item-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.icept-item-host{font-size:11px;color:var(--txt);font-family:var(--font-mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.icept-item-path{font-size:10px;color:var(--txt3);font-family:var(--font-mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.icept-item-ts{font-size:9px;color:var(--txt3);flex-shrink:0;align-self:flex-end;padding-top:2px}
+.icept-edit{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.icept-section{padding:4px 12px;font-size:9px;font-weight:700;color:var(--txt3);background:var(--bg2);border-bottom:1px solid var(--brd);text-transform:uppercase;letter-spacing:.06em;flex-shrink:0}
+.icept-empty{flex:1;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;color:var(--txt3)}
+.ed-row{display:flex;gap:8px;padding:8px 12px;background:var(--bg2);border-bottom:1px solid var(--brd);flex-shrink:0}
 .ed-ta{width:100%;padding:14px;background:var(--bg);border:none;border-bottom:1px solid var(--brd);color:var(--txt);font-family:var(--font-mono);font-size:11px;resize:none;outline:none;overflow:auto;min-height:0}
 .ed-ce{flex:1;padding:14px;background:var(--bg);border:none;border-bottom:1px solid var(--brd);color:var(--txt);font-family:var(--font-mono);font-size:11px;line-height:1.5;outline:none;overflow:auto;white-space:pre-wrap;word-break:break-all;tab-size:2}
 .overlay-ta::selection{background:rgba(88,166,255,.35)}
@@ -3571,7 +3558,7 @@ function Blackwire() {
 .sens-pat-row{display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid var(--brd);font-size:11px}
 .sens-pat-row:last-child{border-bottom:none}
 .sens-section-badge{font-size:8px;padding:1px 4px;border-radius:3px;background:var(--bg3);color:var(--txt3);white-space:nowrap}
-.int-cnt{display:flex;flex-direction:column;width:100%;height:100%}
+.intr-cnt{display:flex;flex-direction:column;width:100%;height:100%}
 .int-positions{flex:1;display:flex;flex-direction:column;overflow:auto;padding:14px;gap:10px}
 .int-editor{font-family:var(--font-mono);font-size:12px;background:var(--bg);border:1px solid var(--brd);border-radius:6px;padding:10px;resize:vertical;min-height:80px;color:var(--txt);width:100%;box-sizing:border-box}
 .hdr-key{color:var(--cyan);font-weight:500}
@@ -4272,69 +4259,117 @@ function Blackwire() {
         )}
 
         {tab === 'intercept' && curPrj && (
-          <div className="int-pnl">
-            <div className="int-ctrl">
-              <button className={'btn btn-lg ' + (intOn ? 'btn-d' : 'btn-g')} onClick={togInt}>
-                {intOn ? '🔴 ON' : '⚪ OFF'}
+          <div className="icept-pnl">
+            {/* Control bar */}
+            <div className="icept-bar">
+              <button className={'icept-toggle ' + (intOn ? 'on' : 'off')} onClick={togInt} title={intOn ? 'Disable intercept' : 'Enable intercept'}>
+                <span className="icept-dot" style={{ background: intOn ? '#ef4444' : 'var(--txt3)' }} />
+                {intOn ? 'Intercept ON' : 'Intercept OFF'}
               </button>
+              <div className="icept-sep" />
+              <button className="btn btn-g btn-sm" disabled={!selPend} onClick={() => selPend && fwdReq(selPend.id, editReq)} title="Forward selected request">▶ Forward</button>
+              <button className="btn btn-d btn-sm" disabled={!selPend} onClick={() => selPend && dropReq(selPend.id)} title="Drop selected request">✕ Drop</button>
               {pending.length > 0 && (
-                <React.Fragment>
-                  <button className="btn btn-p" onClick={fwdAll}>▶ Forward All ({pending.length})</button>
-                  <button className="btn btn-d" onClick={dropAll}>✕ Drop All</button>
-                </React.Fragment>
+                <>
+                  <div className="icept-sep" />
+                  <button className="btn btn-s btn-sm" onClick={fwdAll} title="Forward all pending">▶▶ Fwd All ({pending.length})</button>
+                  <button className="btn btn-s btn-sm" onClick={dropAll} title="Drop all pending">✕ Drop All</button>
+                </>
+              )}
+              <div style={{ flex: 1 }} />
+              {intOn && pending.length > 0 && (
+                <span style={{ fontSize: 10, color: 'var(--orange)', fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
+                  {pending.length} request{pending.length !== 1 ? 's' : ''} queued
+                </span>
               )}
             </div>
-            <div className="int-cnt">
-              <div className="pend-list" style={{ width: intPendW + 'px' }}>
+
+            {/* Body: queue + editor */}
+            <div className="icept-body">
+              {/* Queue */}
+              <div className="icept-queue" style={{ width: intPendW + 'px' }}>
                 <div className="pnl-hdr">
-                  <span>Pending ({pending.length})</span>
+                  <span>Queue</span>
+                  {pending.length > 0 && (
+                    <span style={{ background: 'var(--orange)', color: '#000', padding: '1px 7px', borderRadius: 10, fontSize: 9, fontWeight: 700, marginLeft: 6 }}>{pending.length}</span>
+                  )}
                 </div>
-                {pending.map(r => (
-                  <div key={r.id} className={'pend-item' + (selPend?.id === r.id ? ' sel' : '')} onClick={() => { setSelPend(r); setEditReq({ ...r }); }}
-                       onContextMenu={e => showContextMenu(e, r, 'intercept')}>
-                    <span className={'mth mth-' + r.method}>{r.method}</span>
-                    <span className="url">{r.url}</span>
-                  </div>
-                ))}
-                {pending.length === 0 && (
-                  <div className="empty" style={{ padding: 30 }}>
-                    <span>{intOn ? 'Waiting...' : 'Enable intercept'}</span>
-                  </div>
-                )}
+                <div className="icept-queue-list">
+                  {pending.map(r => {
+                    let host = r.url, path = '';
+                    try { const u = new URL(r.url); host = u.host; path = u.pathname + (u.search || ''); } catch (e) {}
+                    return (
+                      <div key={r.id}
+                        className={'icept-item' + (selPend?.id === r.id ? ' sel' : '')}
+                        onClick={() => { setSelPend(r); setEditReq({ ...r, rawHeaders: fmtH(r.headers, r.url) }); }}
+                        onContextMenu={e => showContextMenu(e, r, 'intercept')}
+                      >
+                        <span className={'mth mth-' + r.method}>{r.method}</span>
+                        <div className="icept-item-info">
+                          <span className="icept-item-host">{host}</span>
+                          {path && path !== '/' && <span className="icept-item-path">{path}</span>}
+                        </div>
+                        <span className="icept-item-ts">{fmtTime(r.timestamp)}</span>
+                      </div>
+                    );
+                  })}
+                  {pending.length === 0 && (
+                    <div className="icept-empty" style={{ padding: '40px 16px' }}>
+                      <span style={{ fontSize: 28 }}>{intOn ? '⏳' : '🔓'}</span>
+                      <span style={{ fontSize: 11, textAlign: 'center', lineHeight: 1.5 }}>
+                        {intOn ? 'Waiting for traffic...' : 'Enable intercept to capture requests'}
+                      </span>
+                    </div>
+                  )}
+                </div>
               </div>
-              <ResizeHandle onDrag={(dx) => setIntPendW(w => Math.max(150, Math.min(500, w + dx)))} />
-              <div className="int-edit">
+
+              <ResizeHandle onDrag={(dx) => setIntPendW(w => Math.max(160, Math.min(500, w + dx)))} />
+
+              {/* Editor */}
+              <div className="icept-edit">
                 {selPend && editReq ? (
-                  <React.Fragment>
-                    <div className="pnl-hdr" onContextMenu={e => showContextMenu(e, editReq, 'intercept')}>
-                      <span>Edit</span>
-                      <div className="acts">
-                        <button className="btn btn-g" onClick={() => fwdReq(selPend.id, editReq)}>▶ Forward</button>
-                        <button className="btn btn-d" onClick={() => dropReq(selPend.id)}>✕ Drop</button>
+                  <>
+                    <div className="ed-row" onContextMenu={e => showContextMenu(e, editReq, 'intercept')}>
+                      <select className="mth-sel" value={editReq.method} onChange={e => setEditReq({ ...editReq, method: e.target.value })}>
+                        {['GET','HEAD','POST','PUT','PATCH','DELETE','OPTIONS','TRACE'].map(m => <option key={m}>{m}</option>)}
+                      </select>
+                      <input className="url-in" value={editReq.url} onChange={e => setEditReq({ ...editReq, url: e.target.value })} spellCheck="false" />
+                    </div>
+                    <div className="icept-section">Headers</div>
+                    <div className="hdr-wrap" style={{ height: '38%', flexShrink: 0 }}>
+                      <pre className="hdr-highlight ed-ta" aria-hidden="true" style={{ pointerEvents: 'none' }}
+                        dangerouslySetInnerHTML={{ __html: colorizeHeaders(editReq.rawHeaders || '') + '\n' }} />
+                      <textarea className="ed-ta hdr-ta"
+                        value={editReq.rawHeaders || ''}
+                        onChange={e => {
+                          const raw = e.target.value;
+                          const h = {};
+                          raw.split('\n').forEach(l => { const ci = l.indexOf(':'); if (ci > 0) h[l.slice(0, ci).trim()] = l.slice(ci + 1).trim(); });
+                          setEditReq({ ...editReq, rawHeaders: raw, headers: h });
+                        }}
+                        spellCheck="false"
+                      />
+                    </div>
+                    <div className="icept-section">Body</div>
+                    <textarea className="ed-ta" style={{ flex: 1 }}
+                      value={editReq.body || ''}
+                      onChange={e => setEditReq({ ...editReq, body: e.target.value })}
+                      placeholder="(empty body)"
+                      spellCheck="false"
+                    />
+                  </>
+                ) : (
+                  <div className="icept-empty">
+                    <span style={{ fontSize: 36 }}>{intOn ? '🔒' : '🔓'}</span>
+                    <div style={{ textAlign: 'center' }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--txt2)', marginBottom: 6 }}>
+                        {intOn ? (pending.length > 0 ? 'Select a request from the queue' : 'Waiting for traffic...') : 'Interceptor is OFF'}
+                      </div>
+                      <div style={{ fontSize: 11 }}>
+                        {!intOn ? 'Click "Intercept OFF" to start capturing' : pending.length === 0 ? `Proxy running on port ${pxPort}` : ''}
                       </div>
                     </div>
-                    <div className="ed-row">
-                      <select className="mth-sel" value={editReq.method} onChange={e => setEditReq({ ...editReq, method: e.target.value })}>
-                        <option>GET</option>
-                        <option>POST</option>
-                        <option>PUT</option>
-                        <option>DELETE</option>
-                      </select>
-                      <input className="url-in" value={editReq.url} onChange={e => setEditReq({ ...editReq, url: e.target.value })} />
-                    </div>
-                    <textarea className="ed-ta" placeholder="Headers" style={{ height: '30%' }} value={fmtH(editReq.headers, editReq.url)} onChange={e => {
-                      const h = {};
-                      e.target.value.split('\n').forEach(l => {
-                        const [k, ...v] = l.split(':');
-                        if (k && v.length) h[k.trim()] = v.join(':').trim();
-                      });
-                      setEditReq({ ...editReq, headers: h });
-                    }} />
-                    <textarea className="ed-ta" placeholder="Body" style={{ flex: 1 }} value={editReq.body || ''} onChange={e => setEditReq({ ...editReq, body: e.target.value })} />
-                  </React.Fragment>
-                ) : (
-                  <div className="empty">
-                    <span>Select pending request</span>
                   </div>
                 )}
               </div>
@@ -5414,7 +5449,7 @@ function Blackwire() {
                 )}
               </div>
             </div>
-            <div className="int-cnt" style={{ flex: 1, minWidth: 0 }}>
+            <div className="intr-cnt" style={{ flex: 1, minWidth: 0 }}>
             <div className="det-tabs" style={{ justifyContent: 'flex-start', gap: 0 }}>
               <div className={'det-tab' + (intSubTab === 'positions' ? ' act' : '')} onClick={() => setIntSubTab('positions')}>Positions</div>
               <div className={'det-tab' + (intSubTab === 'payloads' ? ' act' : '')} onClick={() => setIntSubTab('payloads')}>Payloads</div>

@@ -1052,13 +1052,7 @@ function Blackwire() {
   };
 
   const whkToRepeater = r => {
-    const hdrs = r.headers || {};
-    setRepM(r.method || 'GET');
-    setRepU(r.url || '');
-    setRepH(Object.entries(hdrs).map(([k, v]) => k + ': ' + v).join('\n'));
-    setRepB(r.content || '');
-    setTab('repeater');
-    toast('Sent to Repeater', 'success');
+    toRep({ method: r.method || 'GET', url: r.url || '', headers: r.headers || {}, body: r.content || null });
   };
 
   // whkContextAction removed - unified into handleContextAction
@@ -1266,28 +1260,39 @@ function Blackwire() {
     toast('Intercept ' + (r.enabled ? 'ON' : 'OFF'), 'success');
   };
 
+  const advanceQueue = (id, remaining) => {
+    if (_optionalChain([selPend, 'optionalAccess', _48 => _48.id]) !== id) return;
+    const next = _nullishCoalesce(remaining[0], () => ( null));
+    setSelPend(next);
+    setEditReq(next ? { ...next, rawHeaders: fmtH(next.headers, next.url) } : null);
+  };
+
   const fwdReq = async (id, mod = null) => {
     await api.post('/api/intercept/' + id + '/forward', mod);
-    setPending(p => p.filter(r => r.id !== id));
-    if (_optionalChain([selPend, 'optionalAccess', _48 => _48.id]) === id) setSelPend(null);
+    const remaining = pending.filter(r => r.id !== id);
+    setPending(remaining);
+    advanceQueue(id, remaining);
   };
 
   const dropReq = async id => {
     await api.post('/api/intercept/' + id + '/drop');
-    setPending(p => p.filter(r => r.id !== id));
-    if (_optionalChain([selPend, 'optionalAccess', _49 => _49.id]) === id) setSelPend(null);
+    const remaining = pending.filter(r => r.id !== id);
+    setPending(remaining);
+    advanceQueue(id, remaining);
   };
 
   const fwdAll = async () => {
     await api.post('/api/intercept/forward-all');
     setPending([]);
     setSelPend(null);
+    setEditReq(null);
   };
 
   const dropAll = async () => {
     await api.post('/api/intercept/drop-all');
     setPending([]);
     setSelPend(null);
+    setEditReq(null);
   };
 
   const addRule = async () => {
@@ -1768,16 +1773,22 @@ function Blackwire() {
     // Guardar en historial de navegación
     saveToHistory(requestData, r);
 
-    // Auto-save: siempre crear nueva entrada (no actualizar existente)
-    let host = repU;
-    try { host = new URL(repU).host; } catch (e) {}
-    const timestamp = new Date().toLocaleTimeString();
-    const autoName = `${repM} ${host} [${timestamp}]`;
-    const newItem = await api.post('/api/repeater', { name: autoName, method: repM, url: repU, headers: h, body: repB, last_response: r });
-    const items = await api.get('/api/repeater');
-    setRepReqs(items);
-    // Seleccionar el item recién creado
-    if (newItem && newItem.id) setSelRep(newItem.id);
+    if (selRep) {
+      // Actualizar el tab existente con la request/response más reciente
+      await api.put('/api/repeater/' + selRep, { method: repM, url: repU, headers: h, body: repB, last_response: r });
+      const items = await api.get('/api/repeater');
+      setRepReqs(items);
+    } else {
+      // Sin tab activo: crear uno nuevo
+      let host = repU;
+      try { host = new URL(repU).host; } catch (e) {}
+      const timestamp = new Date().toLocaleTimeString();
+      const autoName = `${repM} ${host} [${timestamp}]`;
+      const newItem = await api.post('/api/repeater', { name: autoName, method: repM, url: repU, headers: h, body: repB, last_response: r });
+      const items = await api.get('/api/repeater');
+      setRepReqs(items);
+      if (newItem && newItem.id) setSelRep(newItem.id);
+    }
   };
 
   const followRedirect = async () => {
@@ -1806,16 +1817,27 @@ function Blackwire() {
     saveToHistory(requestData, r);
   };
 
-  const toRep = r => {
-    setRepM(r.method);
+  const toRep = async r => {
     const url = r.url || '';
-    setRepU(url);
-    const hdrs = Object.entries(r.headers || {}).map(([k, v]) => k + ': ' + v);
-    if (url && !hdrs.some(h => /^host\s*:/i.test(h))) {
-      try { hdrs.unshift('Host: ' + new URL(url).host); } catch (e) {}
+    const hdrs = { ...(r.headers || {}) };
+    if (url && !Object.keys(hdrs).some(k => /^host$/i.test(k))) {
+      try { hdrs['Host'] = new URL(url).host; } catch (e) {}
     }
-    setRepH(hdrs.join('\n'));
+    let host = url;
+    try { host = new URL(url).host; } catch (e) {}
+    const name = `${r.method} ${host}`;
+    const newItem = await api.post('/api/repeater', { name, method: r.method, url, headers: hdrs, body: r.body || null });
+    const items = await api.get('/api/repeater');
+    setRepReqs(items);
+    setRepM(r.method);
+    setRepU(url);
+    setRepH(Object.entries(hdrs).map(([k, v]) => k + ': ' + v).join('\n'));
     setRepB(r.body || '');
+    setRepResp(null);
+    setRepRespBody('');
+    setRepHistory([]);
+    setRepHistoryIndex(-1);
+    if (newItem && newItem.id) setSelRep(newItem.id);
     setTab('repeater');
     toast('Sent to Repeater', 'success');
   };
@@ -2212,6 +2234,8 @@ function Blackwire() {
       setRepResp(null);
       setRepRespBody('');
     }
+    setRepHistory([]);
+    setRepHistoryIndex(-1);
   };
 
   const renameRepItem = async id => {
@@ -2258,14 +2282,14 @@ function Blackwire() {
     // Actualizar estado local inmediatamente para feedback en tiempo real
     setReqs(prev => prev.map(r => r.id === id ? { ...r, saved: !r.saved } : r));
     // Actualizar también selReq si es el request activo
-    if (_optionalChain([selReq, 'optionalAccess', _50 => _50.id]) === id) setSelReq(prev => ({ ...prev, saved: !prev.saved }));
+    if (_optionalChain([selReq, 'optionalAccess', _49 => _49.id]) === id) setSelReq(prev => ({ ...prev, saved: !prev.saved }));
     loadReqs();
   };
 
   const delReq = async id => {
     await api.del('/api/requests/' + id);
     loadReqs();
-    if (_optionalChain([selReq, 'optionalAccess', _51 => _51.id]) === id) setSelReq(null);
+    if (_optionalChain([selReq, 'optionalAccess', _50 => _50.id]) === id) setSelReq(null);
   };
 
   const clearHist = async () => {
@@ -2309,7 +2333,7 @@ function Blackwire() {
   // ===== EXTENSION UI COMPONENTS =====
 
   function MatchReplaceUI({ ext, updateExtCfg }) {
-    const rules = _optionalChain([ext, 'access', _52 => _52.config, 'optionalAccess', _53 => _53.rules]) || [];
+    const rules = _optionalChain([ext, 'access', _51 => _51.config, 'optionalAccess', _52 => _52.rules]) || [];
 
     const updateRule = (idx, field, value) => {
       const newRules = rules.map((r, i) => i === idx ? { ...r, [field]: value } : r);
@@ -2590,185 +2614,132 @@ function Blackwire() {
     return React.createElement(component, { ext, updateExtCfg, toast, ...otherProps });
   }
 
-  const syntaxHighlightJSON = json => {
-    json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, match => {
-      let cls = 'json-number';
-      if (/^"/.test(match)) {
-        if (/:$/.test(match)) {
-          cls = 'json-key';
-        } else {
-          cls = 'json-string';
-        }
-      } else if (/true|false/.test(match)) {
-        cls = 'json-bool';
-      } else if (/null/.test(match)) {
-        cls = 'json-null';
+  // Token-based highlighter: applies all rules to the original text simultaneously,
+  // never processing already-highlighted HTML. Rules are [cssClass, regex] pairs;
+  // earlier rules take priority when tokens overlap at the same position.
+  const buildHighlighter = rules => text => {
+    const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const tokens = [];
+    for (const [cls, regex] of rules) {
+      const flags = regex.flags.includes('g') ? regex.flags : regex.flags + 'g';
+      const r = new RegExp(regex.source, flags);
+      r.lastIndex = 0;
+      let m;
+      while ((m = r.exec(text)) !== null) {
+        if (m[0].length === 0) { r.lastIndex++; continue; }
+        tokens.push({ start: m.index, end: m.index + m[0].length, cls });
       }
-      return '<span class="' + cls + '">' + match + '</span>';
-    });
+    }
+    tokens.sort((a, b) => a.start - b.start || b.end - a.end);
+    let html = '', pos = 0;
+    for (const { start, end, cls } of tokens) {
+      if (start < pos) continue;
+      html += esc(text.slice(pos, start));
+      html += '<span class="' + cls + '">' + esc(text.slice(start, end)) + '</span>';
+      pos = end;
+    }
+    return html + esc(text.slice(pos));
   };
 
-  const syntaxHighlightXML = xml => {
-    const esc = xml.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return esc
-      .replace(/(&lt;\/?)([\w:.-]+)/g, '$1<span class="json-key">$2</span>')
-      .replace(/([\w:.-]+)(=)(&quot;|")/g, '<span class="json-bool">$1</span>$2$3')
-      .replace(/(&quot;|")(.*?)(&quot;|")/g, '$1<span class="json-string">$2</span>$3')
-      .replace(/(&lt;!--.*?--&gt;)/g, '<span class="json-null">$1</span>');
-  };
+  const syntaxHighlightJSON = buildHighlighter([
+    ['json-key',    /"(?:\\u[0-9a-fA-F]{4}|\\[^u]|[^\\"])*"(?=\s*:)/g],
+    ['json-string', /"(?:\\u[0-9a-fA-F]{4}|\\[^u]|[^\\"])*"/g],
+    ['json-bool',   /\b(?:true|false)\b/g],
+    ['json-null',   /\bnull\b/g],
+    ['json-number', /-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?/g],
+  ]);
 
-  const syntaxHighlightProto = text => {
-    const esc = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return esc
-      .replace(/^(\/\/.*)/gm, '<span class="json-null">$1</span>')
-      .replace(/(field \d+)/g, '<span class="json-key">$1</span>')
-      .replace(/\((varint|string|bytes|message|fixed32|fixed64)\)/g, '(<span class="json-bool">$1</span>)')
-      .replace(/: (.+)$/gm, (m, val) => {
-        if (/^\d+(\.\d+)?$/.test(val)) return ': <span class="json-number">' + val + '</span>';
-        return ': <span class="json-string">' + val + '</span>';
-      });
-  };
+  const syntaxHighlightXML = buildHighlighter([
+    ['json-null',   /<!--[\s\S]*?-->/g],
+    ['json-string', /"[^"]*"|'[^']*'/g],
+    ['json-bool',   /\b[\w:.-]+(?==)/g],
+    ['json-key',    /<\/?[\w:.-]+/g],
+  ]);
+
+  const syntaxHighlightProto = buildHighlighter([
+    ['json-null',   /\/\/[^\n]*/gm],
+    ['json-key',    /\bfield \d+\b/g],
+    ['json-bool',   /\b(?:varint|string|bytes|message|fixed32|fixed64)\b/g],
+    ['json-number', /(?<=:\s*)\d+(?:\.\d+)?(?=\s*$)/gm],
+    ['json-string', /(?<=:\s*).+$/gm],
+  ]);
 
   // Sistema de syntax highlighting avanzado para múltiples lenguajes
-  const syntaxHighlightHTML = html => {
-    const esc = html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return esc
-      // Comentarios HTML
-      .replace(/(&lt;!--.*?--&gt;)/gs, '<span class="json-null">$1</span>')
-      // Doctype
-      .replace(/(&lt;!DOCTYPE[^&]*&gt;)/gi, '<span class="json-null">$1</span>')
-      // Tags y atributos
-      .replace(/(&lt;\/?)([\w:.-]+)/g, '$1<span class="json-key">$2</span>')
-      .replace(/([\w:.-]+)(=)/g, '<span class="json-bool">$1</span>$2')
-      .replace(/(&quot;|")(.*?)(&quot;|")/g, '$1<span class="json-string">$2</span>$3');
-  };
+  const syntaxHighlightHTML = buildHighlighter([
+    ['json-null',   /<!--[\s\S]*?-->/g],
+    ['json-null',   /<!DOCTYPE[^>]*>/gi],
+    ['json-string', /"[^"]*"|'[^']*'/g],
+    ['json-bool',   /\b[\w:-]+(?==)/g],
+    ['json-key',    /<\/?[\w:-]+/g],
+  ]);
 
-  const syntaxHighlightCSS = css => {
-    const esc = css.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return esc
-      // Comentarios
-      .replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="json-null">$1</span>')
-      // Selectores
-      .replace(/^([^{]+)(\{)/gm, (m, selector, brace) => {
-        return '<span class="json-key">' + selector.trim() + '</span>' + brace;
-      })
-      // Propiedades
-      .replace(/([a-z-]+)(\s*:)/gi, '<span class="json-bool">$1</span>$2')
-      // Valores
-      .replace(/:\s*([^;}\n]+)/g, (m, val) => {
-        if (/^#[0-9a-f]{3,8}$/i.test(val.trim())) {
-          return ': <span class="json-string">' + val + '</span>';
-        }
-        if (/^[\d.]+(%|px|em|rem|vh|vw|pt|cm|mm|in)?$/i.test(val.trim())) {
-          return ': <span class="json-number">' + val + '</span>';
-        }
-        return ': ' + val;
-      });
-  };
+  const syntaxHighlightCSS = buildHighlighter([
+    ['json-null',   /\/\*[\s\S]*?\*\//g],
+    ['json-null',   /@[\w-]+/g],
+    ['json-string', /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g],
+    ['json-string', /#[0-9a-fA-F]{3,8}\b/g],
+    ['json-number', /\b\d+\.?\d*(?:px|em|rem|vw|vh|%|pt|cm|mm|in|s|ms|deg|fr|ch|ex|vmin|vmax)\b/gi],
+    ['json-key',    /^[^{};@\n][^{};@\n]*(?=\s*\{)/gm],
+    ['json-bool',   /\b[\w-]+(?=\s*:)/g],
+  ]);
 
-  const syntaxHighlightJS = js => {
-    const esc = js.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return esc
-      // Comentarios de línea
-      .replace(/(\/\/.*$)/gm, '<span class="json-null">$1</span>')
-      // Comentarios de bloque
-      .replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="json-null">$1</span>')
-      // Strings (comillas dobles y simples)
-      .replace(/("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)/g, '<span class="json-string">$1</span>')
-      // Números
-      .replace(/\b(\d+\.?\d*(?:[eE][+-]?\d+)?)\b/g, '<span class="json-number">$1</span>')
-      // Keywords
-      .replace(/\b(const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|try|catch|finally|throw|new|class|extends|import|export|from|default|async|await|yield|typeof|instanceof|delete|void|null|undefined|true|false|this|super|static|get|set)\b/g, '<span class="json-bool">$1</span>')
-      // Funciones
-      .replace(/\b([a-zA-Z_$][\w$]*)\s*(?=\()/g, '<span class="json-key">$1</span>');
-  };
+  const syntaxHighlightJS = buildHighlighter([
+    ['json-null',   /\/\/[^\n]*/gm],
+    ['json-null',   /\/\*[\s\S]*?\*\//g],
+    ['json-string', /`(?:\\[\s\S]|[^`\\])*`/g],
+    ['json-string', /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g],
+    ['json-number', /\b\d+\.?\d*(?:[eE][+-]?\d+)?\b/g],
+    ['json-bool',   /\b(?:const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|try|catch|finally|throw|new|class|extends|import|export|from|default|async|await|yield|typeof|instanceof|delete|void|null|undefined|true|false|this|super|static|get|set)\b/g],
+    ['json-key',    /\b[a-zA-Z_$][\w$]*(?=\s*\()/g],
+  ]);
 
-  const syntaxHighlightPython = py => {
-    const esc = py.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return esc
-      // Comentarios
-      .replace(/(#.*$)/gm, '<span class="json-null">$1</span>')
-      // Strings (triple quoted, double, single)
-      .replace(/("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g, '<span class="json-string">$1</span>')
-      // Números
-      .replace(/\b(\d+\.?\d*(?:[eE][+-]?\d+)?)\b/g, '<span class="json-number">$1</span>')
-      // Keywords
-      .replace(/\b(def|class|if|elif|else|for|while|return|import|from|as|try|except|finally|with|lambda|yield|async|await|pass|break|continue|raise|assert|del|global|nonlocal|and|or|not|in|is|None|True|False)\b/g, '<span class="json-bool">$1</span>')
-      // Funciones y clases
-      .replace(/\b(def|class)\s+([a-zA-Z_]\w*)/g, '$1 <span class="json-key">$2</span>');
-  };
+  const syntaxHighlightPython = buildHighlighter([
+    ['json-null',   /#[^\n]*/gm],
+    ['json-string', /"""[\s\S]*?"""|'''[\s\S]*?'''/g],
+    ['json-string', /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g],
+    ['json-number', /\b\d+\.?\d*(?:[eE][+-]?\d+)?\b/g],
+    ['json-bool',   /\b(?:def|class|if|elif|else|for|while|return|import|from|as|try|except|finally|with|lambda|yield|async|await|pass|break|continue|raise|assert|del|global|nonlocal|and|or|not|in|is|None|True|False)\b/g],
+    ['json-key',    /\b[a-zA-Z_]\w*(?=\s*\()/g],
+  ]);
 
-  const syntaxHighlightPHP = php => {
-    const esc = php.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return esc
-      // Comentarios
-      .replace(/(\/\/.*$|#.*$)/gm, '<span class="json-null">$1</span>')
-      .replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="json-null">$1</span>')
-      // Strings
-      .replace(/("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g, '<span class="json-string">$1</span>')
-      // Variables
-      .replace(/(\$[a-zA-Z_]\w*)/g, '<span class="json-key">$1</span>')
-      // Números
-      .replace(/\b(\d+\.?\d*)\b/g, '<span class="json-number">$1</span>')
-      // Keywords
-      .replace(/\b(function|return|if|else|elseif|for|foreach|while|do|switch|case|break|continue|try|catch|finally|throw|new|class|extends|implements|public|private|protected|static|const|namespace|use|as|trait|interface|abstract|final|echo|print|include|require|include_once|require_once|array|true|false|null)\b/g, '<span class="json-bool">$1</span>');
-  };
+  const syntaxHighlightPHP = buildHighlighter([
+    ['json-null',   /\/\/[^\n]*|#[^\n]*/gm],
+    ['json-null',   /\/\*[\s\S]*?\*\//g],
+    ['json-string', /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g],
+    ['json-key',    /\$[a-zA-Z_]\w*/g],
+    ['json-number', /\b\d+\.?\d*\b/g],
+    ['json-bool',   /\b(?:function|return|if|else|elseif|for|foreach|while|do|switch|case|break|continue|try|catch|finally|throw|new|class|extends|implements|public|private|protected|static|const|namespace|use|as|trait|interface|abstract|final|echo|print|include|require|include_once|require_once|array|true|false|null)\b/g],
+  ]);
 
-  const syntaxHighlightSQL = sql => {
-    const esc = sql.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return esc
-      // Comentarios
-      .replace(/(--.*$)/gm, '<span class="json-null">$1</span>')
-      .replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="json-null">$1</span>')
-      // Strings
-      .replace(/('(?:''|[^'])*')/g, '<span class="json-string">$1</span>')
-      // Números
-      .replace(/\b(\d+\.?\d*)\b/g, '<span class="json-number">$1</span>')
-      // Keywords
-      .replace(/\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|BETWEEN|IS|NULL|JOIN|LEFT|RIGHT|INNER|OUTER|ON|GROUP BY|HAVING|ORDER BY|ASC|DESC|LIMIT|OFFSET|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|TABLE|ALTER|DROP|INDEX|VIEW|DATABASE|SCHEMA|PRIMARY KEY|FOREIGN KEY|REFERENCES|CONSTRAINT|UNIQUE|DEFAULT|AUTO_INCREMENT|CASCADE|TRUNCATE|UNION|ALL|DISTINCT|AS|CASE|WHEN|THEN|ELSE|END)\b/gi, '<span class="json-bool">$1</span>');
-  };
+  const syntaxHighlightSQL = buildHighlighter([
+    ['json-null',   /--[^\n]*/gm],
+    ['json-null',   /\/\*[\s\S]*?\*\//g],
+    ['json-string', /'(?:''|[^'])*'/g],
+    ['json-number', /\b\d+\.?\d*\b/g],
+    ['json-bool',   /\b(?:SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|BETWEEN|IS|NULL|JOIN|LEFT|RIGHT|INNER|OUTER|FULL|CROSS|ON|GROUP|ORDER|BY|HAVING|LIMIT|OFFSET|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|TABLE|ALTER|DROP|INDEX|VIEW|DATABASE|SCHEMA|PRIMARY|FOREIGN|KEY|REFERENCES|CONSTRAINT|UNIQUE|DEFAULT|AUTO_INCREMENT|CASCADE|TRUNCATE|UNION|ALL|DISTINCT|AS|CASE|WHEN|THEN|ELSE|END)\b/gi],
+  ]);
 
-  const syntaxHighlightYAML = yaml => {
-    const esc = yaml.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return esc
-      // Comentarios
-      .replace(/(#.*$)/gm, '<span class="json-null">$1</span>')
-      // Keys (antes de :)
-      .replace(/^(\s*)([a-zA-Z_][\w]*)\s*:/gm, '$1<span class="json-key">$2</span>:')
-      // Strings (quoted)
-      .replace(/("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g, '<span class="json-string">$1</span>')
-      // Booleanos y null
-      .replace(/:\s*(true|false|null|yes|no|on|off)\b/gi, ': <span class="json-bool">$1</span>')
-      // Números
-      .replace(/:\s*(-?\d+\.?\d*)/g, ': <span class="json-number">$1</span>');
-  };
+  const syntaxHighlightYAML = buildHighlighter([
+    ['json-null',   /#[^\n]*/gm],
+    ['json-string', /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g],
+    ['json-key',    /^[ \t]*[\w-]+(?=\s*:)/gm],
+    ['json-bool',   /\b(?:true|false|null|yes|no|on|off)\b/gi],
+    ['json-number', /\b-?\d+\.?\d*\b/g],
+  ]);
 
-  const syntaxHighlightGraphQL = gql => {
-    const esc = gql.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return esc
-      // Comentarios
-      .replace(/(#.*$)/gm, '<span class="json-null">$1</span>')
-      // Strings
-      .replace(/("(?:\\.|[^"\\])*")/g, '<span class="json-string">$1</span>')
-      // Keywords
-      .replace(/\b(query|mutation|subscription|fragment|on|type|interface|union|enum|input|schema|extend|implements|directive|scalar)\b/g, '<span class="json-bool">$1</span>')
-      // Tipos y fields
-      .replace(/\b([A-Z][a-zA-Z0-9]*)\b/g, '<span class="json-key">$1</span>');
-  };
+  const syntaxHighlightGraphQL = buildHighlighter([
+    ['json-null',   /#[^\n]*/gm],
+    ['json-string', /"(?:\\.|[^"\\])*"/g],
+    ['json-bool',   /\b(?:query|mutation|subscription|fragment|on|type|interface|union|enum|input|schema|extend|implements|directive|scalar)\b/g],
+    ['json-key',    /\b[A-Z][a-zA-Z0-9]*\b/g],
+  ]);
 
-  const syntaxHighlightShell = sh => {
-    const esc = sh.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return esc
-      // Comentarios
-      .replace(/(#.*$)/gm, '<span class="json-null">$1</span>')
-      // Strings
-      .replace(/("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g, '<span class="json-string">$1</span>')
-      // Variables
-      .replace(/(\$\{?[a-zA-Z_]\w*\}?|\$\d+)/g, '<span class="json-key">$1</span>')
-      // Comandos comunes
-      .replace(/\b(echo|cd|ls|mkdir|rm|cp|mv|cat|grep|awk|sed|find|chmod|chown|sudo|apt|yum|npm|yarn|git|docker|curl|wget|ssh|scp|tar|zip|unzip|ps|kill|top|df|du|if|then|else|elif|fi|for|while|do|done|case|esac|function|return|export|source|alias)\b/g, '<span class="json-bool">$1</span>');
-  };
+  const syntaxHighlightShell = buildHighlighter([
+    ['json-null',   /#[^\n]*/gm],
+    ['json-string', /"(?:\\.|[^"\\])*"|'[^']*'/g],
+    ['json-key',    /\$\{?[a-zA-Z_]\w*\}?|\$\d+/g],
+    ['json-bool',   /\b(?:echo|cd|ls|mkdir|rm|cp|mv|cat|grep|awk|sed|find|chmod|chown|sudo|apt|yum|npm|yarn|git|docker|curl|wget|ssh|scp|tar|zip|unzip|ps|kill|top|df|du|if|then|else|elif|fi|for|while|do|done|case|esac|function|return|export|source|alias)\b/g],
+  ]);
 
   const escapeHtml = s => String(s)
     .replace(/&/g, '&amp;')
@@ -2994,7 +2965,7 @@ function Blackwire() {
   };
 
   const addScopeFromRequest = async ruleType => {
-    const norm = _optionalChain([contextMenu, 'optionalAccess', _54 => _54.normalized]);
+    const norm = _optionalChain([contextMenu, 'optionalAccess', _53 => _53.normalized]);
     if (!norm || !norm.url) {
       toast('No URL', 'error');
       return;
@@ -3447,11 +3418,27 @@ function Blackwire() {
 .prj-card:hover{background:var(--bg3);border-color:var(--blue)}.prj-card.cur{border-color:var(--cyan)}
 .prj-name{font-weight:600;font-size:14px;margin-bottom:3px}.cur-badge{background:var(--cyan);color:#000;padding:1px 6px;border-radius:3px;font-size:9px;margin-left:6px}
 .prj-desc{color:var(--txt2);font-size:12px}.prj-date{color:var(--txt3);font-size:10px;margin-top:3px}
-.int-pnl{display:flex;flex-direction:column;width:100%;height:100%}.int-ctrl{display:flex;gap:10px;padding:14px;background:var(--bg2);border-bottom:1px solid var(--brd)}
-.int-cnt{display:flex;flex:1;overflow:hidden}.pend-list{flex-shrink:0;border-right:1px solid var(--brd);display:flex;flex-direction:column}
-.pend-item{display:flex;gap:10px;padding:10px 14px;border-bottom:1px solid var(--brd);cursor:pointer;align-items:center}
-.pend-item:hover{background:var(--bgh)}.pend-item.sel{background:var(--bg3);border-left:3px solid var(--orange)}
-.int-edit{flex:1;display:flex;flex-direction:column;overflow:hidden}.ed-row{display:flex;gap:10px;padding:10px 14px;background:var(--bg2);border-bottom:1px solid var(--brd)}
+.icept-pnl{display:flex;flex-direction:column;width:100%;height:100%}
+.icept-bar{display:flex;align-items:center;gap:6px;padding:8px 12px;background:var(--bg2);border-bottom:1px solid var(--brd);flex-shrink:0}
+.icept-toggle{display:inline-flex;align-items:center;gap:7px;padding:5px 13px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid transparent;transition:all 0.15s;font-family:var(--font-sans)}
+.icept-toggle.on{background:rgba(239,68,68,.12);color:#f87171;border-color:rgba(239,68,68,.3)}
+.icept-toggle.off{background:var(--bg3);color:var(--txt3);border-color:var(--brd)}
+.icept-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.icept-sep{width:1px;height:18px;background:var(--brd);margin:0 2px;flex-shrink:0}
+.icept-body{display:flex;flex:1;overflow:hidden}
+.icept-queue{flex-shrink:0;border-right:1px solid var(--brd);display:flex;flex-direction:column;overflow:hidden}
+.icept-queue-list{flex:1;overflow-y:auto}
+.icept-item{display:flex;gap:8px;padding:8px 12px;border-bottom:1px solid var(--brd);cursor:pointer;align-items:flex-start;min-width:0}
+.icept-item:hover{background:var(--bgh)}.icept-item.sel{background:var(--bg3);border-left:3px solid var(--orange)}
+.icept-item .mth{flex-shrink:0;margin-top:1px;font-size:9px}
+.icept-item-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.icept-item-host{font-size:11px;color:var(--txt);font-family:var(--font-mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.icept-item-path{font-size:10px;color:var(--txt3);font-family:var(--font-mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.icept-item-ts{font-size:9px;color:var(--txt3);flex-shrink:0;align-self:flex-end;padding-top:2px}
+.icept-edit{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.icept-section{padding:4px 12px;font-size:9px;font-weight:700;color:var(--txt3);background:var(--bg2);border-bottom:1px solid var(--brd);text-transform:uppercase;letter-spacing:.06em;flex-shrink:0}
+.icept-empty{flex:1;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;color:var(--txt3)}
+.ed-row{display:flex;gap:8px;padding:8px 12px;background:var(--bg2);border-bottom:1px solid var(--brd);flex-shrink:0}
 .ed-ta{width:100%;padding:14px;background:var(--bg);border:none;border-bottom:1px solid var(--brd);color:var(--txt);font-family:var(--font-mono);font-size:11px;resize:none;outline:none;overflow:auto;min-height:0}
 .ed-ce{flex:1;padding:14px;background:var(--bg);border:none;border-bottom:1px solid var(--brd);color:var(--txt);font-family:var(--font-mono);font-size:11px;line-height:1.5;outline:none;overflow:auto;white-space:pre-wrap;word-break:break-all;tab-size:2}
 .overlay-ta::selection{background:rgba(88,166,255,.35)}
@@ -3572,7 +3559,7 @@ function Blackwire() {
 .sens-pat-row{display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid var(--brd);font-size:11px}
 .sens-pat-row:last-child{border-bottom:none}
 .sens-section-badge{font-size:8px;padding:1px 4px;border-radius:3px;background:var(--bg3);color:var(--txt3);white-space:nowrap}
-.int-cnt{display:flex;flex-direction:column;width:100%;height:100%}
+.intr-cnt{display:flex;flex-direction:column;width:100%;height:100%}
 .int-positions{flex:1;display:flex;flex-direction:column;overflow:auto;padding:14px;gap:10px}
 .int-editor{font-family:var(--font-mono);font-size:12px;background:var(--bg);border:1px solid var(--brd);border-radius:6px;padding:10px;resize:vertical;min-height:80px;color:var(--txt);width:100%;box-sizing:border-box}
 .hdr-key{color:var(--cyan);font-weight:500}
@@ -3649,6 +3636,7 @@ function Blackwire() {
           React.createElement(React.Fragment, null
             , React.createElement('div', { className: 'tab' + (tab === 'scope' ? ' act' : ''), onClick: () => setTab('scope'),}, "Scope")
             , React.createElement('div', { className: 'tab' + (tab === 'history' ? ' act' : ''), onClick: () => setTab('history'),}, "History")
+            , React.createElement('div', { className: 'tab' + (tab === 'intercept' ? ' act' : ''), onClick: () => setTab('intercept'),}, "Interceptor")
             , React.createElement('div', { className: 'tab' + (tab === 'collections' ? ' act' : ''), onClick: () => { setTab('collections'); loadColls(); },}, "Collections")
             , React.createElement('div', { className: 'tab' + (tab === 'repeater' ? ' act' : ''), onClick: () => setTab('repeater'),}, "Repeater")
             , React.createElement('div', { className: 'tab' + (tab === 'intruder' ? ' act' : ''), onClick: () => setTab('intruder'),}, "Intruder")
@@ -3900,7 +3888,7 @@ function Blackwire() {
                       , filtered.map(r => (
                         React.createElement('div', {
                           key: r.id,
-                          className: 'req-item' + (_optionalChain([selReq, 'optionalAccess', _55 => _55.id]) === r.id ? ' sel' : '') + (!r.in_scope ? ' out' : ''),
+                          className: 'req-item' + (_optionalChain([selReq, 'optionalAccess', _54 => _54.id]) === r.id ? ' sel' : '') + (!r.in_scope ? ' out' : ''),
                           onClick: () => setSelReq(r),
                           onContextMenu: e => showContextMenu(e, r),}
 
@@ -4049,7 +4037,7 @@ function Blackwire() {
                   )
                   , React.createElement('div', { className: "pnl-cnt",}
                     , wsFrames.map(f => (
-                      React.createElement('div', { key: f.id, className: 'ws-frame-item' + (_optionalChain([selWsFrame, 'optionalAccess', _56 => _56.id]) === f.id ? ' sel' : ''),
+                      React.createElement('div', { key: f.id, className: 'ws-frame-item' + (_optionalChain([selWsFrame, 'optionalAccess', _55 => _55.id]) === f.id ? ' sel' : ''),
                            onClick: () => selectWsFrame(f),
                            onContextMenu: e => showContextMenu(e, { ...f, url: selWsConn, method: 'WS', body: f.content }, 'websocket'),}
                         , React.createElement('span', { className: 'ws-dir ws-dir-' + f.direction,}
@@ -4201,7 +4189,7 @@ function Blackwire() {
                           , smNodeReqs.map(r => (
                             React.createElement('div', {
                               key: r.id,
-                              className: 'req-item' + (_optionalChain([selReq, 'optionalAccess', _57 => _57.id]) === r.id ? ' sel' : '') + (!r.in_scope ? ' out' : ''),
+                              className: 'req-item' + (_optionalChain([selReq, 'optionalAccess', _56 => _56.id]) === r.id ? ' sel' : '') + (!r.in_scope ? ' out' : ''),
                               onClick: () => setSelReq(r),
                               onContextMenu: e => showContextMenu(e, r),}
 
@@ -4272,69 +4260,117 @@ function Blackwire() {
         )
 
         , tab === 'intercept' && curPrj && (
-          React.createElement('div', { className: "int-pnl",}
-            , React.createElement('div', { className: "int-ctrl",}
-              , React.createElement('button', { className: 'btn btn-lg ' + (intOn ? 'btn-d' : 'btn-g'), onClick: togInt,}
-                , intOn ? '🔴 ON' : '⚪ OFF'
+          React.createElement('div', { className: "icept-pnl",}
+            /* Control bar */
+            , React.createElement('div', { className: "icept-bar",}
+              , React.createElement('button', { className: 'icept-toggle ' + (intOn ? 'on' : 'off'), onClick: togInt, title: intOn ? 'Disable intercept' : 'Enable intercept',}
+                , React.createElement('span', { className: "icept-dot", style: { background: intOn ? '#ef4444' : 'var(--txt3)' },} )
+                , intOn ? 'Intercept ON' : 'Intercept OFF'
               )
+              , React.createElement('div', { className: "icept-sep",} )
+              , React.createElement('button', { className: "btn btn-g btn-sm"  , disabled: !selPend, onClick: () => selPend && fwdReq(selPend.id, editReq), title: "Forward selected request"  ,}, "▶ Forward" )
+              , React.createElement('button', { className: "btn btn-d btn-sm"  , disabled: !selPend, onClick: () => selPend && dropReq(selPend.id), title: "Drop selected request"  ,}, "✕ Drop" )
               , pending.length > 0 && (
                 React.createElement(React.Fragment, null
-                  , React.createElement('button', { className: "btn btn-p" , onClick: fwdAll,}, "▶ Forward All ("   , pending.length, ")")
-                  , React.createElement('button', { className: "btn btn-d" , onClick: dropAll,}, "✕ Drop All"  )
+                  , React.createElement('div', { className: "icept-sep",} )
+                  , React.createElement('button', { className: "btn btn-s btn-sm"  , onClick: fwdAll, title: "Forward all pending"  ,}, "▶▶ Fwd All ("   , pending.length, ")")
+                  , React.createElement('button', { className: "btn btn-s btn-sm"  , onClick: dropAll, title: "Drop all pending"  ,}, "✕ Drop All"  )
+                )
+              )
+              , React.createElement('div', { style: { flex: 1 },} )
+              , intOn && pending.length > 0 && (
+                React.createElement('span', { style: { fontSize: 10, color: 'var(--orange)', fontFamily: 'var(--font-mono)', fontWeight: 600 },}
+                  , pending.length, " request" , pending.length !== 1 ? 's' : '', " queued"
                 )
               )
             )
-            , React.createElement('div', { className: "int-cnt",}
-              , React.createElement('div', { className: "pend-list", style: { width: intPendW + 'px' },}
+
+            /* Body: queue + editor */
+            , React.createElement('div', { className: "icept-body",}
+              /* Queue */
+              , React.createElement('div', { className: "icept-queue", style: { width: intPendW + 'px' },}
                 , React.createElement('div', { className: "pnl-hdr",}
-                  , React.createElement('span', null, "Pending (" , pending.length, ")")
-                )
-                , pending.map(r => (
-                  React.createElement('div', { key: r.id, className: 'pend-item' + (_optionalChain([selPend, 'optionalAccess', _58 => _58.id]) === r.id ? ' sel' : ''), onClick: () => { setSelPend(r); setEditReq({ ...r }); },
-                       onContextMenu: e => showContextMenu(e, r, 'intercept'),}
-                    , React.createElement('span', { className: 'mth mth-' + r.method,}, r.method)
-                    , React.createElement('span', { className: "url",}, r.url)
+                  , React.createElement('span', null, "Queue")
+                  , pending.length > 0 && (
+                    React.createElement('span', { style: { background: 'var(--orange)', color: '#000', padding: '1px 7px', borderRadius: 10, fontSize: 9, fontWeight: 700, marginLeft: 6 },}, pending.length)
                   )
-                ))
-                , pending.length === 0 && (
-                  React.createElement('div', { className: "empty", style: { padding: 30 },}
-                    , React.createElement('span', null, intOn ? 'Waiting...' : 'Enable intercept')
+                )
+                , React.createElement('div', { className: "icept-queue-list",}
+                  , pending.map(r => {
+                    let host = r.url, path = '';
+                    try { const u = new URL(r.url); host = u.host; path = u.pathname + (u.search || ''); } catch (e) {}
+                    return (
+                      React.createElement('div', { key: r.id,
+                        className: 'icept-item' + (_optionalChain([selPend, 'optionalAccess', _57 => _57.id]) === r.id ? ' sel' : ''),
+                        onClick: () => { setSelPend(r); setEditReq({ ...r, rawHeaders: fmtH(r.headers, r.url) }); },
+                        onContextMenu: e => showContextMenu(e, r, 'intercept'),}
+
+                        , React.createElement('span', { className: 'mth mth-' + r.method,}, r.method)
+                        , React.createElement('div', { className: "icept-item-info",}
+                          , React.createElement('span', { className: "icept-item-host",}, host)
+                          , path && path !== '/' && React.createElement('span', { className: "icept-item-path",}, path)
+                        )
+                        , React.createElement('span', { className: "icept-item-ts",}, fmtTime(r.timestamp))
+                      )
+                    );
+                  })
+                  , pending.length === 0 && (
+                    React.createElement('div', { className: "icept-empty", style: { padding: '40px 16px' },}
+                      , React.createElement('span', { style: { fontSize: 28 },}, intOn ? '⏳' : '🔓')
+                      , React.createElement('span', { style: { fontSize: 11, textAlign: 'center', lineHeight: 1.5 },}
+                        , intOn ? 'Waiting for traffic...' : 'Enable intercept to capture requests'
+                      )
+                    )
                   )
                 )
               )
-              , React.createElement(ResizeHandle, { onDrag: (dx) => setIntPendW(w => Math.max(150, Math.min(500, w + dx))),} )
-              , React.createElement('div', { className: "int-edit",}
+
+              , React.createElement(ResizeHandle, { onDrag: (dx) => setIntPendW(w => Math.max(160, Math.min(500, w + dx))),} )
+
+              /* Editor */
+              , React.createElement('div', { className: "icept-edit",}
                 , selPend && editReq ? (
                   React.createElement(React.Fragment, null
-                    , React.createElement('div', { className: "pnl-hdr", onContextMenu: e => showContextMenu(e, editReq, 'intercept'),}
-                      , React.createElement('span', null, "Edit")
-                      , React.createElement('div', { className: "acts",}
-                        , React.createElement('button', { className: "btn btn-g" , onClick: () => fwdReq(selPend.id, editReq),}, "▶ Forward" )
-                        , React.createElement('button', { className: "btn btn-d" , onClick: () => dropReq(selPend.id),}, "✕ Drop" )
-                      )
-                    )
-                    , React.createElement('div', { className: "ed-row",}
+                    , React.createElement('div', { className: "ed-row", onContextMenu: e => showContextMenu(e, editReq, 'intercept'),}
                       , React.createElement('select', { className: "mth-sel", value: editReq.method, onChange: e => setEditReq({ ...editReq, method: e.target.value }),}
-                        , React.createElement('option', null, "GET")
-                        , React.createElement('option', null, "POST")
-                        , React.createElement('option', null, "PUT")
-                        , React.createElement('option', null, "DELETE")
+                        , ['GET','HEAD','POST','PUT','PATCH','DELETE','OPTIONS','TRACE'].map(m => React.createElement('option', { key: m,}, m))
                       )
-                      , React.createElement('input', { className: "url-in", value: editReq.url, onChange: e => setEditReq({ ...editReq, url: e.target.value }),} )
+                      , React.createElement('input', { className: "url-in", value: editReq.url, onChange: e => setEditReq({ ...editReq, url: e.target.value }), spellCheck: "false",} )
                     )
-                    , React.createElement('textarea', { className: "ed-ta", placeholder: "Headers", style: { height: '30%' }, value: fmtH(editReq.headers, editReq.url), onChange: e => {
-                      const h = {};
-                      e.target.value.split('\n').forEach(l => {
-                        const [k, ...v] = l.split(':');
-                        if (k && v.length) h[k.trim()] = v.join(':').trim();
-                      });
-                      setEditReq({ ...editReq, headers: h });
-                    },} )
-                    , React.createElement('textarea', { className: "ed-ta", placeholder: "Body", style: { flex: 1 }, value: editReq.body || '', onChange: e => setEditReq({ ...editReq, body: e.target.value }),} )
+                    , React.createElement('div', { className: "icept-section",}, "Headers")
+                    , React.createElement('div', { className: "hdr-wrap", style: { height: '38%', flexShrink: 0 },}
+                      , React.createElement('pre', { className: "hdr-highlight ed-ta" , 'aria-hidden': "true", style: { pointerEvents: 'none' },
+                        dangerouslySetInnerHTML: { __html: colorizeHeaders(editReq.rawHeaders || '') + '\n' },} )
+                      , React.createElement('textarea', { className: "ed-ta hdr-ta" ,
+                        value: editReq.rawHeaders || '',
+                        onChange: e => {
+                          const raw = e.target.value;
+                          const h = {};
+                          raw.split('\n').forEach(l => { const ci = l.indexOf(':'); if (ci > 0) h[l.slice(0, ci).trim()] = l.slice(ci + 1).trim(); });
+                          setEditReq({ ...editReq, rawHeaders: raw, headers: h });
+                        },
+                        spellCheck: "false",}
+                      )
+                    )
+                    , React.createElement('div', { className: "icept-section",}, "Body")
+                    , React.createElement('textarea', { className: "ed-ta", style: { flex: 1 },
+                      value: editReq.body || '',
+                      onChange: e => setEditReq({ ...editReq, body: e.target.value }),
+                      placeholder: "(empty body)" ,
+                      spellCheck: "false",}
+                    )
                   )
                 ) : (
-                  React.createElement('div', { className: "empty",}
-                    , React.createElement('span', null, "Select pending request"  )
+                  React.createElement('div', { className: "icept-empty",}
+                    , React.createElement('span', { style: { fontSize: 36 },}, intOn ? '🔒' : '🔓')
+                    , React.createElement('div', { style: { textAlign: 'center' },}
+                      , React.createElement('div', { style: { fontSize: 13, fontWeight: 600, color: 'var(--txt2)', marginBottom: 6 },}
+                        , intOn ? (pending.length > 0 ? 'Select a request from the queue' : 'Waiting for traffic...') : 'Interceptor is OFF'
+                      )
+                      , React.createElement('div', { style: { fontSize: 11 },}
+                        , !intOn ? 'Click "Intercept OFF" to start capturing' : pending.length === 0 ? `Proxy running on port ${pxPort}` : ''
+                      )
+                    )
                   )
                 )
               )
@@ -4458,7 +4494,7 @@ function Blackwire() {
                     , React.createElement('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' },}
                       , repResp && !repResp.error && (
                         React.createElement('span', { style: { color: 'var(--txt3)' },}
-                          , repResp.status_code, " • "  , _optionalChain([repResp, 'access', _59 => _59.elapsed, 'optionalAccess', _60 => _60.toFixed, 'call', _61 => _61(3)]), "s"
+                          , repResp.status_code, " • "  , _optionalChain([repResp, 'access', _58 => _58.elapsed, 'optionalAccess', _59 => _59.toFixed, 'call', _60 => _60(3)]), "s"
                         )
                       )
                       , repResp && repResp.body && !repResp.error && (
@@ -4626,7 +4662,7 @@ function Blackwire() {
                   }
 
                   // 2. Si tiene ui_schema con tipo schema-driven → usar SchemaBasedUI
-                  if (_optionalChain([ext, 'access', _62 => _62.ui_schema, 'optionalAccess', _63 => _63.type]) === 'schema-driven') {
+                  if (_optionalChain([ext, 'access', _61 => _61.ui_schema, 'optionalAccess', _62 => _62.type]) === 'schema-driven') {
                     return React.createElement(SchemaBasedUI, { ext, updateExtCfg });
                   }
 
@@ -4810,7 +4846,7 @@ function Blackwire() {
                               , React.createElement('span', null, "Response")
                               , !resp.error && (
                                 React.createElement('span', { style: { color: 'var(--txt3)', fontSize: '10px' },}
-                                  , resp.status_code, " • "  , _optionalChain([resp, 'access', _64 => _64.elapsed, 'optionalAccess', _65 => _65.toFixed, 'call', _66 => _66(3)]), "s"
+                                  , resp.status_code, " • "  , _optionalChain([resp, 'access', _63 => _63.elapsed, 'optionalAccess', _64 => _64.toFixed, 'call', _65 => _65(3)]), "s"
                                 )
                               )
                             )
@@ -5414,7 +5450,7 @@ function Blackwire() {
                 )
               )
             )
-            , React.createElement('div', { className: "int-cnt", style: { flex: 1, minWidth: 0 },}
+            , React.createElement('div', { className: "intr-cnt", style: { flex: 1, minWidth: 0 },}
             , React.createElement('div', { className: "det-tabs", style: { justifyContent: 'flex-start', gap: 0 },}
               , React.createElement('div', { className: 'det-tab' + (intSubTab === 'positions' ? ' act' : ''), onClick: () => setIntSubTab('positions'),}, "Positions")
               , React.createElement('div', { className: 'det-tab' + (intSubTab === 'payloads' ? ' act' : ''), onClick: () => setIntSubTab('payloads'),}, "Payloads")
@@ -5829,7 +5865,7 @@ function Blackwire() {
             });
           }
           // 2. Si tiene ui_schema con tipo schema-driven → usar SchemaBasedUI
-          else if (_optionalChain([activeExt, 'access', _67 => _67.ui_schema, 'optionalAccess', _68 => _68.type]) === 'schema-driven') {
+          else if (_optionalChain([activeExt, 'access', _66 => _66.ui_schema, 'optionalAccess', _67 => _67.type]) === 'schema-driven') {
             uiComponent = React.createElement(SchemaBasedUI, { ext: activeExt, updateExtCfg });
           }
           // 3. Si está en registry de componentes custom → usar componente custom
@@ -5874,7 +5910,7 @@ function Blackwire() {
 
       , contextMenu && (
         React.createElement('div', { ref: ctxMenuRef, className: "context-menu", style: { left: contextMenu.x, top: contextMenu.y }, onClick: e => e.stopPropagation(),}
-          , (_optionalChain([contextMenu, 'access', _69 => _69.normalized, 'optionalAccess', _70 => _70.body]) || contextMenu.source === 'selection') && (
+          , (_optionalChain([contextMenu, 'access', _68 => _68.normalized, 'optionalAccess', _69 => _69.body]) || contextMenu.source === 'selection') && (
             React.createElement('div', { className: "context-menu-item", onClick: () => handleContextAction('send-to-cipher'),}, "Send to Cipher"
 
             )
@@ -5914,7 +5950,7 @@ function Blackwire() {
           , React.createElement('div', { className: "context-menu-item", onClick: () => handleContextAction('copy-body'),}, "Copy Body"
 
           )
-          , contextMenu.source !== 'websocket' && contextMenu.source !== 'selection' && _optionalChain([contextMenu, 'access', _71 => _71.normalized, 'optionalAccess', _72 => _72.body]) && (
+          , contextMenu.source !== 'websocket' && contextMenu.source !== 'selection' && _optionalChain([contextMenu, 'access', _70 => _70.normalized, 'optionalAccess', _71 => _71.body]) && (
             React.createElement('div', { className: "context-menu-item", onClick: () => handleContextAction('download-body'),}, "Download Body"
 
             )
@@ -5929,7 +5965,7 @@ function Blackwire() {
 
             )
           )
-          , _optionalChain([contextMenu, 'access', _73 => _73.normalized, 'optionalAccess', _74 => _74.url]) && (
+          , _optionalChain([contextMenu, 'access', _72 => _72.normalized, 'optionalAccess', _73 => _73.url]) && (
             React.createElement(React.Fragment, null
               , React.createElement('div', { className: "context-menu-divider",} )
               , React.createElement('div', { className: "context-menu-item", onClick: () => handleContextAction('scope-include'),}, "Add host to Scope"

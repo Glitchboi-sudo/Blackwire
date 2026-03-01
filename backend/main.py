@@ -86,6 +86,7 @@ class RepeaterRequest(BaseModel):
     url: str
     headers: dict
     body: Optional[str] = None
+    last_response: Optional[dict] = None
 
 class ChepyOperation(BaseModel):
     name: str
@@ -2065,10 +2066,12 @@ async def get_repeater():
 @app.post("/api/repeater")
 async def create_repeater(req: RepeaterRequest):
     async with await get_db() as db:
-        await db.execute("INSERT INTO repeater (name, method, url, headers, body, created_at) VALUES (?,?,?,?,?,?)",
-            (req.name, req.method, req.url, json.dumps(req.headers), req.body, datetime.now().isoformat()))
+        last_resp = json.dumps(req.last_response) if req.last_response else None
+        cursor = await db.execute(
+            "INSERT INTO repeater (name, method, url, headers, body, created_at, last_response) VALUES (?,?,?,?,?,?,?)",
+            (req.name, req.method, req.url, json.dumps(req.headers), req.body, datetime.now().isoformat(), last_resp))
         await db.commit()
-        return {"status": "created"}
+        return {"status": "created", "id": cursor.lastrowid}
 
 @app.put("/api/repeater/{item_id}")
 async def update_repeater(item_id: int, data: dict = Body(...)):

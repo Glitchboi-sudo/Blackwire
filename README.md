@@ -202,6 +202,7 @@ npx sucrase App.jsx -d . --transforms jsx
 Proyecto inspirado en [Burp Suite](https://portswigger.net/burp), [OWASP ZAP](https://www.zaproxy.org/), [mitmproxy](https://mitmproxy.org/) y [Caido](https://caido.io/).
 
 Creado por **[Erik Alcantara](https://www.linkedin.com/in/erik-alc%C3%A1ntara-covarrubias-29a97628a/)**.
+Gracias por el apoyo de **[Lychi3](https://www.linkedin.com/in/carlos-polanco-maga%C3%B1a-ab1256318/)**
 
 **Tecnologías:**
 - [mitmproxy](https://mitmproxy.org/) — Motor de proxy
