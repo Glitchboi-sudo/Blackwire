@@ -92,7 +92,8 @@ def match_scope(url: str, rules: list) -> bool:
         regex = ".*".join(re.escape(part) for part in pattern.split("*"))
 
         try:
-            if re.match(regex, host) or re.match(regex, full_url):
+            # Use case-insensitive matching for hostnames (RFC 3986)
+            if re.match(regex, host, re.IGNORECASE) or re.match(regex, full_url, re.IGNORECASE):
                 vlog(f"Scope rule matched ({rule_type}): pattern={pattern} url={full_url}")
                 if rule_type == "include":
                     in_scope = True

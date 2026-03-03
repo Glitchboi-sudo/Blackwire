@@ -1902,7 +1902,7 @@ def _row_to_list_item(r):
             "timestamp": r[4], "request_type": r[5], "saved": bool(r[6]), "in_scope": bool(r[7])}
 
 @app.get("/api/requests")
-async def get_requests(limit: int = 500, saved_only: bool = False, in_scope_only: bool = False, search: str = ""):
+async def get_requests(limit: int = 10000, saved_only: bool = False, in_scope_only: bool = False, search: str = ""):
     async with await get_db() as db:
         query = f"SELECT {REQ_LIST_COLS} FROM requests WHERE 1=1"
         params = []
@@ -1936,7 +1936,9 @@ async def search_requests(body: dict = Body(...)):
     ast = body.get("ast")
     saved_only = body.get("saved_only", False)
     in_scope_only = body.get("in_scope_only", False)
-    limit = body.get("limit", 500)
+    page = body.get("page", 1)
+    page_size = body.get("page_size", 500)
+
     # Only use regex-capable connection when AST contains regex operators
     use_regex = ast is not None
     if use_regex:
@@ -1944,12 +1946,13 @@ async def search_requests(body: dict = Body(...)):
     else:
         db = await aiosqlite.connect(get_project_db(get_current_project()))
     try:
-        query = f"SELECT {REQ_LIST_COLS} FROM requests WHERE 1=1"
+        # Build base query for filtering
+        base_query = "FROM requests WHERE 1=1"
         params = []
         if saved_only:
-            query += " AND saved = 1"
+            base_query += " AND saved = 1"
         if in_scope_only:
-            query += " AND in_scope = 1"
+            base_query += " AND in_scope = 1"
         if ast:
             presets_map = {}
             cursor = await db.execute("SELECT name, ast_json FROM filter_presets")
@@ -1960,15 +1963,34 @@ async def search_requests(body: dict = Body(...)):
                     pass
             try:
                 where_sql, where_params = compile_httpql_ast(ast, presets_map)
-                query += f" AND ({where_sql})"
+                base_query += f" AND ({where_sql})"
                 params.extend(where_params)
             except ValueError as e:
                 return {"error": str(e)}
-        query += " ORDER BY id DESC LIMIT ?"
-        params.append(limit)
+
+        # Get total count
+        count_query = f"SELECT COUNT(*) {base_query}"
+        cursor = await db.execute(count_query, params)
+        total = (await cursor.fetchone())[0]
+
+        # Calculate pagination
+        total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+        offset = (page - 1) * page_size
+
+        # Get paginated results
+        query = f"SELECT {REQ_LIST_COLS} {base_query} ORDER BY id DESC LIMIT ? OFFSET ?"
+        params.append(page_size)
+        params.append(offset)
         cursor = await db.execute(query, params)
         rows = await cursor.fetchall()
-        return [_row_to_list_item(r) for r in rows]
+
+        return {
+            "requests": [_row_to_list_item(r) for r in rows],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages
+        }
     finally:
         await db.close()
 

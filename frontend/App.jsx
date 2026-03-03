@@ -483,6 +483,12 @@ function Blackwire() {
   const [selReqFull, setSelReqFull] = useState(null);
   const [detTab, setDetTab] = useState('request');
   const [histSubTab, setHistSubTab] = useState('http'); // 'http' | 'ws' | 'sitemap'
+
+  // Paginación
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalRequests, setTotalRequests] = useState(0);
+  const [pageSize, setPageSize] = useState(500);
   const [smExpanded, setSmExpanded] = useState({});
   const [smSelNode, setSmSelNode] = useState(null);
   const [smFilterMethod, setSmFilterMethod] = useState('');
@@ -854,6 +860,20 @@ function Blackwire() {
     loadGit();
   }, [curPrj]);
 
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    if (currentPage !== 1) {
+      setCurrentPage(1);
+    }
+  }, [savedOnly, scopeOnly, search]);
+
+  // Reload when page size changes
+  useEffect(() => {
+    if (curPrj && tab === 'history') {
+      loadReqs();
+    }
+  }, [pageSize]);
+
   // Ctrl+S para auto-commits
   useEffect(() => {
     const handleKeyDown = e => {
@@ -1045,21 +1065,47 @@ function Blackwire() {
     }
   };
 
-  const loadReqs = async (query, ast) => {
+  const loadReqs = async (query, ast, page) => {
     const q = query !== undefined ? query : search;
     const parsed = ast !== undefined ? ast : (q ? httpqlParse(q) : { ast: null, error: null });
     if (parsed.error) { setHttpqlError(parsed.error); return; }
     setHttpqlError(null);
     try {
-      const body = { limit: 500, saved_only: savedOnly, in_scope_only: scopeOnly };
+      const body = {
+        page: page !== undefined ? page : currentPage,
+        page_size: pageSize,
+        saved_only: savedOnly,
+        in_scope_only: scopeOnly
+      };
       if (parsed.ast) { body.query = q; body.ast = parsed.ast; }
       const r = await api.post('/api/requests/search', body);
       if (r.error) { setHttpqlError(r.error); return; }
-      setReqs(Array.isArray(r) ? r : []);
+
+      // Handle paginated response
+      if (r.requests) {
+        setReqs(r.requests);
+        setTotalPages(r.total_pages || 1);
+        setTotalRequests(r.total || 0);
+        setCurrentPage(r.page || 1);
+      } else {
+        // Fallback for old non-paginated response
+        setReqs(Array.isArray(r) ? r : []);
+      }
     } catch (e) {
       setHttpqlError('Search failed');
     }
   };
+  const goToPage = async (page) => {
+    if (page < 1 || page > totalPages) return;
+    setCurrentPage(page);
+    await loadReqs(undefined, undefined, page);
+  };
+
+  const nextPage = () => goToPage(currentPage + 1);
+  const prevPage = () => goToPage(currentPage - 1);
+  const firstPage = () => goToPage(1);
+  const lastPage = () => goToPage(totalPages);
+
   const loadRep = async () => setRepReqs(await api.get('/api/repeater'));
   const loadGit = async () => setCommits(await api.get('/api/git/history'));
   const loadScope = async () => {
@@ -3105,6 +3151,21 @@ function Blackwire() {
         navigator.clipboard.writeText(generateCurl(norm));
         toast('cURL copied', 'success');
         break;
+      case 'download-sqlmap':
+        const sqlmapRequest = generateSQLMapRequest(norm);
+        if (sqlmapRequest) {
+          const blob = new Blob([sqlmapRequest], { type: 'text/plain' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'sqlmap-request.txt';
+          a.click();
+          URL.revokeObjectURL(url);
+          toast('SQLMap request downloaded', 'success');
+        } else {
+          toast('Failed to generate SQLMap request', 'error');
+        }
+        break;
       case 'copy-body':
         const bodyToCopy = source === 'repeater-response' ? (req.response_body || '') : (norm.body || '');
         navigator.clipboard.writeText(bodyToCopy);
@@ -3195,6 +3256,36 @@ function Blackwire() {
       curl += " -d '" + req.body.replace(/'/g, "'\\''") + "'";
     }
     return curl;
+  };
+
+  const generateSQLMapRequest = req => {
+    // Generate HTTP request file for SQLMap (-r flag)
+    try {
+      const url = new URL(req.url);
+      const path = url.pathname + url.search;
+
+      let request = `${req.method} ${path} HTTP/1.1\r\n`;
+      request += `Host: ${url.host}\r\n`;
+
+      if (req.headers) {
+        Object.entries(req.headers).forEach(([k, v]) => {
+          // Skip Host header as we already added it
+          if (k.toLowerCase() !== 'host') {
+            request += `${k}: ${v}\r\n`;
+          }
+        });
+      }
+
+      request += '\r\n';
+
+      if (req.body) {
+        request += req.body;
+      }
+
+      return request;
+    } catch (e) {
+      return '';
+    }
   };
 
   const filtered = reqs;
@@ -3977,12 +4068,27 @@ function Blackwire() {
                     <div className={'flt-tog' + (savedOnly ? ' act' : '')} onClick={() => setSavedOnly(!savedOnly)}>★</div>
                   </div>
                   <div className="pnl-hdr">
-                    <span>{filtered.length} requests</span>
+                    <span>{totalRequests > 0 ? `${((currentPage - 1) * pageSize) + 1}-${Math.min(currentPage * pageSize, totalRequests)} of ${totalRequests}` : '0 requests'}</span>
                     <div className="acts">
                       <button className="btn btn-sm btn-s" onClick={loadReqs}>↻</button>
                       <button className="btn btn-sm btn-d" onClick={clearHist}>Clear</button>
                     </div>
                   </div>
+                  {totalPages > 1 && (
+                    <div className="pagination-bar">
+                      <button className="btn btn-sm btn-s" onClick={firstPage} disabled={currentPage === 1} title="First page">«</button>
+                      <button className="btn btn-sm btn-s" onClick={prevPage} disabled={currentPage === 1} title="Previous page">‹</button>
+                      <span className="pagination-info">Page {currentPage} of {totalPages}</span>
+                      <button className="btn btn-sm btn-s" onClick={nextPage} disabled={currentPage === totalPages} title="Next page">›</button>
+                      <button className="btn btn-sm btn-s" onClick={lastPage} disabled={currentPage === totalPages} title="Last page">»</button>
+                      <select className="pagination-size" value={pageSize} onChange={e => { setPageSize(Number(e.target.value)); setCurrentPage(1); }}>
+                        <option value="100">100</option>
+                        <option value="250">250</option>
+                        <option value="500">500</option>
+                        <option value="1000">1000</option>
+                      </select>
+                    </div>
+                  )}
                   <div className="pnl-cnt">
                     <div className="req-list">
                       {filtered.map(r => (
@@ -6060,9 +6166,14 @@ function Blackwire() {
                   </div>
                 )}
                 {hasRequest && (
-                  <div className="context-menu-item" onClick={() => handleContextAction('copy-curl')}>
-                    Copy as cURL
-                  </div>
+                  <>
+                    <div className="context-menu-item" onClick={() => handleContextAction('copy-curl')}>
+                      Copy as cURL
+                    </div>
+                    <div className="context-menu-item" onClick={() => handleContextAction('download-sqlmap')}>
+                      Download for SQLMap
+                    </div>
+                  </>
                 )}
                 {hasBody && (
                   <div className="context-menu-item" onClick={() => handleContextAction('copy-body')}>
