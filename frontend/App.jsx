@@ -450,6 +450,21 @@ function encodeJWT(header, payload, signature) {
   }
 }
 
+function parseHeaders(headersString) {
+  if (!headersString) return {};
+  const headers = {};
+  const lines = headersString.split('\n');
+  for (const line of lines) {
+    const colonIndex = line.indexOf(':');
+    if (colonIndex > 0) {
+      const key = line.substring(0, colonIndex).trim();
+      const value = line.substring(colonIndex + 1).trim();
+      if (key) headers[key] = value;
+    }
+  }
+  return headers;
+}
+
 function Blackwire() {
   // Estado principal
   const [tab, setTab] = useState('projects');
@@ -745,23 +760,88 @@ function Blackwire() {
 
   useEffect(() => {
     const handler = e => {
-      const selected = getSelectedText();
-      if (!selected) return;
+      // Skip if context menu was already handled by a specific element
       if (e.defaultPrevented) return;
+
       const target = e.target;
-      if (target && target.closest('input, textarea, [contenteditable="true"]')) return;
+      // Skip if inside input fields unless there's text selected
+      const selected = getSelectedText();
+      if (!selected && target && target.closest('input, textarea, [contenteditable="true"]')) return;
+
       e.preventDefault();
+
+      // Build context based on current tab and state
+      let contextSource = tab;
+      let contextRequest = {};
+      let contextNormalized = {};
+
+      if (selected) {
+        contextSource = 'selection';
+        contextRequest = { body: selected };
+        contextNormalized = { id: 'selection', method: 'TEXT', url: '', headers: {}, body: selected, source: 'selection' };
+      } else {
+        // Tab-specific context
+        switch (tab) {
+          case 'history':
+            if (selReqFull || selReq) {
+              const req = selReqFull || selReq;
+              contextSource = 'history';
+              contextRequest = req;
+              contextNormalized = normalizeRequest(req, 'history');
+            }
+            break;
+          case 'repeater':
+            contextSource = 'repeater';
+            contextRequest = { method: repM, url: repU, headers: repH, body: repB };
+            contextNormalized = { method: repM, url: repU, headers: parseHeaders(repH), body: repB };
+            if (repResp) {
+              contextRequest.response_body = repRespBody;
+              contextRequest.response_headers = repResp.headers;
+              contextRequest.response_status = repResp.status_code;
+            }
+            break;
+          case 'intercept':
+            if (editReq) {
+              contextSource = 'intercept';
+              contextRequest = editReq;
+              contextNormalized = normalizeRequest(editReq, 'intercept');
+            }
+            break;
+          case 'collections':
+            if (collItems.length > 0 && collStep >= 0 && collItems[collStep]) {
+              const item = collItems[collStep];
+              contextSource = 'collection';
+              contextRequest = item;
+              contextNormalized = normalizeRequest(item, 'collection');
+            }
+            break;
+          case 'chepy':
+            contextSource = 'chepy';
+            contextRequest = { body: chepyOut };
+            contextNormalized = { body: chepyOut };
+            break;
+          case 'websockets':
+            if (selWsFrame) {
+              contextSource = 'websocket';
+              contextRequest = { ...selWsFrame, url: selWsConn, method: 'WS', body: selWsFrame.content };
+              contextNormalized = normalizeRequest(contextRequest, 'websocket');
+            }
+            break;
+        }
+      }
+
       setContextMenu({
         x: e.clientX,
         y: e.clientY,
-        source: 'selection',
-        request: { body: selected },
-        normalized: { id: 'selection', method: 'TEXT', url: '', headers: {}, body: selected, source: 'selection' }
+        source: contextSource,
+        request: contextRequest,
+        normalized: contextNormalized,
+        currentTab: tab
       });
     };
     document.addEventListener('contextmenu', handler);
     return () => document.removeEventListener('contextmenu', handler);
-  }, []);
+  }, [tab, selReq, selReqFull, repM, repU, repH, repB, repResp, repRespBody, editReq, collItems, collStep, chepyOut, selWsFrame, selWsConn, selRep]);
 
   useEffect(() => {
     if (!curPrj) return;
@@ -1177,7 +1257,7 @@ function Blackwire() {
         const r = await api.post('/api/projects/import', data);
         if (r && r.status === 'imported') {
           toast(`Project "${data.project_name}" created successfully! ${r.stats?.total_requests || 0} requests imported.`, 'success');
-          await loadProjects();
+          await loadPrjs();
         } else {
           toast('Import failed', 'error');
         }
@@ -2923,7 +3003,11 @@ function Blackwire() {
     if (!el) return;
     const bodyFmt = formatBody(repB || '', 'pretty');
     const html = bodyFmt.html ? bodyFmt.text : escapeHtml(bodyFmt.text || '');
-    if (el.innerHTML !== html) el.innerHTML = html;
+    // Always update innerHTML to ensure content is shown after remounting
+    const currentContent = el.innerHTML;
+    if (currentContent !== html || currentContent === '') {
+      el.innerHTML = html;
+    }
     if (repBodyCaretRef.current != null) setCaretOffset(el, repBodyCaretRef.current);
   }, [repB, repBodyColor]);
 
@@ -3022,12 +3106,22 @@ function Blackwire() {
         toast('cURL copied', 'success');
         break;
       case 'copy-body':
-        navigator.clipboard.writeText(norm.body || '');
+        const bodyToCopy = source === 'repeater-response' ? (req.response_body || '') : (norm.body || '');
+        navigator.clipboard.writeText(bodyToCopy);
         toast('Body copied', 'success');
         break;
       case 'download-body':
         if (source === 'history' && req.id) {
           window.open(API + '/api/requests/' + req.id + '/download-body', '_blank');
+          toast('Downloading body...', 'success');
+        } else if (source === 'repeater-response' && req.response_body) {
+          const blob = new Blob([req.response_body], { type: 'application/octet-stream' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'response-body.txt';
+          a.click();
+          URL.revokeObjectURL(url);
           toast('Downloading body...', 'success');
         }
         break;
@@ -3041,11 +3135,18 @@ function Blackwire() {
         if (source === 'history' && req.id) {
           window.open(API + '/api/requests/' + req.id + '/render', '_blank');
           toast('Rendering response...', 'success');
+        } else if (source === 'repeater-response' && req.response_body) {
+          const blob = new Blob([req.response_body], { type: 'text/html' });
+          const url = URL.createObjectURL(blob);
+          window.open(url, '_blank');
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+          toast('Rendering response...', 'success');
         }
         break;
       case 'send-to-cipher':
-        if (norm.body) {
-          setChepyIn(norm.body);
+        const bodyToSend = source === 'repeater-response' ? (req.response_body || '') : (norm.body || '');
+        if (bodyToSend) {
+          setChepyIn(bodyToSend);
           setTab('chepy');
           toast('Sent to Cipher', 'success');
         } else {
@@ -4508,7 +4609,8 @@ function Blackwire() {
                   {repResp && repResp.error ? (
                     <div className="code">{repResp.error}</div>
                   ) : repResp ? (
-                    <>
+                    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}
+                         onContextMenu={e => showContextMenu(e, { method: repM, url: repU, headers: repH, body: repRespBody, response_body: repRespBody, response_headers: repResp.headers, response_status: repResp.status_code }, 'repeater-response')}>
                       {repResp.redirect_chain && repResp.redirect_chain.length > 0 && (
                         <div style={{ padding: '6px 10px', background: 'var(--bg3)', borderBottom: '1px solid var(--brd)', fontSize: '10px', fontFamily: 'var(--font-mono)', flexShrink: 0, overflow: 'auto', maxHeight: '120px' }}>
                           <div style={{ color: 'var(--cyan)', marginBottom: '4px', fontWeight: 600 }}>Redirect chain ({repResp.redirect_chain.length} hops):</div>
@@ -4580,7 +4682,7 @@ function Blackwire() {
                         <button className="srch-btn" onClick={() => setRepBodySearchIdx(i => repBodySearchCount > 0 ? (i + 1) % repBodySearchCount : 0)} disabled={repBodySearchCount === 0}>▼</button>
                         <button className="srch-btn" onClick={() => { setRepBodySearch(''); setRepBodySearchIdx(0); setRepBodySearchCount(0); }}>✕</button>
                       </div>
-                    </>
+                    </div>
                   ) : (
                     <div className="code">Send a request</div>
                   )}
@@ -5909,94 +6011,121 @@ function Blackwire() {
 
       {contextMenu && (
         <div ref={ctxMenuRef} className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={e => e.stopPropagation()}>
-          {(contextMenu.normalized?.body || contextMenu.source === 'selection') && (
-            <div className="context-menu-item" onClick={() => handleContextAction('send-to-cipher')}>
-              Send to Cipher
-            </div>
-          )}
-          {contextMenu.source !== 'websocket' && (
-            <div className="context-menu-item" onClick={() => handleContextAction('repeater')}>
-              Send to Repeater
-            </div>
-          )}
-          {contextMenu.source !== 'websocket' && (
-            <div className="context-menu-item" onClick={() => handleContextAction('intruder')}>
-              Send to Intruder
-            </div>
-          )}
-          <div className="context-menu-item" onClick={() => handleContextAction('add-to-collection')}>
-            Add to Collection
-          </div>
-          {contextMenu.source !== 'websocket' && contextMenu.source !== 'selection' && (
-            <React.Fragment>
-              <div className="context-menu-item" onClick={() => handleContextAction('compare-a')}>
-                Send to Compare (A)
-              </div>
-              <div className="context-menu-item" onClick={() => handleContextAction('compare-b')}>
-                Send to Compare (B)
-              </div>
-            </React.Fragment>
-          )}
-          <div className="context-menu-divider" />
-          <div className="context-menu-item" onClick={() => handleContextAction('copy-url')}>
-            Copy URL
-          </div>
-          {contextMenu.source !== 'websocket' && (
-            <div className="context-menu-item" onClick={() => handleContextAction('copy-curl')}>
-              Copy as cURL
-            </div>
-          )}
-          <div className="context-menu-item" onClick={() => handleContextAction('copy-body')}>
-            Copy Body
-          </div>
-          {contextMenu.source !== 'websocket' && contextMenu.source !== 'selection' && contextMenu.normalized?.body && (
-            <div className="context-menu-item" onClick={() => handleContextAction('download-body')}>
-              Download Body
-            </div>
-          )}
-          {contextMenu.source !== 'websocket' && contextMenu.source !== 'selection' && (
-            <div className="context-menu-item" onClick={() => handleContextAction('replay-browser')}>
-              Replay in Browser
-            </div>
-          )}
-          {contextMenu.source !== 'websocket' && contextMenu.source !== 'selection' && (
-            <div className="context-menu-item" onClick={() => handleContextAction('render-browser')}>
-              Render in Browser
-            </div>
-          )}
-          {contextMenu.normalized?.url && (
-            <React.Fragment>
-              <div className="context-menu-divider" />
-              <div className="context-menu-item" onClick={() => handleContextAction('scope-include')}>
-                Add host to Scope
-              </div>
-              <div className="context-menu-item" onClick={() => handleContextAction('scope-exclude')}>
-                Exclude host to Scope
-              </div>
-            </React.Fragment>
-          )}
-          {contextMenu.source === 'history' && (
-            <React.Fragment>
-              <div className="context-menu-divider" />
-              <div className="context-menu-item" onClick={() => handleContextAction('favorite')}>
-                {contextMenu.request.saved ? 'Unmark' : 'Mark'} as Favorite
-              </div>
-              <div className="context-menu-item" onClick={() => handleContextAction('delete')}>
-                Delete
-              </div>
-            </React.Fragment>
-          )}
-          {contextMenu.source === 'repeater' && (
-            <React.Fragment>
-              <div className="context-menu-divider" />
-              <div className="context-menu-item" onClick={() => handleContextAction('rename')}>
-                Rename
-              </div>
-              <div className="context-menu-item" onClick={() => handleContextAction('delete')}>
-                Delete
-              </div>
-            </React.Fragment>
-          )}
+          {(() => {
+            const hasBody = contextMenu.normalized?.body || contextMenu.request?.response_body || contextMenu.source === 'selection';
+            const hasUrl = contextMenu.normalized?.url;
+            const isSelection = contextMenu.source === 'selection';
+            const currentTab = contextMenu.currentTab;
+            const hasRequest = contextMenu.normalized?.method && contextMenu.normalized?.url;
+
+            return (
+              <>
+                {/* Send to Tools */}
+                {hasBody && (
+                  <div className="context-menu-item" onClick={() => handleContextAction('send-to-cipher')}>
+                    Send to Cipher
+                  </div>
+                )}
+                {hasRequest && !isSelection && currentTab !== 'repeater' && currentTab !== 'intruder' && (
+                  <>
+                    <div className="context-menu-item" onClick={() => handleContextAction('repeater')}>
+                      Send to Repeater
+                    </div>
+                    <div className="context-menu-item" onClick={() => handleContextAction('intruder')}>
+                      Send to Intruder
+                    </div>
+                  </>
+                )}
+                {hasRequest && !isSelection && currentTab !== 'collections' && (
+                  <div className="context-menu-item" onClick={() => handleContextAction('add-to-collection')}>
+                    Add to Collection
+                  </div>
+                )}
+                {hasRequest && !isSelection && currentTab !== 'compare' && (
+                  <>
+                    <div className="context-menu-item" onClick={() => handleContextAction('compare-a')}>
+                      Send to Compare (A)
+                    </div>
+                    <div className="context-menu-item" onClick={() => handleContextAction('compare-b')}>
+                      Send to Compare (B)
+                    </div>
+                  </>
+                )}
+
+                {/* Copy/Download Actions */}
+                {(hasBody || hasUrl) && <div className="context-menu-divider" />}
+                {hasUrl && (
+                  <div className="context-menu-item" onClick={() => handleContextAction('copy-url')}>
+                    Copy URL
+                  </div>
+                )}
+                {hasRequest && (
+                  <div className="context-menu-item" onClick={() => handleContextAction('copy-curl')}>
+                    Copy as cURL
+                  </div>
+                )}
+                {hasBody && (
+                  <div className="context-menu-item" onClick={() => handleContextAction('copy-body')}>
+                    Copy Body
+                  </div>
+                )}
+                {hasBody && !isSelection && (
+                  <div className="context-menu-item" onClick={() => handleContextAction('download-body')}>
+                    Download Body
+                  </div>
+                )}
+
+                {/* Browser Actions */}
+                {hasRequest && !isSelection && currentTab === 'history' && (
+                  <div className="context-menu-item" onClick={() => handleContextAction('replay-browser')}>
+                    Replay in Browser
+                  </div>
+                )}
+                {(hasBody || hasRequest) && !isSelection && (
+                  <div className="context-menu-item" onClick={() => handleContextAction('render-browser')}>
+                    Render in Browser
+                  </div>
+                )}
+
+                {/* Scope Actions */}
+                {hasUrl && !isSelection && currentTab !== 'scope' && (
+                  <>
+                    <div className="context-menu-divider" />
+                    <div className="context-menu-item" onClick={() => handleContextAction('scope-include')}>
+                      Add host to Scope
+                    </div>
+                    <div className="context-menu-item" onClick={() => handleContextAction('scope-exclude')}>
+                      Exclude host from Scope
+                    </div>
+                  </>
+                )}
+
+                {/* Tab-Specific Actions */}
+                {currentTab === 'history' && contextMenu.request.id && (
+                  <>
+                    <div className="context-menu-divider" />
+                    <div className="context-menu-item" onClick={() => handleContextAction('favorite')}>
+                      {contextMenu.request.saved ? 'Unmark' : 'Mark'} as Favorite
+                    </div>
+                    <div className="context-menu-item" onClick={() => handleContextAction('delete')}>
+                      Delete Request
+                    </div>
+                  </>
+                )}
+                {currentTab === 'repeater' && selRep && (
+                  <>
+                    <div className="context-menu-divider" />
+                    <div className="context-menu-item" onClick={() => renameRepItem(selRep)}>
+                      Rename Saved Request
+                    </div>
+                    <div className="context-menu-item" onClick={() => delRepItem(selRep)}>
+                      Delete Saved Request
+                    </div>
+                  </>
+                )}
+              </>
+            );
+          })()}
         </div>
       )}
 

@@ -1148,7 +1148,7 @@ async def export_project(name: str):
         cursor = await db.execute("SELECT * FROM collections")
         collections = []
         for row in await cursor.fetchall():
-            collections.append({"name": row[1], "description": row[2], "created_at": row[3]})
+            collections.append({"id": row[0], "name": row[1], "description": row[2], "created_at": row[3]})
 
         # Collection items (estructura correcta)
         cursor = await db.execute("SELECT * FROM collection_items")
@@ -1517,18 +1517,25 @@ async def import_project_create(data: dict = Body(...)):
             """, (rep["name"], rep["method"], rep["url"], rep["headers"], rep.get("body"),
                   rep["created_at"], rep.get("last_response")))
 
-        # Importar collections (con description)
+        # Importar collections (con description) y mapear IDs
+        collection_id_map = {}
         for coll in data["data"].get("collections", []):
-            await db.execute("""
+            cursor = await db.execute("""
                 INSERT INTO collections (name, description, created_at) VALUES (?, ?, ?)
             """, (coll["name"], coll.get("description", ""), coll["created_at"]))
+            new_id = cursor.lastrowid
+            old_id = coll.get("id")
+            if old_id is not None:
+                collection_id_map[old_id] = new_id
 
-        # Importar collection items (estructura correcta)
+        # Importar collection items (estructura correcta) usando el mapeo de IDs
         for item in data["data"].get("collection_items", []):
+            old_coll_id = item["collection_id"]
+            new_coll_id = collection_id_map.get(old_coll_id, old_coll_id)
             await db.execute("""
                 INSERT INTO collection_items (collection_id, position, method, url, headers, body, var_extracts, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (item["collection_id"], item["position"], item["method"], item["url"],
+            """, (new_coll_id, item["position"], item["method"], item["url"],
                   item.get("headers", "{}"), item.get("body"), item.get("var_extracts", "[]"),
                   item["created_at"]))
 
@@ -1603,18 +1610,25 @@ async def import_project_merge(name: str, data: dict = Body(...), clear_existing
             """, (rep["name"], rep["method"], rep["url"], rep["headers"], rep.get("body"),
                   rep["created_at"], rep.get("last_response")))
 
-        # Importar collections
+        # Importar collections y mapear IDs
+        collection_id_map = {}
         for coll in data["data"].get("collections", []):
-            await db.execute("""
+            cursor = await db.execute("""
                 INSERT INTO collections (name, description, created_at) VALUES (?, ?, ?)
             """, (coll["name"], coll.get("description", ""), coll["created_at"]))
+            new_id = cursor.lastrowid
+            old_id = coll.get("id")
+            if old_id is not None:
+                collection_id_map[old_id] = new_id
 
-        # Importar collection items
+        # Importar collection items usando el mapeo de IDs
         for item in data["data"].get("collection_items", []):
+            old_coll_id = item["collection_id"]
+            new_coll_id = collection_id_map.get(old_coll_id, old_coll_id)
             await db.execute("""
                 INSERT INTO collection_items (collection_id, position, method, url, headers, body, var_extracts, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (item["collection_id"], item["position"], item["method"], item["url"],
+            """, (new_coll_id, item["position"], item["method"], item["url"],
                   item.get("headers", "{}"), item.get("body"), item.get("var_extracts", "[]"),
                   item["created_at"]))
 

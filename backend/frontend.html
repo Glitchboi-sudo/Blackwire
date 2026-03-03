@@ -159,7 +159,7 @@
 .hdr-key{color:var(--cyan);font-weight:500}
 .hdr-sep{color:var(--txt3)}
 .hdr-val{color:var(--orange)}
-.hdr-wrap{position:relative;width:100%;display:flex;flex-direction:column}
+.hdr-wrap{position:relative;width:100%;display:flex;flex-direction:column;overflow:auto}
 .hdr-highlight{position:absolute;top:0;left:0;right:0;bottom:0;margin:0;border:1px solid transparent;white-space:pre-wrap;word-wrap:break-word;overflow:hidden;pointer-events:none;box-sizing:border-box}
 .hdr-ta{background:transparent!important;color:transparent!important;caret-color:var(--txt);position:relative;z-index:1;flex:1}
 .int-payloads{flex:1;overflow:auto;padding:14px}
@@ -179,6 +179,10 @@
 .int-section h4{margin:0 0 10px 0;font-size:12px;color:var(--txt2)}
 .int-stats{display:flex;gap:16px;align-items:center;font-size:11px;color:var(--txt3)}
 .int-pos-tag{display:inline-flex;align-items:center;gap:4px;font-size:10px;padding:2px 8px;background:var(--bg3);border:1px solid var(--brd);border-radius:4px;color:var(--orange);font-family:'JetBrains Mono',monospace}
+.context-menu{position:fixed;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;padding:4px;min-width:180px;box-shadow:0 4px 12px rgba(0,0,0,0.3);z-index:10000}
+.context-menu-item{padding:8px 12px;font-size:12px;cursor:pointer;border-radius:4px;color:var(--txt);transition:background 0.15s}
+.context-menu-item:hover{background:var(--bg3);color:var(--cyan)}
+.context-menu-divider{height:1px;background:var(--brd);margin:4px 0}
 </style></head><body><div id="root"></div>
 <script src="/themes.js"></script>
 <script src="/App.jsx"></script></body></html>
