@@ -759,8 +759,7 @@ def transpile_jsx():
         "const {transform}=require('sucrase'),fs=require('fs');"
         f"const code=fs.readFileSync({str(APP_JSX_PATH)!r},'utf8');"
         "const r=transform(code,{transforms:['jsx'],production:true});"
-        "const wrapped='(function(){\\n'+r.code+'\\n})();';"
-        f"fs.writeFileSync({str(APP_COMPILED_PATH)!r},wrapped,'utf8');"
+        f"fs.writeFileSync({str(APP_COMPILED_PATH)!r},r.code,'utf8');"
         "console.log('OK:'+r.code.length)"
     )
     try:
@@ -820,6 +819,30 @@ async def themes_js():
     if THEMES_JS_PATH.exists():
         return FileResponse(THEMES_JS_PATH, media_type="text/javascript", headers=_static_headers())
     raise HTTPException(status_code=404, detail="themes.js not found")
+
+@app.get("/src/utils/{filename}")
+async def serve_utils(filename: str):
+    """Serve utility modules from src/utils/ directory"""
+    utils_path = FRONTEND_DIR / "src" / "utils" / filename
+    if utils_path.exists() and utils_path.suffix == ".js":
+        return FileResponse(utils_path, media_type="text/javascript", headers=_static_headers())
+    raise HTTPException(status_code=404, detail=f"Utility module {filename} not found")
+
+@app.get("/src/services/{filename}")
+async def serve_services(filename: str):
+    """Serve service modules from src/services/ directory"""
+    services_path = FRONTEND_DIR / "src" / "services" / filename
+    if services_path.exists() and services_path.suffix == ".js":
+        return FileResponse(services_path, media_type="text/javascript", headers=_static_headers())
+    raise HTTPException(status_code=404, detail=f"Service module {filename} not found")
+
+@app.get("/src/hooks/{filename}")
+async def serve_hooks(filename: str):
+    """Serve custom hooks from src/hooks/ directory"""
+    hooks_path = FRONTEND_DIR / "src" / "hooks" / filename
+    if hooks_path.exists() and hooks_path.suffix == ".js":
+        return FileResponse(hooks_path, media_type="text/javascript", headers=_static_headers())
+    raise HTTPException(status_code=404, detail=f"Hook module {filename} not found")
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -1494,6 +1517,10 @@ async def import_project_create(data: dict = Body(...)):
 
     # Inicializar DB
     await init_db(project_name)
+
+    # Inicializar Git
+    git = GitManager(project_name)
+    await git.init_repo()
 
     # Importar datos
     db_path = get_project_db(project_name)
@@ -2493,7 +2520,10 @@ async def execute_collection_item(cid: int, iid: int, data: CollectionItemExecut
 
 
 @app.post("/api/git/commit")
-async def create_commit(message: str):
+async def create_commit(body: dict = Body(...)):
+    message = body.get("message", "")
+    if not message:
+        raise HTTPException(status_code=422, detail="Commit message required")
     project = get_current_project()
     if not project:
         raise HTTPException(status_code=400)

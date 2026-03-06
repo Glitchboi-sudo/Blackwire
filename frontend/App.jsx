@@ -1,204 +1,112 @@
+import api from './src/utils/api.js';
+import {
+  calculateEntropy,
+  base64urlDecode,
+  base64urlEncode,
+  decodeJWT,
+  encodeJWT
+} from './src/utils/encoding.js';
+import {
+  escapeHtml,
+  getCaretOffset,
+  setCaretOffset
+} from './src/utils/dom-utils.js';
+import { detectLanguage } from './src/utils/language-detect.js';
+import {
+  generateCurl,
+  generateSQLMapRequest,
+  generatePayloadList,
+  generateAttackCombinations
+} from './src/utils/generators.js';
+import {
+  buildIntRequest,
+  normalizeRequest
+} from './src/utils/request-utils.js';
+import {
+  prettyPrint,
+  minify,
+  formatXml,
+  fmtH,
+  fmtHHtml,
+  colorizeHeaders,
+  buildCmpText,
+  fmtTime,
+  stCls
+} from './src/utils/formatters.js';
+import {
+  httpqlTokenize,
+  httpqlParse,
+  diffLines,
+  parseHeaders,
+  parseIntPositions,
+  SENS_GENERAL,
+  SENS_TOKENS,
+  SENS_URLS,
+  SENS_FILES,
+  SENS_COLORS,
+  SENS_DEFAULT_PATTERNS
+} from './src/utils/parsing.js';
+import {
+  buildHighlighter,
+  syntaxHighlightJSON,
+  syntaxHighlightXML,
+  syntaxHighlightProto,
+  syntaxHighlightHTML,
+  syntaxHighlightCSS,
+  syntaxHighlightJS,
+  syntaxHighlightPython,
+  syntaxHighlightPHP,
+  syntaxHighlightSQL,
+  syntaxHighlightYAML,
+  syntaxHighlightGraphQL,
+  syntaxHighlightShell
+} from './src/utils/syntax-highlight.js';
+
+// Services
+import { projectService } from './src/services/projectService.js';
+import { requestService } from './src/services/requestService.js';
+import { repeaterService } from './src/services/repeaterService.js';
+import { interceptService } from './src/services/interceptService.js';
+import { scopeService } from './src/services/scopeService.js';
+import { collectionService } from './src/services/collectionService.js';
+import { sessionService } from './src/services/sessionService.js';
+import { chepyService } from './src/services/chepyService.js';
+import { websocketService } from './src/services/websocketService.js';
+import { intruderService } from './src/services/intruderService.js';
+import { extensionService } from './src/services/extensionService.js';
+import { webhookService } from './src/services/webhookService.js';
+import { gitService } from './src/services/gitService.js';
+import { proxyService } from './src/services/proxyService.js';
+
+// Custom Hooks
+import { usePagination } from './src/hooks/usePagination.js';
+import { useLocalStorage } from './src/hooks/useLocalStorage.js';
+import { useBodySearch } from './src/hooks/useBodySearch.js';
+
+// Domain Hooks
+import { useToast } from './src/hooks/useToast.js';
+import { useProxy } from './src/hooks/useProxy.js';
+import { useGit } from './src/hooks/useGit.js';
+import { useScope } from './src/hooks/useScope.js';
+import { useIntercept } from './src/hooks/useIntercept.js';
+import { useSessionRules } from './src/hooks/useSessionRules.js';
+import { useChepy } from './src/hooks/useChepy.js';
+import { useWebSockets } from './src/hooks/useWebSockets.js';
+import { useExtensions } from './src/hooks/useExtensions.js';
+import { useWebhook } from './src/hooks/useWebhook.js';
+import { useProjects } from './src/hooks/useProjects.js';
+import { useRequests } from './src/hooks/useRequests.js';
+import { useRepeater } from './src/hooks/useRepeater.js';
+import { useCollections } from './src/hooks/useCollections.js';
+import { useIntruder } from './src/hooks/useIntruder.js';
+import { useSensitive } from './src/hooks/useSensitive.js';
+
 const { useState, useEffect, useRef } = React;
 
 const API = '';
 const WS_URL = 'ws://' + location.host + '/ws';
 
 const THEMES = window.BW_THEMES || {};
-
-// --- HTTPQL Parser ---
-const HTTPQL_REQ_FIELDS = ['method','host','path','port','ext','query','raw','len','tls'];
-const HTTPQL_RESP_FIELDS = ['code','raw','len'];
-const HTTPQL_STR_OPS = ['eq','ne','cont','ncont','like','nlike','regex','nregex'];
-const HTTPQL_NUM_OPS = ['eq','ne','gt','gte','lt','lte'];
-const HTTPQL_BOOL_OPS = ['eq','ne'];
-
-function httpqlTokenize(input) {
-  const tokens = [];
-  let i = 0;
-  while (i < input.length) {
-    if (/\s/.test(input[i])) { i++; continue; }
-    if (input[i] === '(') { tokens.push({ type: 'LPAREN', pos: i }); i++; continue; }
-    if (input[i] === ')') { tokens.push({ type: 'RPAREN', pos: i }); i++; continue; }
-    if (input[i] === ':') { tokens.push({ type: 'COLON', pos: i }); i++; continue; }
-    if (input[i] === '"') {
-      let s = '', j = i + 1, esc = false;
-      while (j < input.length) {
-        if (esc) { s += input[j]; esc = false; }
-        else if (input[j] === '\\') esc = true;
-        else if (input[j] === '"') break;
-        else s += input[j];
-        j++;
-      }
-      if (j >= input.length) return { tokens, error: 'Unterminated string at position ' + i };
-      tokens.push({ type: 'STRING', value: s, pos: i });
-      i = j + 1;
-      continue;
-    }
-    // Word: identifiers, dotted paths, numbers
-    const wordRe = /^[a-zA-Z0-9_.%*?\-\/&+=@:]+/;
-    const rest = input.slice(i);
-    const m = rest.match(wordRe);
-    if (m) {
-      const w = m[0];
-      // Check if it's a dotted comparison like req.method.eq:value — split on last colon
-      // Actually, handle colon as separate token if it separates field.op from value
-      // Parse word up to a colon that looks like operator:value
-      const colonIdx = w.indexOf(':');
-      let word = w;
-      if (colonIdx > 0) {
-        word = w.slice(0, colonIdx);
-        tokens.push({ type: 'IDENT', value: word, pos: i });
-        i += colonIdx;
-        continue; // colon will be picked up next iteration
-      }
-      const upper = word.toUpperCase();
-      if (upper === 'AND') tokens.push({ type: 'AND', pos: i });
-      else if (upper === 'OR') tokens.push({ type: 'OR', pos: i });
-      else tokens.push({ type: 'IDENT', value: word, pos: i });
-      i += word.length;
-      continue;
-    }
-    return { tokens, error: 'Unexpected character \'' + input[i] + '\' at position ' + i };
-  }
-  tokens.push({ type: 'EOF', pos: i });
-  return { tokens, error: null };
-}
-
-function httpqlParse(input) {
-  input = input.trim();
-  if (!input) return { ast: null, error: null };
-  const { tokens, error: tokErr } = httpqlTokenize(input);
-  if (tokErr) return { ast: null, error: tokErr };
-  let pos = 0;
-  const peek = () => tokens[pos] || { type: 'EOF' };
-  const advance = () => tokens[pos++];
-
-  function parseOr() {
-    let left = parseAnd();
-    while (peek().type === 'OR') {
-      advance();
-      const right = parseAnd();
-      if (left.type === 'or') { left.children.push(right); }
-      else { left = { type: 'or', children: [left, right] }; }
-    }
-    return left;
-  }
-
-  function parseAnd() {
-    let left = parseAtom();
-    while (true) {
-      const p = peek();
-      if (p.type === 'AND') { advance(); left = mergeAnd(left, parseAtom()); continue; }
-      // Implicit AND: next token starts a new clause
-      if (p.type === 'IDENT' || p.type === 'STRING' || p.type === 'LPAREN') {
-        left = mergeAnd(left, parseAtom());
-        continue;
-      }
-      break;
-    }
-    return left;
-  }
-
-  function mergeAnd(left, right) {
-    if (left.type === 'and') { left.children.push(right); return left; }
-    return { type: 'and', children: [left, right] };
-  }
-
-  function parseAtom() {
-    const tok = peek();
-    if (tok.type === 'LPAREN') {
-      advance();
-      const expr = parseOr();
-      if (peek().type !== 'RPAREN') throw new Error('Expected ) at position ' + peek().pos);
-      advance();
-      return expr;
-    }
-    if (tok.type === 'STRING') {
-      advance();
-      return { type: 'shorthand', value: tok.value };
-    }
-    if (tok.type === 'IDENT') {
-      const ident = tok.value;
-      advance();
-      // preset:value
-      if (ident === 'preset' && peek().type === 'COLON') {
-        advance();
-        const val = parseValue();
-        return { type: 'preset', name: val };
-      }
-      // namespace.field.operator:value
-      const parts = ident.split('.');
-      if (parts.length !== 3) throw new Error('Expected namespace.field.operator at position ' + tok.pos + ', got "' + ident + '"');
-      const [ns, field, op] = parts;
-      if (ns !== 'req' && ns !== 'resp') throw new Error('Unknown namespace "' + ns + '" at position ' + tok.pos);
-      const validFields = ns === 'req' ? HTTPQL_REQ_FIELDS : HTTPQL_RESP_FIELDS;
-      if (!validFields.includes(field)) throw new Error('Unknown field "' + ns + '.' + field + '" at position ' + tok.pos);
-      const isNum = ['port','len','code'].includes(field);
-      const isBool = field === 'tls';
-      const validOps = isBool ? HTTPQL_BOOL_OPS : isNum ? HTTPQL_NUM_OPS : HTTPQL_STR_OPS;
-      if (!validOps.includes(op)) throw new Error('Operator "' + op + '" not valid for ' + ns + '.' + field);
-      if (peek().type !== 'COLON') throw new Error('Expected : after ' + ident + ' at position ' + peek().pos);
-      advance();
-      const val = parseValue();
-      return { type: 'comparison', namespace: ns, field, operator: op, value: val };
-    }
-    throw new Error('Unexpected token at position ' + tok.pos);
-  }
-
-  function parseValue() {
-    const tok = peek();
-    if (tok.type === 'STRING') { advance(); return tok.value; }
-    if (tok.type === 'IDENT') { advance(); return tok.value; }
-    throw new Error('Expected value at position ' + tok.pos);
-  }
-
-  try {
-    const ast = parseOr();
-    if (peek().type !== 'EOF') throw new Error('Unexpected input at position ' + peek().pos);
-    return { ast, error: null };
-  } catch (e) {
-    return { ast: null, error: e.message };
-  }
-}
-
-// --- Diff Algorithm (LCS-based) ---
-function diffLines(textA, textB) {
-  const a = (textA || '').split('\n');
-  const b = (textB || '').split('\n');
-  const m = a.length, n = b.length;
-  // Fallback for very large texts
-  if (m > 5000 || n > 5000) {
-    const max = Math.max(m, n);
-    const result = [];
-    for (let i = 0; i < max; i++) {
-      const la = i < m ? a[i] : null;
-      const lb = i < n ? b[i] : null;
-      if (la === lb) result.push({ type: 'equal', lineA: la, lineB: lb });
-      else {
-        if (la !== null) result.push({ type: 'removed', lineA: la, lineB: null });
-        if (lb !== null) result.push({ type: 'added', lineA: null, lineB: lb });
-      }
-    }
-    return result;
-  }
-  const dp = Array.from({ length: m + 1 }, () => new Uint16Array(n + 1));
-  for (let i = 1; i <= m; i++)
-    for (let j = 1; j <= n; j++)
-      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]);
-  const result = [];
-  let i = m, j = n;
-  while (i > 0 || j > 0) {
-    if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) {
-      result.push({ type: 'equal', lineA: a[i - 1], lineB: b[j - 1] });
-      i--; j--;
-    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
-      result.push({ type: 'added', lineA: null, lineB: b[--j] });
-    } else {
-      result.push({ type: 'removed', lineA: a[--i], lineB: null });
-    }
-  }
-  return result.reverse();
-}
 
 // --- Site Map Tree Builder ---
 function buildSiteTree(reqs) {
@@ -311,184 +219,17 @@ function highlightMatches(text, pattern, isRegex, currentIdx) {
   }
 }
 
-// --- Sensitive Patterns ---
-const SENS_GENERAL = [
-  { name: 'Certificate/Key', regex: '-----BEGIN', category: 'Data Security', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'Generic API Key', regex: "(?:api).{0,5}(?:key)[^&|;?,]{0,32}?['\"][a-zA-Z0-9_\\-+=\\/\\\\]{10,}['\"]", category: 'Credentials', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'Generic Secret', regex: "(?:secret)[^&|;?,]{0,32}?['\"][a-zA-Z0-9_\\-+=\\/\\\\]{10,}['\"]", category: 'Credentials', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'Generic Token', regex: "(?:token)[^&|;?,]{0,32}?['\"][a-zA-Z0-9_\\-+=\\/\\\\]{10,}['\"]", category: 'Credentials', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'Generic Password', regex: "(?:password|passwd|pwd)[^&|;?,]{0,32}?['\"][^'\"]{6,}['\"]", category: 'Credentials', sections: ['respHeaders','respBody'], enabled: true },
-  { name: '.env Config', regex: '\\.env', category: 'Configuration', sections: ['respBody'], enabled: true },
-  { name: 'Private IPv4', regex: '(?:10\\.(?:[0-9]{1,3}\\.){2}[0-9]{1,3}|172\\.(?:1[6-9]|2[0-9]|3[01])\\.(?:[0-9]{1,3}\\.)[0-9]{1,3}|192\\.168\\.[0-9]{1,3}\\.[0-9]{1,3})', category: 'Network', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'Email Address', regex: '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]{3,128}\\.[a-zA-Z]{2,32}', category: 'Contact', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'Basic Auth Header', regex: 'Basic\\s+[A-Za-z0-9+/=]{10,}', category: 'Credentials', sections: ['reqHeaders','respHeaders'], enabled: true },
-  { name: 'Bearer Token Header', regex: 'Bearer\\s+[A-Za-z0-9._~+/=-]{10,}', category: 'Credentials', sections: ['reqHeaders','respHeaders'], enabled: true },
-  { name: 'JDBC Connection String', regex: 'jdbc:[a-z:]+://[^\\s"\']+', category: 'Configuration', sections: ['respBody'], enabled: true },
-  { name: 'SSH Private Key', regex: '-----BEGIN (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----', category: 'Data Security', sections: ['respBody'], enabled: true },
-];
-
-const SENS_TOKENS = [
-  { name: 'AWS Access Key ID', regex: '(?:A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}', category: 'AWS', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'AWS Secret Key', regex: "(?:aws)[^;]{0,32}?['\"][0-9a-zA-Z/+=]{40}['\"]", category: 'AWS', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'Amazon MWS Token', regex: 'amzn\\.mws\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', category: 'Amazon', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'Google API Key', regex: 'AIza[0-9A-Za-z\\-_]{35}', category: 'Google', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'Google OAuth Token', regex: 'ya29\\.[0-9A-Za-z\\-_]{32,48}', category: 'Google', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'Google OAuth Client ID', regex: '\\.apps\\.googleusercontent\\.com', category: 'Google', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'Google OAuth Client Secret', regex: 'GOCSPX-[0-9a-zA-Z\\-_]{28}', category: 'Google', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'MailGun API Key', regex: 'key-[0-9a-f]{32}', category: 'Email', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'SendGrid API Key', regex: 'SG\\.[0-9A-Za-z\\-_]{22}\\.[0-9A-Za-z\\-_]{43}', category: 'Email', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'NuGet API Key', regex: 'oy2[a-z0-9]{43}', category: 'Package', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'Slack Token', regex: 'x(?:ox[psboare]|app)(?:-[a-zA-Z0-9]{1,64}){1,5}', category: 'Communication', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'Twilio SID', regex: 'SK[0-9a-zA-Z]{32}', category: 'Communication', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'Square Token', regex: 'sq0(?:atp|csp|idp)-[0-9A-Za-z\\-_]{22,43}', category: 'Payment', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'Stripe Secret Key', regex: '[sr]k_(?:live|test)_[0-9a-zA-Z]{24}', category: 'Payment', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'Stripe Webhook Secret', regex: 'whsec_[0-9a-zA-Z]{32}', category: 'Payment', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'GitHub Token', regex: 'gh[pousr]_[A-Za-z0-9]{36}', category: 'Source Control', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'GitHub Fine-grained PAT', regex: 'github_pat_[0-9a-zA-Z]{22}_[0-9a-zA-Z]{59}', category: 'Source Control', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'OpenAI API Key', regex: 'sk-[a-zA-Z0-9]{40,128}', category: 'AI/ML', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'Heroku API Key', regex: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}', category: 'Cloud', sections: ['respHeaders','respBody'], enabled: false },
-  { name: 'Facebook Access Token', regex: 'EAACEdEose0cBA[0-9A-Za-z]+', category: 'Communication', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'Twitter Secret', regex: "(?:twitter)[^;]{0,32}?['\"][0-9a-zA-Z]{35,44}['\"]", category: 'Communication', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'Twitch API Token', regex: "(?:twitch)[^;]{0,32}?['\"][0-9a-z]{30}['\"]", category: 'Communication', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'Mailchimp API Key', regex: '[0-9a-f]{32}-us[0-9]{1,2}', category: 'Email', sections: ['respHeaders','respBody'], enabled: true },
-  { name: 'JWT Token', regex: 'eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}', category: 'Credentials', sections: ['reqHeaders','respHeaders','respBody'], enabled: true },
-];
-
-const SENS_URLS = [
-  { name: 'Slack Webhook', regex: 'hooks\\.slack\\.com/services/T[a-zA-Z0-9_]{8,}/B[a-zA-Z0-9_]{8,}/[a-zA-Z0-9_]{24}', category: 'Webhooks', sections: ['respBody'], enabled: true },
-  { name: 'Teams Webhook', regex: 'outlook\\.office(?:365)?\\.com/webhook/[a-zA-Z0-9\\-@]+', category: 'Webhooks', sections: ['respBody'], enabled: true },
-  { name: 'Teams Incoming Webhook', regex: '\\.webhook\\.office\\.com', category: 'Webhooks', sections: ['respBody'], enabled: true },
-  { name: 'Firebase DB URL', regex: '\\.(?:firebaseio\\.com|firebasedatabase\\.app)', category: 'Cloud', sections: ['respBody'], enabled: true },
-  { name: 'AWS S3 Bucket', regex: 's3(?:\\.[a-z0-9-]+)?\\.amazonaws\\.com(?:/[^\\s"\'<>]+)?', category: 'Cloud Storage', sections: ['respBody'], enabled: true },
-  { name: 'Azure Blob Storage', regex: 'blob\\.core\\.windows\\.net', category: 'Cloud Storage', sections: ['respBody'], enabled: true },
-  { name: 'Google Cloud Storage', regex: 'gs://[a-z\\d\\-]{3,63}', category: 'Cloud Storage', sections: ['respBody'], enabled: true },
-  { name: 'Amazon ARN', regex: 'arn:aws(?:-(?:cn|us-gov|iso-[bcd]))?:[a-zA-Z0-9\\-]+:[a-z0-9\\-]*:[0-9]{0,12}:[a-zA-Z0-9\\-_/:.]+', category: 'AWS', sections: ['respBody'], enabled: true },
-  { name: 'Discord Webhook', regex: 'discord(?:app)?\\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]+', category: 'Webhooks', sections: ['respBody'], enabled: true },
-];
-
-const SENS_FILES = [
-  '.zip','.tar','.gz','.rar','.7z','.bz2','.xz','.tar.gz','.tgz',
-  '.pem','.crt','.cer','.der','.p12','.pfx','.key','.csr','.jks','.keystore',
-  '.kdbx','.kdb','.1pif',
-  '.cfg','.conf','.config','.ini','.properties','.yaml','.yml','.toml','.xml','.json','.env',
-  '.sql','.sqlite','.db','.mdb','.dump','.bak','.bkp',
-  '.doc','.docx','.xls','.xlsx','.csv','.pdf',
-  '.log','.swp','.swo','.DS_Store','.htaccess','.htpasswd','.npmrc','.pypirc',
-  '.git','.svn','.hg',
-].map(ext => ({ name: ext, regex: ext.replace(/\./g, '\\.') + '(?:\\?|$|#)', category: 'Files', sections: ['reqUrl'], enabled: true }));
-
-const SENS_COLORS = {
-  'AWS': 'var(--orange)', 'Google': 'var(--blue)', 'Payment': 'var(--green)',
-  'Credentials': 'var(--red)', 'Communication': 'var(--purple)', 'Cloud': 'var(--cyan)',
-  'Network': 'var(--txt2)', 'Contact': 'var(--txt2)', 'Data Security': 'var(--red)',
-  'Configuration': 'var(--orange)', 'Source Control': 'var(--purple)',
-  'Email': 'var(--blue)', 'Package': 'var(--txt2)', 'AI/ML': 'var(--green)',
-  'Webhooks': 'var(--cyan)', 'Cloud Storage': 'var(--cyan)', 'Files': 'var(--txt3)',
-  'Amazon': 'var(--orange)',
-};
-
-const SENS_DEFAULT_PATTERNS = () => ({
-  general: SENS_GENERAL.map(p => ({...p})),
-  tokens: SENS_TOKENS.map(p => ({...p})),
-  urls: SENS_URLS.map(p => ({...p})),
-  files: SENS_FILES.map(p => ({...p})),
-});
-
-// Shannon Entropy calculation for filtering false positives
-function calculateEntropy(str) {
-  if (!str || str.length === 0) return 0;
-  const freq = {};
-  for (let i = 0; i < str.length; i++) {
-    const c = str[i];
-    freq[c] = (freq[c] || 0) + 1;
-  }
-  const len = str.length;
-  let entropy = 0;
-  for (const c in freq) {
-    const p = freq[c] / len;
-    entropy -= p * Math.log2(p);
-  }
-  return entropy;
-}
-
-// JWT Helper Functions
-function base64urlDecode(str) {
-  let base64 = str.replace(/-/g, '+').replace(/_/g, '/');
-  while (base64.length % 4) base64 += '=';
-  try {
-    return atob(base64);
-  } catch (e) {
-    return '';
-  }
-}
-
-function base64urlEncode(str) {
-  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-}
-
-function decodeJWT(token) {
-  const parts = token.split('.');
-  if (parts.length !== 3) return null;
-  try {
-    return {
-      header: JSON.parse(base64urlDecode(parts[0])),
-      payload: JSON.parse(base64urlDecode(parts[1])),
-      signature: parts[2]
-    };
-  } catch (e) {
-    return null;
-  }
-}
-
-function encodeJWT(header, payload, signature) {
-  try {
-    const h = base64urlEncode(JSON.stringify(header));
-    const p = base64urlEncode(JSON.stringify(payload));
-    return h + '.' + p + '.' + (signature || '');
-  } catch (e) {
-    return '';
-  }
-}
-
-function parseHeaders(headersString) {
-  if (!headersString) return {};
-  const headers = {};
-  const lines = headersString.split('\n');
-  for (const line of lines) {
-    const colonIndex = line.indexOf(':');
-    if (colonIndex > 0) {
-      const key = line.substring(0, colonIndex).trim();
-      const value = line.substring(colonIndex + 1).trim();
-      if (key) headers[key] = value;
-    }
-  }
-  return headers;
-}
-
 function Blackwire() {
   // Estado principal
   const [tab, setTab] = useState('projects');
-  const [prjs, setPrjs] = useState([]);
-  const [curPrj, setCurPrj] = useState(null);
 
-  // Estado del proxy
-  const [pxRun, setPxRun] = useState(false);
-  const [pxPort, setPxPort] = useState(8080);
-  const [pxMode, setPxMode] = useState('regular');
-  const [pxArgs, setPxArgs] = useState('');
-
-  // Estado de requests
-  const [reqs, setReqs] = useState([]);
+  // Request UI state (requests list in hook)
   const [selReq, setSelReq] = useState(null);
   const [selReqFull, setSelReqFull] = useState(null);
   const [detTab, setDetTab] = useState('request');
   const [histSubTab, setHistSubTab] = useState('http'); // 'http' | 'ws' | 'sitemap'
 
-  // Paginación
-  const [currentPage, setCurrentPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [totalRequests, setTotalRequests] = useState(0);
-  const [pageSize, setPageSize] = useState(500);
+  // Paginación (initialized after hooks below)
   const [smExpanded, setSmExpanded] = useState({});
   const [smSelNode, setSmSelNode] = useState(null);
   const [smFilterMethod, setSmFilterMethod] = useState('');
@@ -497,49 +238,27 @@ function Blackwire() {
   const [smFilterText, setSmFilterText] = useState('');
   const [smShowStats, setSmShowStats] = useState(false);
 
-  // Estado del Repeater
-  const [repReqs, setRepReqs] = useState([]);
+  // Repeater UI state (most state in hook, but some UI-specific kept here for now)
   const [selRep, setSelRep] = useState(null);
-  const [repM, setRepM] = useState('GET');
-  const [repU, setRepU] = useState('');
-  const [repH, setRepH] = useState('');
-  const [repB, setRepB] = useState('');
   const [repBodyColor, setRepBodyColor] = useState(false);
-  const [repResp, setRepResp] = useState(null);
-  const [repRespBody, setRepRespBody] = useState('');
   const [repRespFormat, setRepRespFormat] = useState('code');
-
-  // Historial de navegación en Repeater
-  const [repHistory, setRepHistory] = useState([]);
-  const [repHistoryIndex, setRepHistoryIndex] = useState(-1);
-  const [repFollowRedirects, setRepFollowRedirects] = useState(false);
+  const [repReqs, setRepReqs] = useState([]); // Saved tabs list
 
   // Estado general
   const [appReady, setAppReady] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [commits, setCommits] = useState([]);
-  const [cmtMsg, setCmtMsg] = useState('');
-  const [toasts, setToasts] = useState([]);
-  const [themeId, setThemeId] = useState('midnight');
+  const [themeId, setThemeId] = useLocalStorage('bw_theme', 'midnight');
 
-  // Filtros / HTTPQL
-  const [search, setSearch] = useState('');
-  const [savedOnly, setSavedOnly] = useState(false);
-  const [scopeOnly, setScopeOnly] = useState(false);
-  const [httpqlError, setHttpqlError] = useState(null);
+  // Filtros / HTTPQL (initialized after hooks below)
   const [presets, setPresets] = useState([]);
   const [showPresets, setShowPresets] = useState(false);
   const [presetName, setPresetName] = useState('');
   const searchTimer = useRef(null);
 
-  // Intercept
-  const [intOn, setIntOn] = useState(false);
-  const [pending, setPending] = useState([]);
+  // Intercept UI state (most state in hook)
   const [selPend, setSelPend] = useState(null);
-  const [editReq, setEditReq] = useState(null);
 
-  // Scope
-  const [scopeRules, setScopeRules] = useState([]);
+  // Scope UI state (rules are in hook)
   const [newPat, setNewPat] = useState('');
   const [newType, setNewType] = useState('include');
 
@@ -548,10 +267,7 @@ function Blackwire() {
   const [newName, setNewName] = useState('');
   const [newDesc, setNewDesc] = useState('');
 
-  // Extensions
-  const [extensions, setExtensions] = useState([]);
-  const [whkReqs, setWhkReqs] = useState([]);
-  const [whkLoading, setWhkLoading] = useState(false);
+  // Webhook UI state (extensions and requests are in hooks)
   const [whkApiKey, setWhkApiKey] = useState('');
 
   // Webhook History (interactive tab)
@@ -571,15 +287,8 @@ function Blackwire() {
   const [contextMenu, setContextMenu] = useState(null);
   const ctxMenuRef = useRef(null);
 
-  // Chepy
+  // Chepy UI state (most state in hook)
   const [chepySubTab, setChepySubTab] = useState('cipher');
-  const [chepyIn, setChepyIn] = useState('');
-  const [chepyOps, setChepyOps] = useState([]);
-  const [chepyOut, setChepyOut] = useState('');
-  const [chepyErr, setChepyErr] = useState('');
-  const [chepyCat, setChepyCat] = useState({});
-  const [chepySelCat, setChepySelCat] = useState('');
-  const [chepyBaking, setChepyBaking] = useState(false);
 
   // JWT Analyzer states
   const [jwtToken, setJwtToken] = useState('');
@@ -587,26 +296,15 @@ function Blackwire() {
   const [jwtPayload, setJwtPayload] = useState('{}');
   const [jwtSignature, setJwtSignature] = useState('');
 
-  // WebSocket Viewer
-  const [wsConns, setWsConns] = useState([]);
+  // WebSocket UI state (most state in hook)
   const [selWsConn, setSelWsConn] = useState(null);
-  const [wsFrames, setWsFrames] = useState([]);
   const [selWsFrame, setSelWsFrame] = useState(null);
-  const [wsResendMsg, setWsResendMsg] = useState('');
-  const [wsResendResp, setWsResendResp] = useState(null);
-  const [wsSending, setWsSending] = useState(false);
 
-  // Collections
-  const [colls, setColls] = useState([]);
+  // Collections UI state (most state in hook)
   const [selColl, setSelColl] = useState(null);
-  const [collItems, setCollItems] = useState([]);
-  const [collVars, setCollVars] = useState({});
   const [collStep, setCollStep] = useState(0);
-  const [collResps, setCollResps] = useState({});
-  const [collRunning, setCollRunning] = useState(false);
   const [showCollPick, setShowCollPick] = useState(null);
   const [collSubTab, setCollSubTab] = useState('collections');
-  const [sessionRules, setSessionRules] = useState([]);
   const [newRule, setNewRule] = useState({
     enabled: true,
     name: '',
@@ -637,78 +335,81 @@ function Blackwire() {
   const [smTreeW, setSmTreeW] = useState(38);
 
   // Body search
-  const [histBodySearch, setHistBodySearch] = useState('');
-  const [histBodySearchIdx, setHistBodySearchIdx] = useState(0);
-  const [histBodySearchRegex, setHistBodySearchRegex] = useState(false);
-  const [histBodySearchCount, setHistBodySearchCount] = useState(0);
-  const [showHistSearch, setShowHistSearch] = useState(false);
-  const [repBodySearch, setRepBodySearch] = useState('');
-  const [repBodySearchIdx, setRepBodySearchIdx] = useState(0);
-  const [repBodySearchRegex, setRepBodySearchRegex] = useState(false);
-  const [repBodySearchCount, setRepBodySearchCount] = useState(0);
-  const [showRepSearch, setShowRepSearch] = useState(false);
+  const histSearch = useBodySearch();
+  const repSearch = useBodySearch();
 
-  // Sensitive 
-  const [sensResults, setSensResults] = useState([]);
-  const [sensScanning, setSensScanning] = useState(false);
-  const [sensPct, setSensPct] = useState(0);
-  const [sensFilter, setSensFilter] = useState('');
-  const [sensUnique, setSensUnique] = useState(false);
+  // Domain Hooks Initialization
+  // Initialize toast first (needed by other hooks)
+  const { toasts: hookToasts, toast: hookToast } = useToast();
+
+  // Initialize hooks that don't depend on others
+  const git = useGit(hookToast);
+  const scope = useScope(hookToast);
+  const sessionRules = useSessionRules(hookToast);
+  const extensions = useExtensions(hookToast);
+  const intercept = useIntercept(hookToast);
+  const chepy = useChepy(hookToast);
+  const websockets = useWebSockets(hookToast);
+
+  // Initialize hooks with dependencies (callback will be defined later via useEffect)
+  const projects = useProjects(hookToast);
+  const webhook = useWebhook(hookToast, extensions.extensions);
+  const proxy = useProxy(hookToast, projects.currentProject);
+  const requests = useRequests(hookToast);
+  const repeater = useRepeater(hookToast);
+  const collections = useCollections(hookToast, projects.currentProject);
+  const intruder = useIntruder(hookToast);
+  const sensitive = useSensitive(hookToast);
+
+  // Initialize pagination after requests hook (needs requests.totalRequests)
+  const pagination = usePagination({
+    totalItems: requests.totalRequests,
+    initialPageSize: 500
+  });
+  const { currentPage, pageSize, totalPages, setPageSize, setCurrentPage, goToPage: _goToPage, nextPage: _nextPage, prevPage: _prevPage, firstPage: _firstPage, lastPage: _lastPage } = pagination;
+
+  // Aliases for request state
+  const search = requests.search;
+  const setSearch = requests.setSearch;
+  const savedOnly = requests.savedOnly;
+  const setSavedOnly = requests.setSavedOnly;
+  const scopeOnly = requests.scopeOnly;
+  const setScopeOnly = requests.setScopeOnly;
+  const httpqlError = requests.httpqlError;
+  const totalRequests = requests.totalRequests;
+
+  // Sensitive UI state (most state in hook)
   const [sensSelResult, setSensSelResult] = useState(null);
   const [sensSubTab, setSensSubTab] = useState('logger');
-  const [sensPatterns, setSensPatterns] = useState(SENS_DEFAULT_PATTERNS);
-  const [sensScopeOnly, setSensScopeOnly] = useState(false);
-  const [sensMaxSize, setSensMaxSize] = useState(10000000);
-  const [sensEntropyThreshold, setSensEntropyThreshold] = useState(2.5);
-  const [sensBatch, setSensBatch] = useState(4);
-  const sensStopRef = useRef(false);
   const sensDetailRef = useRef(null);
   const [sensSelDetail, setSensSelDetail] = useState(null);
 
-  // Intruder
-  const [intMethod, setIntMethod] = useState('GET');
-  const [intUrl, setIntUrl] = useState('');
-  const [intHeaders, setIntHeaders] = useState('');
-  const [intBody, setIntBody] = useState('');
-  const [intPositions, setIntPositions] = useState([]);
-  const [intAttackType, setIntAttackType] = useState('targeted');
-  const [intPayloads, setIntPayloads] = useState({});
-  const [intResults, setIntResults] = useState([]);
-  const [intRunning, setIntRunning] = useState(false);
-  const [intPct, setIntPct] = useState(0);
-  const [intConcurrency, setIntConcurrency] = useState(1);
-  const [intDelay, setIntDelay] = useState(0);
-  const [intRandomDelay, setIntRandomDelay] = useState(false);
-  const [intDelayMin, setIntDelayMin] = useState(100);
-  const [intDelayMax, setIntDelayMax] = useState(500);
-  const [intFollowRedirects, setIntFollowRedirects] = useState(false);
-  const [intTimeout, setIntTimeout] = useState(30);
-  const [intMaxRetries, setIntMaxRetries] = useState(0);
+  // Intruder UI state (most state in hook)
   const [intSubTab, setIntSubTab] = useState('positions');
   const [intSelResult, setIntSelResult] = useState(null);
-  const intStopRef = useRef(false);
-  const [intTotal, setIntTotal] = useState(0);
-  const [intDone, setIntDone] = useState(0);
-  const [intStartTime, setIntStartTime] = useState(null);
-  const [intSelPayloadSet, setIntSelPayloadSet] = useState(0);
-  const [intSortCol, setIntSortCol] = useState('#');
-  const [intSortDir, setIntSortDir] = useState('asc');
-  const [intFilter, setIntFilter] = useState('');
+  const intUrlRef = useRef(null);
   const intHeadersRef = useRef(null);
+  const intHeadersHighlightRef = useRef(null);
   const intBodyRef = useRef(null);
   const [intAttacks, setIntAttacks] = useState([]);
   const [intSelAttack, setIntSelAttack] = useState(null);
+  const [intSortCol, setIntSortCol] = useState('#');
+  const [intSortDir, setIntSortDir] = useState('asc');
+  const [intFilter, setIntFilter] = useState('');
+  const [intSelPayloadSet, setIntSelPayloadSet] = useState(0);
 
   const wsRef = useRef(null);
   const repBodyEditRef = useRef(null);
   const repBodyCaretRef = useRef(null);
   const histContentRef = useRef(null);
-  const histCodeRef = useRef(null);
-  const repCodeRef = useRef(null);
   const repCntRef = useRef(null);
   const smContentRef = useRef(null);
   const chepyCntRef = useRef(null);
-  const webhookExt = extensions.find(e => e.name === 'webhook_site');
+  const repHeadersRef = useRef(null);
+  const repHeadersHighlightRef = useRef(null);
+  const interceptHeadersRef = useRef(null);
+  const interceptHeadersHighlightRef = useRef(null);
+  const webhookExt = extensions.extensions.find(e => e.name === 'webhook_site');
 
   const getSelectedText = () => {
     try {
@@ -720,49 +421,159 @@ function Blackwire() {
     }
   };
 
-  const toast = (m, t = 'info') => {
-    const id = Date.now();
-    setToasts(p => [...p, { id, message: m, type: t }]);
-    setTimeout(() => setToasts(p => p.filter(x => x.id !== id)), 3000);
-  };
+  // Use toast from hook (keep old signature for compatibility)
+  const toast = hookToast;
+  const toasts = hookToasts;
 
-  const api = {
-    get: async u => (await fetch(API + u)).json(),
-    post: async (u, d) => (await fetch(API + u, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: d ? JSON.stringify(d) : undefined
-    })).json(),
-    put: async (u, d) => (await fetch(API + u, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: d ? JSON.stringify(d) : undefined
-    })).json(),
-    del: async u => (await fetch(API + u, { method: 'DELETE' })).json()
-  };
+  // Create aliases for hook properties to minimize code changes
+  const prjs = projects.projects;
+  const curPrj = projects.currentProject;
+  const pxRun = proxy.isRunning;
+  const pxPort = proxy.port;
+  const pxMode = proxy.mode;
+  const pxArgs = proxy.args;
+  const setPxPort = proxy.setPort;
+  const setPxMode = proxy.setMode;
+  const setPxArgs = proxy.setArgs;
+  const reqs = requests.requests;
+  const commits = git.commits;
+  const cmtMsg = git.commitMessage;
+  const setCmtMsg = git.setCommitMessage;
+  const scopeRules = scope.rules;
+  const intOn = intercept.isEnabled;
+  const setIntOn = intercept.setEnabled;
+  const pending = intercept.pending;
+  const editReq = intercept.editingRequest;
+  const setEditReq = intercept.setEditingRequest;
+  // repReqs is now UI state defined at line 245
+  const repM = repeater.method;
+  const repU = repeater.url;
+  const repH = repeater.headers;
+  const repB = repeater.body;
+  const setRepM = repeater.setMethod;
+  const setRepU = repeater.setUrl;
+  const setRepH = repeater.setHeaders;
+  const setRepB = repeater.setBody;
+  const repResp = repeater.response;
+  const setRepResp = repeater.setResponse;
+  const repRespBody = repeater.respBody;
+  const setRepRespBody = repeater.setRespBody;
+  const repHistory = repeater.history || [];
+  const setRepHistory = repeater.setHistory;
+  const repHistoryIndex = repeater.historyIndex;
+  const setRepHistoryIndex = repeater.setHistoryIndex;
+  const repFollowRedirects = repeater.followRedirects;
+  const setRepFollowRedirects = repeater.setFollowRedirects;
+  const chepyIn = chepy.input;
+  const chepyOps = chepy.operations || [];
+  const chepyOut = chepy.output;
+  const chepyErr = chepy.error;
+  const chepyCat = chepy.categories || {};
+  const chepySelCat = chepy.selectedCategory;
+  const chepyBaking = chepy.isBaking;
+  const setChepyIn = chepy.setInput;
+  const setChepySelCat = chepy.setSelectedCategory;
+  const wsConns = websockets.connections || [];
+  const wsFrames = websockets.frames || [];
+  const setWsFrames = websockets.setFrames;
+  const wsResendMsg = websockets.resendMessage;
+  const wsResendResp = websockets.resendResponse;
+  const wsSending = websockets.isSending;
+  const setWsResendMsg = websockets.setResendMessage;
+  const colls = collections.collections || [];
+  const collItems = collections.items || [];
+  const collVars = collections.variables || {};
+  const collResps = collections.responses || [];
+  const collRunning = collections.isRunning;
+  const setCollItems = collections.setItems;
+  const setCollVars = collections.setVariables;
+  const sessionRulesData = sessionRules.sessionRules || []; // Access array from hook
+  const whkReqs = webhook.requests || [];
+  const whkLoading = webhook.isLoading;
+  const sensResults = sensitive.results || [];
+  const sensScanning = sensitive.isScanning;
+  const sensPct = sensitive.progress;
+  const sensFilter = sensitive.filter;
+  const sensUnique = sensitive.unique;
+  const setSensFilter = sensitive.setFilter;
+  const setSensUnique = sensitive.setUnique;
+  const sensPatterns = sensitive.patterns || { general: [], tokens: [], urls: [], files: [] };
+  const sensScopeOnly = sensitive.scopeOnly;
+  const sensMaxSize = sensitive.maxSize;
+  const sensEntropyThreshold = sensitive.entropyThreshold;
+  const sensBatch = sensitive.batch;
+  const setSensPatterns = sensitive.setPatterns;
+  const setSensScopeOnly = sensitive.setScopeOnly;
+  const setSensMaxSize = sensitive.setMaxSize;
+  const setSensEntropyThreshold = sensitive.setEntropyThreshold;
+  const setSensBatch = sensitive.setBatch;
+  const sensStopRef = sensitive.stopRef;
+  const intMethod = intruder.method;
+  const intUrl = intruder.url;
+  const intHeaders = intruder.headers;
+  const intBody = intruder.body;
+  const intPositions = intruder.positions || [];
+  const intAttackType = intruder.attackType;
+  const intPayloads = intruder.payloads || [];
+  const intResults = intruder.results || [];
+  const intRunning = intruder.isRunning;
+  const intPct = intruder.progress;
+  const intConcurrency = intruder.concurrency;
+  const intDelay = intruder.delay;
+  const intRandomDelay = intruder.randomDelay;
+  const intDelayMin = intruder.delayMin;
+  const intDelayMax = intruder.delayMax;
+  const intFollowRedirects = intruder.followRedirects;
+  const intTimeout = intruder.timeout;
+  const intMaxRetries = intruder.maxRetries;
+  const intStopRef = intruder.stopRef;
+  const intTotal = intruder.total;
+  const intDone = intruder.done;
+  const intStartTime = intruder.startTime;
+  const setIntMethod = intruder.setMethod;
+  const setIntUrl = intruder.setUrl;
+  const setIntHeaders = intruder.setHeaders;
+  const setIntBody = intruder.setBody;
+  const setIntPositions = intruder.setPositions;
+  const setIntAttackType = intruder.setAttackType;
+  const setIntPayloads = intruder.setPayloads;
+  const setIntConcurrency = intruder.setConcurrency;
+  const setIntDelay = intruder.setDelay;
+  const setIntRandomDelay = intruder.setRandomDelay;
+  const setIntDelayMin = intruder.setDelayMin;
+  const setIntDelayMax = intruder.setDelayMax;
+  const setIntFollowRedirects = intruder.setFollowRedirects;
+  const setIntTimeout = intruder.setTimeout;
+  const setIntMaxRetries = intruder.setMaxRetries;
+
+  // Additional setter aliases for direct state manipulation
+  const setPending = intercept.setPending;
+  const setChepyBaking = chepy.setBaking;
+  const setChepyCat = chepy.setCategories;
+  const setChepyErr = chepy.setError;
+  const setChepyOps = chepy.setOperations;
+  const setChepyOut = chepy.setOutput;
+  const setCollResps = collections.setResponses;
+  const setCollRunning = collections.setRunning;
+  const setIntDone = intruder.setDone;
+  const setIntPct = intruder.setProgress;
+  const setIntResults = intruder.setResults;
+  const setIntRunning = intruder.setRunning;
+  const setIntStartTime = intruder.setStartTime;
+  const setIntTotal = intruder.setTotal;
+  const setSensPct = sensitive.setProgress;
+  const setSensResults = sensitive.setResults;
+  const setSensScanning = sensitive.setScanning;
+  const setWsConns = websockets.setConnections;
+  const setWsResendResp = websockets.setResendResp;
+  const setWsSending = websockets.setSending;
+  const setSessionRules = sessionRules.setSessionRules;
 
   useEffect(() => {
-    Promise.all([loadPrjs(), loadCur()]).finally(() => setAppReady(true));
+    Promise.all([projects.load(), loadCur()]).finally(() => setAppReady(true));
     connectWs();
     return () => wsRef.current?.close();
   }, []);
-
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem('bw_theme');
-      if (saved && THEMES[saved]) setThemeId(saved);
-    } catch (e) {
-      // ignore storage errors
-    }
-  }, []);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('bw_theme', themeId);
-    } catch (e) {
-      // ignore storage errors
-    }
-  }, [themeId]);
 
   useEffect(() => {
     const handler = e => {
@@ -849,15 +660,19 @@ function Blackwire() {
     return () => document.removeEventListener('contextmenu', handler);
   }, [tab, selReq, selReqFull, repM, repU, repH, repB, repResp, repRespBody, editReq, collItems, collStep, chepyOut, selWsFrame, selWsConn, selRep]);
 
+  // Load data when project changes
   useEffect(() => {
     if (!curPrj) return;
-    // Critical data in parallel
-    loadReqs();
-    Promise.all([loadRep(), loadScope(), checkPx()]).then(() => {
-      loadColls();
-      loadExts();
-    });
-    loadGit();
+    requests.loadRequests(currentPage, pageSize);
+    repeater.loadTabs();
+    scope.loadRules();
+    proxy.loadStatus();
+    git.loadHistory();
+    // Secondary data loads
+    setTimeout(() => {
+      collections.load();
+      extensions.loadExtensions();
+    }, 0);
   }, [curPrj]);
 
   // Reset to page 1 when filters change
@@ -870,9 +685,30 @@ function Blackwire() {
   // Reload when page size changes
   useEffect(() => {
     if (curPrj && tab === 'history') {
-      loadReqs();
+      requests.loadRequests(currentPage, pageSize);
     }
   }, [pageSize]);
+
+  // Auto-refresh requests in real-time (every 3 seconds, avoid conflicts with WebSocket)
+  useEffect(() => {
+    if (!curPrj || tab !== 'history') return;
+
+    const interval = setInterval(() => {
+      // Only auto-refresh if not currently loading to avoid race conditions
+      if (!requests.loading) {
+        requests.loadRequests(currentPage, pageSize);
+      }
+    }, 3000); // Refresh every 3 seconds
+
+    return () => clearInterval(interval);
+  }, [curPrj, tab, currentPage, pageSize, requests.loading]);
+
+  // Sync repeater saved tabs
+  useEffect(() => {
+    if (repeater.savedTabs) {
+      setRepReqs(repeater.savedTabs);
+    }
+  }, [repeater.savedTabs]);
 
   // Ctrl+S para auto-commits
   useEffect(() => {
@@ -914,20 +750,20 @@ function Blackwire() {
 
   // Scroll to current search match in history/repeater
   useEffect(() => {
-    const el = histCodeRef.current;
+    const el = histSearch.contentRef.current;
     if (el) {
       const cur = el.querySelector('.search-cur');
       if (cur) cur.scrollIntoView({ block: 'center', behavior: 'smooth' });
     }
-  }, [histBodySearchIdx, histBodySearch]);
+  }, [histSearch.matchIndex, histSearch.searchTerm]);
 
   useEffect(() => {
-    const el = repCodeRef.current;
+    const el = repSearch.contentRef.current;
     if (el) {
       const cur = el.querySelector('.search-cur');
       if (cur) cur.scrollIntoView({ block: 'center', behavior: 'smooth' });
     }
-  }, [repBodySearchIdx, repBodySearch]);
+  }, [repSearch.matchIndex, repSearch.searchTerm]);
 
   // Scroll to highlighted match in sensitive detail
   useEffect(() => {
@@ -948,7 +784,7 @@ function Blackwire() {
     if (selReq.headers !== undefined) { setSelReqFull(selReq); return; }
     let cancelled = false;
     setSelReqFull(null);
-    api.get('/api/requests/' + selReq.id + '/detail').then(r => {
+    requestService.getDetail(selReq.id).then(r => {
       if (!cancelled && r.id) setSelReqFull(r);
     });
     return () => { cancelled = true; };
@@ -964,7 +800,7 @@ function Blackwire() {
 
   useEffect(() => {
     if (tab === 'chepy' && Object.keys(chepyCat).length === 0) {
-      loadChepyOps();
+      chepy.loadOperations();
     }
   }, [tab]);
 
@@ -975,14 +811,14 @@ function Blackwire() {
   // Cargar webhook requests desde DB cuando el token esté disponible (persiste entre reinicios)
   useEffect(() => {
     if (!webhookExt?.enabled || !webhookExt?.config?.token_id) return;
-    loadWebhookLocal();
+    webhook.loadRequests(webhookExt.config.token_id);
   }, [webhookExt?.enabled, webhookExt?.config?.token_id]);
 
   // Auto-refresh desde webhook.site cuando estemos en las pestañas relevantes
   useEffect(() => {
     if (tab !== 'extensions' && tab !== 'webhook_site') return;
     if (!webhookExt?.enabled || !webhookExt?.config?.token_id) return;
-    const id = setInterval(() => refreshWebhook(true), 15000);
+    const id = setInterval(() => webhook.refresh(webhookExt.config.token_id), 15000);
     return () => clearInterval(id);
   }, [tab, webhookExt?.enabled, webhookExt?.config?.token_id]);
 
@@ -990,7 +826,7 @@ function Blackwire() {
   useEffect(() => {
     if (!curPrj) return;
     if (searchTimer.current) clearTimeout(searchTimer.current);
-    searchTimer.current = setTimeout(() => loadReqs(), 300);
+    searchTimer.current = setTimeout(() => requests.loadRequests(currentPage, pageSize), 300);
     return () => { if (searchTimer.current) clearTimeout(searchTimer.current); };
   }, [search, savedOnly, scopeOnly]);
 
@@ -1033,147 +869,80 @@ function Blackwire() {
   const connectWs = () => {
     const ws = new WebSocket(WS_URL);
     ws.onmessage = e => {
-      const m = JSON.parse(e.data);
-      if (m.type === 'new_request') {
-        // If no active filter, prepend directly; otherwise re-fetch with current filters
-        if (!search && !savedOnly && !scopeOnly) setReqs(p => [m.data, ...p]);
-        else loadReqs();
+      try {
+        const m = JSON.parse(e.data);
+        if (m.type === 'new_request') {
+          // Don't reload immediately - let auto-refresh handle it to avoid conflicts
+          // The auto-refresh will pick it up within 3 seconds
+        }
+        if (m.type === 'intercept_new') setPending(p => [...p, m.data]);
+        if (m.type === 'intercept_status') setIntOn(m.enabled);
+        if (m.type === 'intercept_forwarded' || m.type === 'intercept_dropped')
+          setPending(p => p.filter(r => r.id !== m.request_id));
+        if (m.type === 'intercept_all_forwarded' || m.type === 'intercept_all_dropped')
+          setPending([]);
+      } catch (err) {
+        console.error('WebSocket message error:', err);
       }
-      if (m.type === 'intercept_new') setPending(p => [...p, m.data]);
-      if (m.type === 'intercept_status') setIntOn(m.enabled);
-      if (m.type === 'intercept_forwarded' || m.type === 'intercept_dropped')
-        setPending(p => p.filter(r => r.id !== m.request_id));
-      if (m.type === 'intercept_all_forwarded' || m.type === 'intercept_all_dropped')
-        setPending([]);
     };
     ws.onclose = () => setTimeout(connectWs, 3000);
     wsRef.current = ws;
   };
 
-  const loadPrjs = async () => setPrjs(await api.get('/api/projects'));
-
   const loadCur = async () => {
-    const r = await api.get('/api/projects/current');
+    const r = await projectService.getCurrent();
     if (r.project) {
-      setCurPrj(r.project);
-      setIntOn(r.config?.intercept_enabled || false);
-      setScopeRules(r.config?.scope_rules || []);
-      setPxPort(r.config?.proxy_port || 8080);
-      setPxMode(r.config?.proxy_mode || 'regular');
-      setPxArgs(r.config?.proxy_args || '');
+      await projects.loadCurrent(); // Refresh currentProject state in hook
+      intercept.setEnabled(r.config?.intercept_enabled || false);
+      scope.setRules(r.config?.scope_rules || []);
+      proxy.setPort(r.config?.proxy_port || 8080);
+      proxy.setMode(r.config?.proxy_mode || 'regular');
+      proxy.setArgs(r.config?.proxy_args || '');
       setTab('history');
     }
   };
 
+  // Wrapper for loadReqs (kept for compatibility)
   const loadReqs = async (query, ast, page) => {
-    const q = query !== undefined ? query : search;
-    const parsed = ast !== undefined ? ast : (q ? httpqlParse(q) : { ast: null, error: null });
-    if (parsed.error) { setHttpqlError(parsed.error); return; }
-    setHttpqlError(null);
-    try {
-      const body = {
-        page: page !== undefined ? page : currentPage,
-        page_size: pageSize,
-        saved_only: savedOnly,
-        in_scope_only: scopeOnly
-      };
-      if (parsed.ast) { body.query = q; body.ast = parsed.ast; }
-      const r = await api.post('/api/requests/search', body);
-      if (r.error) { setHttpqlError(r.error); return; }
-
-      // Handle paginated response
-      if (r.requests) {
-        setReqs(r.requests);
-        setTotalPages(r.total_pages || 1);
-        setTotalRequests(r.total || 0);
-        setCurrentPage(r.page || 1);
-      } else {
-        // Fallback for old non-paginated response
-        setReqs(Array.isArray(r) ? r : []);
-      }
-    } catch (e) {
-      setHttpqlError('Search failed');
-    }
+    // Note: requests hook now manages search/filters internally
+    await requests.loadRequests(page !== undefined ? page : currentPage, pageSize);
   };
+
+  // Pagination wrapper functions that integrate with loadReqs
   const goToPage = async (page) => {
-    if (page < 1 || page > totalPages) return;
-    setCurrentPage(page);
+    _goToPage(page);
     await loadReqs(undefined, undefined, page);
   };
-
-  const nextPage = () => goToPage(currentPage + 1);
-  const prevPage = () => goToPage(currentPage - 1);
-  const firstPage = () => goToPage(1);
-  const lastPage = () => goToPage(totalPages);
-
-  const loadRep = async () => setRepReqs(await api.get('/api/repeater'));
-  const loadGit = async () => setCommits(await api.get('/api/git/history'));
-  const loadScope = async () => {
-    const r = await api.get('/api/scope');
-    setScopeRules(r.rules || []);
-  };
-  const loadExts = async () => {
-    const r = await api.get('/api/extensions');
-    setExtensions(r.extensions || []);
-  };
-  const checkPx = async () => {
-    const r = await api.get('/api/proxy/status');
-    setPxRun(r.running);
-    setIntOn(r.intercept_enabled);
-  };
-
-  const loadWebhookLocal = async () => {
-    if (!curPrj) return;
-    if (!webhookExt?.config?.token_id) {
-      setWhkReqs([]);
-      return;
+  const nextPage = async () => {
+    if (currentPage < totalPages) {
+      await goToPage(currentPage + 1);
     }
-    const r = await api.get('/api/webhooksite/requests?limit=200');
-    setWhkReqs(r.requests || []);
   };
+  const prevPage = async () => {
+    if (currentPage > 1) {
+      await goToPage(currentPage - 1);
+    }
+  };
+  const firstPage = async () => await goToPage(1);
+  const lastPage = async () => await goToPage(totalPages);
 
-  const refreshWebhook = async (silent = false) => {
-    if (!webhookExt?.config?.token_id) {
-      if (!silent) toast('No webhook token', 'error');
-      return;
-    }
-    setWhkLoading(true);
-    try {
-      const r = await api.post('/api/webhooksite/refresh', { limit: 50 });
-      if (r.status === 'ok') {
-        await loadWebhookLocal();
-        if (!silent) toast('Webhook updated', 'success');
-      } else {
-        if (!silent) toast(r.detail || 'Webhook refresh failed', 'error');
-      }
-    } catch (e) {
-      if (!silent) toast('Webhook refresh failed', 'error');
-    }
-    setWhkLoading(false);
-  };
+  // These functions are now in hooks (repeater.load, git.loadHistory, scope.loadRules, extensions.loadExtensions, proxy.checkStatus)
+
+  // Webhook wrapper functions (delegate to hook)
+  const loadWebhookLocal = () => webhook.loadRequests(webhookExt?.config?.token_id);
+  const refreshWebhook = (silent = false) => webhook.refresh(webhookExt?.config?.token_id);
 
   const createWebhookToken = async () => {
-    setWhkLoading(true);
-    try {
-      const r = await api.post('/api/webhooksite/token');
-      if (r.status === 'created') {
-        await loadExts();
-        await loadWebhookLocal();
-        toast('Webhook URL created', 'success');
-      } else {
-        toast(r.detail || 'Failed to create webhook', 'error');
-      }
-    } catch (e) {
-      toast('Failed to create webhook', 'error');
+    const success = await webhook.createToken();
+    if (success) {
+      await extensions.loadExtensions();
+      await webhook.loadRequests(webhookExt?.config?.token_id);
     }
-    setWhkLoading(false);
   };
 
   const clearWebhookHistory = async () => {
-    await api.del('/api/webhooksite/requests');
-    setWhkReqs([]);
+    await webhook.clearHistory();
     setSelWhkReq(null);
-    toast('Webhook history cleared', 'success');
   };
 
   const whkToRepeater = r => {
@@ -1190,15 +959,10 @@ function Blackwire() {
   });
 
   const selectPrj = async n => {
-    const r = await api.post('/api/projects/' + encodeURIComponent(n) + '/select');
-    if (r && r.status === 'selected') {
-      setCurPrj(n);
+    const success = await projects.select(n);
+    if (success) {
       await loadCur();
-      await loadPrjs();
       setTab('history');
-      toast('Project: ' + n, 'success');
-    } else {
-      toast(r?.detail || 'Failed to select project', 'error');
     }
   };
 
@@ -1209,7 +973,7 @@ function Blackwire() {
       toast('Project name cannot contain / or \\', 'error');
       return;
     }
-    const r = await api.post('/api/projects', { name, description: newDesc });
+    const r = await projectService.create(name, newDesc);
     if (!r || r.status !== 'created') {
       toast(r?.detail || 'Failed to create project', 'error');
       return;
@@ -1224,9 +988,9 @@ function Blackwire() {
 
   const delPrj = async n => {
     if (!confirm('Delete ' + n + '?')) return;
-    const r = await api.del('/api/projects/' + encodeURIComponent(n));
+    const r = await projectService.delete(n);
     if (r && (r.status === 'deleted' || r.status === 'ok')) {
-      if (curPrj === n) setCurPrj(null);
+      if (curPrj?.project === n) await projects.loadCurrent();
       await loadPrjs();
       toast('Deleted', 'success');
     } else {
@@ -1235,12 +999,12 @@ function Blackwire() {
   };
 
   const exportProject = async n => {
-    window.open(API + '/api/projects/' + encodeURIComponent(n) + '/export', '_blank');
+    projectService.exportJSON(n);
     toast('Exporting project: ' + n, 'success');
   };
 
   const exportProjectBurp = async n => {
-    window.open(API + '/api/projects/' + encodeURIComponent(n) + '/export-burp', '_blank');
+    projectService.exportBurp(n);
     toast('Exporting to Burp Suite format: ' + n, 'success');
   };
 
@@ -1253,23 +1017,12 @@ function Blackwire() {
       if (!file) return;
       try {
         toast('Importing Burp Suite XML...', 'info');
-        const text = await file.text();
+        const data = await projectService.importBurp(n, file);
 
-        // Enviar el XML como texto plano
-        const r = await fetch(API + '/api/projects/' + encodeURIComponent(n) + '/import-burp', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'text/plain',
-          },
-          body: text
-        });
-
-        const data = await r.json();
-
-        if (r.ok && data.status === 'success') {
+        if (data.status === 'success') {
           toast(`Imported ${data.imported} of ${data.total} items from Burp Suite`, 'success');
           // Recargar datos si es el proyecto actual
-          if (curPrj === n) {
+          if (curPrj?.project === n) {
             await loadReqs();
           }
         } else {
@@ -1300,7 +1053,7 @@ function Blackwire() {
         }
 
         // Importar como nuevo proyecto
-        const r = await api.post('/api/projects/import', data);
+        const r = await projectService.importAsNew(file);
         if (r && r.status === 'imported') {
           toast(`Project "${data.project_name}" created successfully! ${r.stats?.total_requests || 0} requests imported.`, 'success');
           await loadPrjs();
@@ -1337,11 +1090,11 @@ function Blackwire() {
           return;
         }
 
-        const r = await api.post('/api/projects/' + encodeURIComponent(n) + '/import?clear_existing=' + clearExisting, data);
+        const r = await projectService.importTo(n, file, clearExisting);
         if (r && r.status === 'imported') {
           toast(`${action === 'replace' ? 'Replaced' : 'Merged'} successfully!`, 'success');
           // Recargar datos si es el proyecto actual
-          if (curPrj === n) {
+          if (curPrj?.project === n) {
             await loadReqs();
             await loadRep();
             await loadColls();
@@ -1358,31 +1111,8 @@ function Blackwire() {
 
   const startPx = async () => {
     setLoading(true);
-    const r = await api.post('/api/proxy/start?port=' + pxPort + '&mode=' + encodeURIComponent(pxMode) + '&extra=' + encodeURIComponent(pxArgs));
+    await proxy.start();
     setLoading(false);
-    if (r.status === 'started' || r.status === 'already_running') {
-      setPxRun(true);
-      toast('Proxy started', 'success');
-    } else {
-      toast('Failed: ' + (r.error || 'unknown'), 'error');
-    }
-  };
-
-  const stopPx = async () => {
-    await api.post('/api/proxy/stop');
-    setPxRun(false);
-    toast('Stopped', 'success');
-  };
-
-  const launchBr = async () => {
-    const r = await api.post('/api/browser/launch?proxy_port=' + pxPort);
-    toast(r.status === 'launched' ? 'Browser launched' : 'Failed', 'success');
-  };
-
-  const togInt = async () => {
-    const r = await api.post('/api/intercept/toggle');
-    setIntOn(r.enabled);
-    toast('Intercept ' + (r.enabled ? 'ON' : 'OFF'), 'success');
   };
 
   const advanceQueue = (id, remaining) => {
@@ -1393,49 +1123,31 @@ function Blackwire() {
   };
 
   const fwdReq = async (id, mod = null) => {
-    await api.post('/api/intercept/' + id + '/forward', mod);
-    const remaining = pending.filter(r => r.id !== id);
-    setPending(remaining);
+    await intercept.forward(id, mod);
+    const remaining = intercept.pending.filter(r => r.id !== id);
     advanceQueue(id, remaining);
   };
 
   const dropReq = async id => {
-    await api.post('/api/intercept/' + id + '/drop');
-    const remaining = pending.filter(r => r.id !== id);
-    setPending(remaining);
+    await intercept.drop(id);
+    const remaining = intercept.pending.filter(r => r.id !== id);
     advanceQueue(id, remaining);
   };
 
   const fwdAll = async () => {
-    await api.post('/api/intercept/forward-all');
-    setPending([]);
+    await intercept.forwardAll();
     setSelPend(null);
-    setEditReq(null);
   };
 
   const dropAll = async () => {
-    await api.post('/api/intercept/drop-all');
-    setPending([]);
+    await intercept.dropAll();
     setSelPend(null);
-    setEditReq(null);
   };
 
   const addRule = async () => {
     if (!newPat.trim()) return;
-    await api.post('/api/scope/rules', { pattern: newPat, rule_type: newType });
-    await loadScope();
+    await scope.addRule(newPat, newType);
     setNewPat('');
-    toast('Rule added', 'success');
-  };
-
-  const delRule = async id => {
-    await api.del('/api/scope/rules/' + id);
-    await loadScope();
-  };
-
-  const togRule = async id => {
-    await api.put('/api/scope/rules/' + id);
-    await loadScope();
   };
 
   // Pretty Print/Minify en Repeater
@@ -1533,95 +1245,9 @@ function Blackwire() {
     return null;
   };
 
-  const prettyPrint = text => {
-    if (!text) return text;
-
-    const lang = detectLanguage(text);
-
-    // JSON - formatear
-    if (lang === 'json') {
-      try {
-        const obj = JSON.parse(text);
-        return JSON.stringify(obj, null, 2);
-      } catch (e) {}
-    }
-
-    // XML/HTML - formatear
-    if (lang === 'xml' || lang === 'html') {
-      try {
-        const parser = new DOMParser();
-        const xml = parser.parseFromString(text, 'text/xml');
-        if (xml.getElementsByTagName('parsererror').length === 0) {
-          return formatXml(new XMLSerializer().serializeToString(xml));
-        }
-      } catch (e) {}
-    }
-
-    // CSS - formatear
-    if (lang === 'css') {
-      return text
-        .replace(/\s*{\s*/g, ' {\n  ')
-        .replace(/;\s*/g, ';\n  ')
-        .replace(/\s*}\s*/g, '\n}\n')
-        .replace(/,\s*/g, ',\n')
-        .trim();
-    }
-
-    // JavaScript - formateo básico
-    if (lang === 'javascript') {
-      return text
-        .replace(/\s*{\s*/g, ' {\n  ')
-        .replace(/;\s*/g, ';\n  ')
-        .replace(/\s*}\s*/g, '\n}\n')
-        .trim();
-    }
-
-    // SQL - formateo básico
-    if (lang === 'sql') {
-      return text
-        .replace(/\b(SELECT|FROM|WHERE|AND|OR|JOIN|LEFT|RIGHT|INNER|OUTER|GROUP BY|ORDER BY|HAVING|LIMIT)\b/gi, '\n$1')
-        .replace(/,\s*/g, ',\n  ')
-        .trim();
-    }
-
-    // Protobuf
-    const proto = tryDecodeProtobuf(text);
-    if (proto) return proto;
-
-    return text;
-  };
-
-  const minify = text => {
-    try {
-      const obj = JSON.parse(text);
-      return JSON.stringify(obj);
-    } catch (e) {}
-    return text.replace(/\s+/g, ' ').trim();
-  };
-
-  const formatXml = xml => {
-    const PADDING = '  ';
-    const reg = /(>)(<)(\/*)/g;
-    let pad = 0;
-    xml = xml.replace(reg, '$1\n$2$3');
-    return xml.split('\n').map(node => {
-      let indent = 0;
-      if (node.match(/.+<\/\w[^>]*>$/)) {
-        indent = 0;
-      } else if (node.match(/^<\/\w/)) {
-        if (pad !== 0) pad -= 1;
-      } else if (node.match(/^<\w[^>]*[^\/]>.*$/)) {
-        indent = 1;
-      }
-      const padding = PADDING.repeat(pad);
-      pad += indent;
-      return padding + node;
-    }).join('\n');
-  };
-
   // Chepy functions
   const loadChepyOps = async () => {
-    const data = await api.get('/api/chepy/operations');
+    const data = await chepyService.getOperations();
     if (data.operations) {
       setChepyCat(data.operations);
       const cats = Object.keys(data.operations);
@@ -1663,10 +1289,7 @@ function Blackwire() {
     setChepyBaking(true);
     setChepyErr('');
     try {
-      const data = await api.post('/api/chepy/bake', {
-        input: chepyIn,
-        operations: chepyOps.map(op => ({ name: op.name, args: op.args }))
-      });
+      const data = await chepyService.bake(chepyIn, chepyOps.map(op => ({ name: op.name, args: op.args })));
       if (data.error) {
         setChepyErr(data.error);
         setChepyOut('');
@@ -1687,13 +1310,13 @@ function Blackwire() {
 
   // WebSocket Viewer functions
   const loadWsConns = async () => {
-    const data = await api.get('/api/websocket/connections');
+    const data = await websocketService.getConnections();
     setWsConns(Array.isArray(data) ? data : []);
   };
 
   const loadWsFrames = async url => {
     setSelWsConn(url);
-    const data = await api.get('/api/websocket/frames?url=' + encodeURIComponent(url));
+    const data = await websocketService.getFrames(url);
     setWsFrames(Array.isArray(data) ? data : []);
     setSelWsFrame(null);
     setWsResendResp(null);
@@ -1709,23 +1332,22 @@ function Blackwire() {
     if (!selWsConn || !wsResendMsg) return;
     setWsSending(true);
     setWsResendResp(null);
-    const r = await api.post('/api/websocket/resend', { url: selWsConn, message: wsResendMsg });
+    const r = await websocketService.resendFrame(selWsConn, wsResendMsg);
     setWsResendResp(r);
     setWsSending(false);
     if (r.error) toast('WS Error: ' + r.error, 'error');
     else toast('Frame sent', 'success');
   };
 
-  // Collections functions
+  // Collections functions (delegated to hook)
   const loadColls = async () => {
-    const data = await api.get('/api/collections');
-    setColls(Array.isArray(data) ? data : []);
+    await collections.load();
   };
 
   const createColl = async () => {
     const n = prompt('Collection name:');
     if (!n) return;
-    const r = await api.post('/api/collections', { name: n });
+    const r = await collectionService.create(n, '');
     await loadColls();
     if (r.id) { setSelColl(r.id); loadCollItems(r.id); }
     toast('Collection created', 'success');
@@ -1733,7 +1355,7 @@ function Blackwire() {
 
   const deleteColl = async id => {
     if (!confirm('Delete collection?')) return;
-    await api.del('/api/collections/' + id);
+    await collectionService.delete(id);
     if (selColl === id) { setSelColl(null); setCollItems([]); }
     loadColls();
     toast('Deleted', 'success');
@@ -1741,7 +1363,7 @@ function Blackwire() {
 
   const loadCollItems = async cid => {
     setSelColl(cid);
-    const data = await api.get('/api/collections/' + cid + '/items');
+    const data = await collectionService.getItems(cid);
     setCollItems(Array.isArray(data) ? data : []);
     setCollStep(0);
     setCollVars({});
@@ -1750,7 +1372,7 @@ function Blackwire() {
 
   const addToCollection = async (collId, req) => {
     const headers = req.headers || {};
-    await api.post('/api/collections/' + collId + '/items', {
+    await collectionService.addItem(collId, {
       method: req.method || 'GET',
       url: req.url || '',
       headers: typeof headers === 'string' ? {} : headers,
@@ -1763,12 +1385,12 @@ function Blackwire() {
   };
 
   const deleteCollItem = async (cid, iid) => {
-    await api.del('/api/collections/' + cid + '/items/' + iid);
+    await collectionService.deleteItem(cid, iid);
     loadCollItems(cid);
   };
 
   const updateCollItemExtracts = async (cid, iid, extracts) => {
-    await api.put('/api/collections/' + cid + '/items/' + iid, { var_extracts: extracts });
+    await collectionService.updateItem(cid, iid, extracts);
     loadCollItems(cid);
   };
 
@@ -1776,7 +1398,7 @@ function Blackwire() {
     if (!selColl || collStep >= collItems.length) return;
     const item = collItems[collStep];
     setCollRunning(true);
-    const r = await api.post('/api/collections/' + selColl + '/items/' + item.id + '/execute', { variables: collVars });
+    const r = await collectionService.executeItem(selColl, item.id, collVars);
     setCollRunning(false);
     if (r.error) {
       toast('Step failed: ' + r.error, 'error');
@@ -1801,7 +1423,7 @@ function Blackwire() {
 
   // Session Rules
   const loadSessionRules = async () => {
-    const rules = await api.get('/api/session/rules');
+    const rules = await sessionService.list();
     setSessionRules(rules || []);
   };
 
@@ -1810,7 +1432,7 @@ function Blackwire() {
       toast('Name, regex, and variable are required', 'error');
       return;
     }
-    await api.post('/api/session/rules', newRule);
+    await sessionService.addRule(newRule);
     setNewRule({
       enabled: true,
       name: '',
@@ -1826,13 +1448,13 @@ function Blackwire() {
   };
 
   const deleteSessionRule = async (id) => {
-    await api.del('/api/session/rules/' + id);
+    await sessionService.deleteRule(id);
     loadSessionRules();
     toast('Rule deleted', 'success');
   };
 
   const toggleSessionRule = async (id, enabled) => {
-    await api.put('/api/session/rules/' + id, { enabled });
+    await sessionService.toggleRule(id, enabled);
     loadSessionRules();
     toast('Rule ' + (enabled ? 'enabled' : 'disabled'), 'success');
   };
@@ -1890,7 +1512,7 @@ function Blackwire() {
     }
 
     const requestData = { method: repM, url: repU, headers: h, body: repB };
-    const r = await api.post('/api/repeater/send-raw', { ...requestData, body: repB || null, follow_redirects: repFollowRedirects });
+    const r = await repeaterService.sendRaw(requestData.method, requestData.url, requestData.headers, repB || null, repFollowRedirects);
     setRepResp(r);
     setRepRespBody(r.body || '');
     setLoading(false);
@@ -1900,8 +1522,8 @@ function Blackwire() {
 
     if (selRep) {
       // Actualizar el tab existente con la request/response más reciente
-      await api.put('/api/repeater/' + selRep, { method: repM, url: repU, headers: h, body: repB, last_response: r });
-      const items = await api.get('/api/repeater');
+      await repeaterService.update(selRep, { method: repM, url: repU, headers: h, body: repB, last_response: r });
+      const items = await repeaterService.list();
       setRepReqs(items);
     } else {
       // Sin tab activo: crear uno nuevo
@@ -1909,8 +1531,8 @@ function Blackwire() {
       try { host = new URL(repU).host; } catch (e) {}
       const timestamp = new Date().toLocaleTimeString();
       const autoName = `${repM} ${host} [${timestamp}]`;
-      const newItem = await api.post('/api/repeater', { name: autoName, method: repM, url: repU, headers: h, body: repB, last_response: r });
-      const items = await api.get('/api/repeater');
+      const newItem = await repeaterService.save(autoName, repM, repU, h, repB, r);
+      const items = await repeaterService.list();
       setRepReqs(items);
       if (newItem && newItem.id) setSelRep(newItem.id);
     }
@@ -1935,7 +1557,7 @@ function Blackwire() {
       });
     } catch (e) {}
     const requestData = { method: 'GET', url: nextUrl, headers: h, body: null };
-    const r = await api.post('/api/repeater/send-raw', { ...requestData, follow_redirects: false });
+    const r = await repeaterService.sendRaw(requestData.method, requestData.url, requestData.headers, requestData.body, false);
     setRepResp(r);
     setRepRespBody(r.body || '');
     setLoading(false);
@@ -1951,8 +1573,8 @@ function Blackwire() {
     let host = url;
     try { host = new URL(url).host; } catch (e) {}
     const name = `${r.method} ${host}`;
-    const newItem = await api.post('/api/repeater', { name, method: r.method, url, headers: hdrs, body: r.body || null });
-    const items = await api.get('/api/repeater');
+    const newItem = await repeaterService.save(name, r.method, url, hdrs, r.body || null, null);
+    const items = await repeaterService.list();
     setRepReqs(items);
     setRepM(r.method);
     setRepU(url);
@@ -1985,23 +1607,6 @@ function Blackwire() {
     toast('Sent to Intruder', 'success');
   };
 
-  const parseIntPositions = (url, headers, body) => {
-    const positions = [];
-    const marker = /\u00a7([^\u00a7]*)\u00a7/g;
-    let idx = 0;
-    let m;
-    const scan = (text, section) => {
-      marker.lastIndex = 0;
-      while ((m = marker.exec(text)) !== null) {
-        positions.push({ idx: idx++, name: m[1] || ('pos' + idx), section, start: m.index, end: m.index + m[0].length });
-      }
-    };
-    scan(url, 'url');
-    scan(headers, 'headers');
-    scan(body, 'body');
-    return positions;
-  };
-
   useEffect(() => {
     const p = parseIntPositions(intUrl, intHeaders, intBody);
     setIntPositions(p);
@@ -2014,136 +1619,6 @@ function Blackwire() {
       return next;
     });
   }, [intUrl, intHeaders, intBody]);
-
-  const generatePayloadList = (cfg) => {
-    let items = [];
-    if (cfg.type === 'list') {
-      items = (cfg.items || '').split('\n').filter(l => l.length > 0);
-    } else if (cfg.type === 'numbers') {
-      const from = Number(cfg.from) || 0;
-      const to = Number(cfg.to) || 0;
-      const step = Math.max(1, Number(cfg.step) || 1);
-      const pad = Number(cfg.padLen) || 0;
-      for (let n = from; n <= to; n += step) {
-        let s = String(n);
-        if (pad > 0) while (s.length < pad) s = '0' + s;
-        items.push(s);
-      }
-    } else if (cfg.type === 'bruteforce') {
-      const chars = (cfg.charset || 'a').split('');
-      const minL = Math.max(1, Number(cfg.minLen) || 1);
-      const maxL = Math.min(8, Number(cfg.maxLen) || 3);
-      const gen = (prefix, len) => {
-        if (prefix.length === len) { items.push(prefix); return; }
-        for (const c of chars) gen(prefix + c, len);
-      };
-      for (let l = minL; l <= maxL; l++) gen('', l);
-      if (items.length > 500000) items = items.slice(0, 500000); // safety cap
-    }
-    // Processing
-    items = items.map(v => {
-      if (cfg.prefix) v = cfg.prefix + v;
-      if (cfg.suffix) v = v + cfg.suffix;
-      if (cfg.urlEncode) v = encodeURIComponent(v);
-      if (cfg.base64) v = btoa(v);
-      return v;
-    });
-    return items;
-  };
-
-  const generateAttackCombinations = () => {
-    const positions = parseIntPositions(intUrl, intHeaders, intBody);
-    if (positions.length === 0) return [];
-    const payloadSets = positions.map((_, i) => generatePayloadList(intPayloads[i] || { type: 'list', items: '' }));
-    const combos = [];
-
-    if (intAttackType === 'targeted') {
-      // For each position, iterate its payloads while others keep original value
-      for (let pi = 0; pi < positions.length; pi++) {
-        for (const val of payloadSets[pi]) {
-          const payloads = {};
-          positions.forEach((_, i) => { payloads[i] = i === pi ? val : null; }); // null = keep original
-          combos.push({ payloads, label: val });
-        }
-      }
-    } else if (intAttackType === 'broadcast') {
-      // Same payload in all positions
-      const list = payloadSets[0] || [];
-      for (const val of list) {
-        const payloads = {};
-        positions.forEach((_, i) => { payloads[i] = val; });
-        combos.push({ payloads, label: val });
-      }
-    } else if (intAttackType === 'parallel') {
-      // Zip all lists
-      const minLen = Math.min(...payloadSets.map(s => s.length));
-      for (let j = 0; j < minLen; j++) {
-        const payloads = {};
-        positions.forEach((_, i) => { payloads[i] = payloadSets[i][j]; });
-        combos.push({ payloads, label: payloadSets.map(s => s[j]).join(' | ') });
-      }
-    } else if (intAttackType === 'matrix') {
-      // Cartesian product
-      const cart = (arr) => {
-        if (arr.length === 0) return [[]];
-        const [first, ...rest] = arr;
-        const restCombos = cart(rest);
-        const result = [];
-        for (const v of first) for (const rc of restCombos) result.push([v, ...rc]);
-        return result;
-      };
-      const products = cart(payloadSets);
-      for (const combo of products) {
-        const payloads = {};
-        positions.forEach((_, i) => { payloads[i] = combo[i]; });
-        combos.push({ payloads, label: combo.join(' | ') });
-      }
-      if (combos.length > 1000000) combos.length = 1000000; // safety cap
-    }
-    return combos;
-  };
-
-  const buildIntRequest = (combo) => {
-    const marker = /\u00a7([^\u00a7]*)\u00a7/g;
-    let posIdx = 0;
-    const replaceMarkers = (text, section) => {
-      const startIdx = posIdx;
-      // count markers in this section
-      let count = 0;
-      marker.lastIndex = 0;
-      let mm;
-      while ((mm = marker.exec(text)) !== null) count++;
-      const result = text.replace(marker, () => {
-        const val = combo.payloads[startIdx + (posIdx - startIdx)];
-        const orig = '';
-        posIdx++;
-        return val !== null && val !== undefined ? val : orig;
-      });
-      return result;
-    };
-    posIdx = 0;
-    const url = replaceMarkers(intUrl, 'url');
-    const headersText = replaceMarkers(intHeaders, 'headers');
-    const body = replaceMarkers(intBody, 'body');
-
-    let h = {};
-    try {
-      headersText.split('\n').forEach(l => {
-        const [k, ...v] = l.split(':');
-        if (k && v.length) h[k.trim()] = v.join(':').trim();
-      });
-    } catch (e) {}
-    // Auto Content-Length
-    if (body) {
-      const len = new TextEncoder().encode(body).length;
-      const clKey = Object.keys(h).find(k => k.toLowerCase() === 'content-length');
-      if (clKey) h[clKey] = String(len); else h['Content-Length'] = String(len);
-    } else {
-      const clKey = Object.keys(h).find(k => k.toLowerCase() === 'content-length');
-      if (clKey) delete h[clKey];
-    }
-    return { method: intMethod, url, headers: h, body: body || null };
-  };
 
   const runIntruderAttack = async () => {
     const combos = generateAttackCombinations();
@@ -2164,12 +1639,12 @@ function Blackwire() {
       if (intStopRef.current) break;
       const batch = combos.slice(i, i + conc);
       const results = await Promise.all(batch.map(async (combo, bi) => {
-        const reqData = buildIntRequest(combo);
+        const reqData = buildIntRequest(combo, intUrl, intHeaders, intBody, intMethod);
         let retries = 0;
         let resp;
         while (true) {
           try {
-            resp = await api.post('/api/repeater/send-raw', { ...reqData, follow_redirects: intFollowRedirects });
+            resp = await repeaterService.sendRaw(reqData.method, reqData.url, reqData.headers, reqData.body, intFollowRedirects);
           } catch (e) {
             resp = { error: String(e) };
           }
@@ -2240,7 +1715,7 @@ function Blackwire() {
   }, [intResults, intFilter, intSortCol, intSortDir]);
   const loadIntAttacks = async () => {
     try {
-      const r = await api.get('/api/intruder/attacks');
+      const r = await intruderService.listAttacks();
       setIntAttacks(Array.isArray(r) ? r : []);
     } catch (e) { setIntAttacks([]); }
   };
@@ -2249,7 +1724,7 @@ function Blackwire() {
     const config = { method: intMethod, url: intUrl, headers: intHeaders, body: intBody, attackType: intAttackType,
       payloads: intPayloads, concurrency: intConcurrency, delay: intDelay, randomDelay: intRandomDelay,
       delayMin: intDelayMin, delayMax: intDelayMax, followRedirects: intFollowRedirects, timeout: intTimeout, maxRetries: intMaxRetries };
-    const r = await api.post('/api/intruder/attacks', { name, config, results: intResults, total: intResults.length });
+    const r = await intruderService.saveAttack(name, config, intResults, intResults.length);
     if (r.id) {
       setIntSelAttack(r.id);
       loadIntAttacks();
@@ -2258,7 +1733,7 @@ function Blackwire() {
   };
 
   const loadIntAttack = async (id) => {
-    const r = await api.get('/api/intruder/attacks/' + id);
+    const r = await intruderService.loadAttack(id);
     if (r.error) { toast('Failed to load', 'error'); return; }
     setIntSelAttack(id);
     // Restore config
@@ -2290,12 +1765,12 @@ function Blackwire() {
     const atk = intAttacks.find(a => a.id === id);
     const n = prompt('Rename attack:', atk ? atk.name : '');
     if (!n) return;
-    await api.put('/api/intruder/attacks/' + id, { name: n });
+    await intruderService.updateAttack(id, n);
     loadIntAttacks();
   };
 
   const deleteIntAttack = async (id) => {
-    await api.del('/api/intruder/attacks/' + id);
+    await intruderService.deleteAttack(id);
     if (intSelAttack === id) setIntSelAttack(null);
     loadIntAttacks();
     toast('Attack deleted', 'success');
@@ -2315,10 +1790,10 @@ function Blackwire() {
         delayMin: intDelayMin, delayMax: intDelayMax, followRedirects: intFollowRedirects, timeout: intTimeout, maxRetries: intMaxRetries };
       if (intSelAttack) {
         // Update existing
-        api.put('/api/intruder/attacks/' + intSelAttack, { config, results: intResults }).then(() => loadIntAttacks());
+        intruderService.updateAttack(intSelAttack, null, config, intResults).then(() => loadIntAttacks());
       } else {
         // Create new
-        api.post('/api/intruder/attacks', { name, config, results: intResults, total: intResults.length }).then(r => {
+        intruderService.saveAttack(name, config, intResults, intResults.length).then(r => {
           if (r && r.id) { setIntSelAttack(r.id); loadIntAttacks(); }
         });
       }
@@ -2341,7 +1816,7 @@ function Blackwire() {
         if (k && v.length) h[k.trim()] = v.join(':').trim();
       });
     } catch (e) {}
-    await api.post('/api/repeater', { name: n, method: repM, url: repU, headers: h, body: repB });
+    await repeaterService.save(n, repM, repU, h, repB, null);
     loadRep();
     toast('Saved', 'success');
   };
@@ -2368,91 +1843,77 @@ function Blackwire() {
     if (!item) return;
     const n = prompt('Rename:', item.name);
     if (!n || n === item.name) return;
-    await api.put('/api/repeater/' + id, { name: n });
+    await repeaterService.update(id, n);
     loadRep();
     toast('Renamed', 'success');
   };
 
   const delRepItem = async id => {
-    await api.del('/api/repeater/' + id);
+    await repeaterService.delete(id);
     if (selRep === id) setSelRep(null);
     loadRep();
     toast('Deleted', 'success');
   };
 
   const commit = async () => {
-    if (!cmtMsg.trim()) return;
-    const r = await api.post('/api/git/commit?message=' + encodeURIComponent(cmtMsg));
-    if (r.status === 'committed') {
-      toast('Committed: ' + r.hash, 'success');
-      setCmtMsg('');
-      loadGit();
-    }
+    await git.createCommit();
   };
 
   // Auto-commit con Ctrl+S
   const autoCommit = async () => {
-    const msg = 'Auto-commit ' + new Date().toISOString();
-    const r = await api.post('/api/git/commit?message=' + encodeURIComponent(msg));
-    if (r.status === 'committed') {
-      toast('Auto-committed: ' + r.hash.substring(0, 7), 'success');
-      loadGit();
-    } else {
-      toast('No changes to commit', 'info');
-    }
+    await git.autoCommit();
   };
 
   const togSave = async id => {
-    await api.put('/api/requests/' + id + '/save');
-    // Actualizar estado local inmediatamente para feedback en tiempo real
-    setReqs(prev => prev.map(r => r.id === id ? { ...r, saved: !r.saved } : r));
+    await requestService.toggleSave(id);
     // Actualizar también selReq si es el request activo
     if (selReq?.id === id) setSelReq(prev => ({ ...prev, saved: !prev.saved }));
+    // Reload requests to refresh the state
     loadReqs();
   };
 
   const delReq = async id => {
-    await api.del('/api/requests/' + id);
+    await requestService.delete(id);
     loadReqs();
     if (selReq?.id === id) setSelReq(null);
   };
 
   const clearHist = async () => {
     if (!confirm('Clear unsaved?')) return;
-    await api.del('/api/requests?keep_saved=true');
+    await requestService.clearUnsaved();
     loadReqs();
     toast('Cleared', 'success');
   };
 
   const togExtEnabled = async (name, enabled) => {
-    const ext = extensions.find(e => e.name === name);
+    const ext = extensions.extensions.find(e => e.name === name);
     if (!ext) return;
     const newCfg = { ...ext.config, enabled };
-    await api.put('/api/extensions/' + name, newCfg);
-    loadExts();
+    await extensionService.updateConfig(name, newCfg);
+    await extensions.loadExtensions();
     toast('Extension ' + (enabled ? 'enabled' : 'disabled'), 'success');
   };
 
   const updateExtCfg = async (name, cfg) => {
-    await api.put('/api/extensions/' + name, cfg);
-    loadExts();
+    await extensionService.updateConfig(name, cfg);
+    await extensions.loadExtensions();
     toast('Extension updated', 'success');
   };
 
   const saveProxyCfg = async () => {
     if (!curPrj) return;
-    const r = await api.get('/api/projects/current');
+    const r = await projectService.getCurrent();
     if (!r.config) return;
     r.config.proxy_port = pxPort;
     r.config.proxy_mode = pxMode;
     r.config.proxy_args = pxArgs;
-    await save_project_config(curPrj, r.config);
+    await save_project_config(curPrj.project, r.config);
     toast('Proxy config saved', 'success');
     setShowProxyCfg(false);
   };
 
   const save_project_config = async (name, config) => {
-    await api.put('/api/projects/' + encodeURIComponent(name), config);
+    await projectService.updateConfig(name, config);
   };
 
   // ===== EXTENSION UI COMPONENTS =====
@@ -2675,13 +2136,7 @@ function Blackwire() {
           setError(null);
 
           // Fetch del archivo .ui.js compilado
-          const response = await fetch(`/api/extensions/${ext.name}/ui.js`);
-
-          if (!response.ok) {
-            throw new Error(`Failed to load UI: ${response.status} ${response.statusText}`);
-          }
-
-          const uiCode = await response.text();
+          const uiCode = await extensionService.getUI(ext.name);
 
           // Inicializar namespace global si no existe
           if (!window.BlackwireExtensions) {
@@ -2738,248 +2193,6 @@ function Blackwire() {
     // Renderizar el componente dinámico con todas las props
     return React.createElement(component, { ext, updateExtCfg, toast, ...otherProps });
   }
-
-  // Token-based highlighter: applies all rules to the original text simultaneously,
-  // never processing already-highlighted HTML. Rules are [cssClass, regex] pairs;
-  // earlier rules take priority when tokens overlap at the same position.
-  const buildHighlighter = rules => text => {
-    const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    const tokens = [];
-    for (const [cls, regex] of rules) {
-      const flags = regex.flags.includes('g') ? regex.flags : regex.flags + 'g';
-      const r = new RegExp(regex.source, flags);
-      r.lastIndex = 0;
-      let m;
-      while ((m = r.exec(text)) !== null) {
-        if (m[0].length === 0) { r.lastIndex++; continue; }
-        tokens.push({ start: m.index, end: m.index + m[0].length, cls });
-      }
-    }
-    tokens.sort((a, b) => a.start - b.start || b.end - a.end);
-    let html = '', pos = 0;
-    for (const { start, end, cls } of tokens) {
-      if (start < pos) continue;
-      html += esc(text.slice(pos, start));
-      html += '<span class="' + cls + '">' + esc(text.slice(start, end)) + '</span>';
-      pos = end;
-    }
-    return html + esc(text.slice(pos));
-  };
-
-  const syntaxHighlightJSON = buildHighlighter([
-    ['json-key',    /"(?:\\u[0-9a-fA-F]{4}|\\[^u]|[^\\"])*"(?=\s*:)/g],
-    ['json-string', /"(?:\\u[0-9a-fA-F]{4}|\\[^u]|[^\\"])*"/g],
-    ['json-bool',   /\b(?:true|false)\b/g],
-    ['json-null',   /\bnull\b/g],
-    ['json-number', /-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?/g],
-  ]);
-
-  const syntaxHighlightXML = buildHighlighter([
-    ['json-null',   /<!--[\s\S]*?-->/g],
-    ['json-string', /"[^"]*"|'[^']*'/g],
-    ['json-bool',   /\b[\w:.-]+(?==)/g],
-    ['json-key',    /<\/?[\w:.-]+/g],
-  ]);
-
-  const syntaxHighlightProto = buildHighlighter([
-    ['json-null',   /\/\/[^\n]*/gm],
-    ['json-key',    /\bfield \d+\b/g],
-    ['json-bool',   /\b(?:varint|string|bytes|message|fixed32|fixed64)\b/g],
-    ['json-number', /(?<=:\s*)\d+(?:\.\d+)?(?=\s*$)/gm],
-    ['json-string', /(?<=:\s*).+$/gm],
-  ]);
-
-  // Sistema de syntax highlighting avanzado para múltiples lenguajes
-  const syntaxHighlightHTML = buildHighlighter([
-    ['json-null',   /<!--[\s\S]*?-->/g],
-    ['json-null',   /<!DOCTYPE[^>]*>/gi],
-    ['json-string', /"[^"]*"|'[^']*'/g],
-    ['json-bool',   /\b[\w:-]+(?==)/g],
-    ['json-key',    /<\/?[\w:-]+/g],
-  ]);
-
-  const syntaxHighlightCSS = buildHighlighter([
-    ['json-null',   /\/\*[\s\S]*?\*\//g],
-    ['json-null',   /@[\w-]+/g],
-    ['json-string', /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g],
-    ['json-string', /#[0-9a-fA-F]{3,8}\b/g],
-    ['json-number', /\b\d+\.?\d*(?:px|em|rem|vw|vh|%|pt|cm|mm|in|s|ms|deg|fr|ch|ex|vmin|vmax)\b/gi],
-    ['json-key',    /^[^{};@\n][^{};@\n]*(?=\s*\{)/gm],
-    ['json-bool',   /\b[\w-]+(?=\s*:)/g],
-  ]);
-
-  const syntaxHighlightJS = buildHighlighter([
-    ['json-null',   /\/\/[^\n]*/gm],
-    ['json-null',   /\/\*[\s\S]*?\*\//g],
-    ['json-string', /`(?:\\[\s\S]|[^`\\])*`/g],
-    ['json-string', /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g],
-    ['json-number', /\b\d+\.?\d*(?:[eE][+-]?\d+)?\b/g],
-    ['json-bool',   /\b(?:const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|try|catch|finally|throw|new|class|extends|import|export|from|default|async|await|yield|typeof|instanceof|delete|void|null|undefined|true|false|this|super|static|get|set)\b/g],
-    ['json-key',    /\b[a-zA-Z_$][\w$]*(?=\s*\()/g],
-  ]);
-
-  const syntaxHighlightPython = buildHighlighter([
-    ['json-null',   /#[^\n]*/gm],
-    ['json-string', /"""[\s\S]*?"""|'''[\s\S]*?'''/g],
-    ['json-string', /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g],
-    ['json-number', /\b\d+\.?\d*(?:[eE][+-]?\d+)?\b/g],
-    ['json-bool',   /\b(?:def|class|if|elif|else|for|while|return|import|from|as|try|except|finally|with|lambda|yield|async|await|pass|break|continue|raise|assert|del|global|nonlocal|and|or|not|in|is|None|True|False)\b/g],
-    ['json-key',    /\b[a-zA-Z_]\w*(?=\s*\()/g],
-  ]);
-
-  const syntaxHighlightPHP = buildHighlighter([
-    ['json-null',   /\/\/[^\n]*|#[^\n]*/gm],
-    ['json-null',   /\/\*[\s\S]*?\*\//g],
-    ['json-string', /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g],
-    ['json-key',    /\$[a-zA-Z_]\w*/g],
-    ['json-number', /\b\d+\.?\d*\b/g],
-    ['json-bool',   /\b(?:function|return|if|else|elseif|for|foreach|while|do|switch|case|break|continue|try|catch|finally|throw|new|class|extends|implements|public|private|protected|static|const|namespace|use|as|trait|interface|abstract|final|echo|print|include|require|include_once|require_once|array|true|false|null)\b/g],
-  ]);
-
-  const syntaxHighlightSQL = buildHighlighter([
-    ['json-null',   /--[^\n]*/gm],
-    ['json-null',   /\/\*[\s\S]*?\*\//g],
-    ['json-string', /'(?:''|[^'])*'/g],
-    ['json-number', /\b\d+\.?\d*\b/g],
-    ['json-bool',   /\b(?:SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|BETWEEN|IS|NULL|JOIN|LEFT|RIGHT|INNER|OUTER|FULL|CROSS|ON|GROUP|ORDER|BY|HAVING|LIMIT|OFFSET|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|TABLE|ALTER|DROP|INDEX|VIEW|DATABASE|SCHEMA|PRIMARY|FOREIGN|KEY|REFERENCES|CONSTRAINT|UNIQUE|DEFAULT|AUTO_INCREMENT|CASCADE|TRUNCATE|UNION|ALL|DISTINCT|AS|CASE|WHEN|THEN|ELSE|END)\b/gi],
-  ]);
-
-  const syntaxHighlightYAML = buildHighlighter([
-    ['json-null',   /#[^\n]*/gm],
-    ['json-string', /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g],
-    ['json-key',    /^[ \t]*[\w-]+(?=\s*:)/gm],
-    ['json-bool',   /\b(?:true|false|null|yes|no|on|off)\b/gi],
-    ['json-number', /\b-?\d+\.?\d*\b/g],
-  ]);
-
-  const syntaxHighlightGraphQL = buildHighlighter([
-    ['json-null',   /#[^\n]*/gm],
-    ['json-string', /"(?:\\.|[^"\\])*"/g],
-    ['json-bool',   /\b(?:query|mutation|subscription|fragment|on|type|interface|union|enum|input|schema|extend|implements|directive|scalar)\b/g],
-    ['json-key',    /\b[A-Z][a-zA-Z0-9]*\b/g],
-  ]);
-
-  const syntaxHighlightShell = buildHighlighter([
-    ['json-null',   /#[^\n]*/gm],
-    ['json-string', /"(?:\\.|[^"\\])*"|'[^']*'/g],
-    ['json-key',    /\$\{?[a-zA-Z_]\w*\}?|\$\d+/g],
-    ['json-bool',   /\b(?:echo|cd|ls|mkdir|rm|cp|mv|cat|grep|awk|sed|find|chmod|chown|sudo|apt|yum|npm|yarn|git|docker|curl|wget|ssh|scp|tar|zip|unzip|ps|kill|top|df|du|if|then|else|elif|fi|for|while|do|done|case|esac|function|return|export|source|alias)\b/g],
-  ]);
-
-  const escapeHtml = s => String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-
-  const getCaretOffset = el => {
-    const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0) return null;
-    const range = sel.getRangeAt(0);
-    if (!el.contains(range.startContainer)) return null;
-    const pre = range.cloneRange();
-    pre.selectNodeContents(el);
-    pre.setEnd(range.startContainer, range.startOffset);
-    return pre.toString().length;
-  };
-
-  const setCaretOffset = (el, offset) => {
-    if (offset == null) return;
-    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
-    let node;
-    let remaining = offset;
-    while ((node = walker.nextNode())) {
-      const len = node.textContent.length;
-      if (remaining <= len) {
-        const range = document.createRange();
-        range.setStart(node, remaining);
-        range.collapse(true);
-        const sel = window.getSelection();
-        if (!sel) return;
-        sel.removeAllRanges();
-        sel.addRange(range);
-        return;
-      }
-      remaining -= len;
-    }
-  };
-
-  // Detecta el lenguaje del código
-  const detectLanguage = text => {
-    if (!text || !text.trim()) return null;
-    const trimmed = text.trim();
-
-    // JSON
-    try {
-      JSON.parse(text);
-      return 'json';
-    } catch (e) {}
-
-    // XML/HTML
-    if (trimmed.startsWith('<')) {
-      try {
-        const parser = new DOMParser();
-        const xml = parser.parseFromString(text, 'text/xml');
-        if (xml.getElementsByTagName('parsererror').length === 0) {
-          // Detectar si es HTML o XML
-          if (trimmed.toLowerCase().startsWith('<!doctype html') ||
-              /<html|<head|<body|<div|<span|<p|<a |<img |<script|<style/i.test(trimmed.substring(0, 200))) {
-            return 'html';
-          }
-          return 'xml';
-        }
-      } catch (e) {}
-    }
-
-    // CSS
-    if (/^\s*([.#]?[a-z][\w-]*|\*|@[\w-]+)\s*\{/im.test(trimmed) ||
-        /@import|@media|@keyframes/i.test(trimmed)) {
-      return 'css';
-    }
-
-    // JavaScript/TypeScript
-    if (/^(import |export |const |let |var |function |class |async |\/\/|\/\*)/m.test(trimmed) ||
-        /=>\s*\{|\.then\(|\.catch\(|console\.(log|error|warn)/i.test(trimmed)) {
-      return 'javascript';
-    }
-
-    // Python
-    if (/^(def |class |import |from |#|""")/m.test(trimmed) ||
-        /:\s*$\n\s{4,}/m.test(trimmed)) {
-      return 'python';
-    }
-
-    // PHP
-    if (trimmed.startsWith('<?php') || /\$[a-z_]/i.test(trimmed)) {
-      return 'php';
-    }
-
-    // SQL
-    if (/^(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP)\s+/im.test(trimmed)) {
-      return 'sql';
-    }
-
-    // YAML
-    if (/^[a-z_][\w]*:\s*$/m.test(trimmed) && !/[{}[\]]/g.test(trimmed)) {
-      return 'yaml';
-    }
-
-    // GraphQL
-    if (/^(query|mutation|subscription|fragment|type|interface|enum)\s+/im.test(trimmed)) {
-      return 'graphql';
-    }
-
-    // Shell/Bash
-    if (trimmed.startsWith('#!') || /^(echo|cd|ls|mkdir|export|source|function)\s+/m.test(trimmed)) {
-      return 'shell';
-    }
-
-    // Protobuf
-    if (text.includes('// Protobuf') && text.includes('field ')) {
-      return 'protobuf';
-    }
-
-    return null;
-  };
 
   // Colorea cualquier body inteligentemente detectando el lenguaje
   const colorizeBody = text => {
@@ -3059,34 +2272,6 @@ function Blackwire() {
 
   // Menú contextual
   // Unified context menu
-  const normalizeRequest = (req, source) => {
-    if (source === 'webhook') {
-      return { id: req.request_id, method: req.method || 'GET', url: req.url || '',
-        headers: req.headers || {}, body: req.content || null, source: 'webhook' };
-    }
-    if (source === 'repeater') {
-      return { id: req.id, method: req.method, url: req.url,
-        headers: req.headers || {}, body: req.body || null, name: req.name, source: 'repeater' };
-    }
-    if (source === 'websocket') {
-      return { id: req.id, method: 'WS', url: req.url || '',
-        headers: {}, body: req.content || req.body || null, source: 'websocket' };
-    }
-    if (source === 'collection') {
-      return { id: req.id, method: req.method, url: req.url,
-        headers: req.headers || {}, body: req.body || null, source: 'collection' };
-    }
-    if (source === 'intercept') {
-      return { id: req.id, method: req.method, url: req.url,
-        headers: req.headers || {}, body: req.body || null, source: 'intercept' };
-    }
-    if (source === 'selection') {
-      return { id: 'selection', method: 'TEXT', url: '', headers: {}, body: req.body || '', source: 'selection' };
-    }
-    return { id: req.id, method: req.method, url: req.url,
-      headers: req.headers || {}, body: req.body || null, saved: req.saved, source: 'history' };
-  };
-
   const showContextMenu = (e, req, source) => {
     e.preventDefault();
     const norm = normalizeRequest(req, source || 'history');
@@ -3111,7 +2296,7 @@ function Blackwire() {
       toast('Invalid URL', 'error');
       return;
     }
-    await api.post('/api/scope/rules', { pattern: host, rule_type: ruleType });
+    await scopeService.addRule(host, ruleType, true);
     await loadScope();
     toast((ruleType === 'include' ? 'Included ' : 'Excluded ') + host, 'success');
   };
@@ -3126,7 +2311,7 @@ function Blackwire() {
     const needsFull = ['repeater','intruder','copy-curl','copy-body','send-to-cipher','compare-a','compare-b','add-to-collection'];
     if (source === 'history' && needsFull.includes(action) && (!norm.headers || Object.keys(norm.headers).length === 0)) {
       try {
-        const full = await api.get('/api/requests/' + req.id + '/detail');
+        const full = await requestService.getDetail(req.id);
         norm = { ...norm, headers: full.headers || {}, body: full.body || null };
         req.response_status = full.response_status;
         req.response_headers = full.response_headers;
@@ -3245,106 +2430,51 @@ function Blackwire() {
     }
   };
 
-  const generateCurl = req => {
-    let curl = 'curl -X ' + req.method + " '" + req.url + "'";
-    if (req.headers) {
-      Object.entries(req.headers).forEach(([k, v]) => {
-        curl += " -H '" + k + ': ' + v + "'";
-      });
-    }
-    if (req.body) {
-      curl += " -d '" + req.body.replace(/'/g, "'\\''") + "'";
-    }
-    return curl;
-  };
-
-  const generateSQLMapRequest = req => {
-    // Generate HTTP request file for SQLMap (-r flag)
-    try {
-      const url = new URL(req.url);
-      const path = url.pathname + url.search;
-
-      let request = `${req.method} ${path} HTTP/1.1\r\n`;
-      request += `Host: ${url.host}\r\n`;
-
-      if (req.headers) {
-        Object.entries(req.headers).forEach(([k, v]) => {
-          // Skip Host header as we already added it
-          if (k.toLowerCase() !== 'host') {
-            request += `${k}: ${v}\r\n`;
-          }
-        });
-      }
-
-      request += '\r\n';
-
-      if (req.body) {
-        request += req.body;
-      }
-
-      return request;
-    } catch (e) {
-      return '';
-    }
-  };
-
   const filtered = reqs;
-
-  const stCls = s => !s ? '' : s < 300 ? 'st2' : s < 400 ? 'st3' : s < 500 ? 'st4' : 'st5';
-  const fmtTime = t => t ? new Date(t).toLocaleTimeString('en-US', { hour12: false }) : '';
-  const fmtH = (h, url) => {
-    if (!h) return '';
-    const lines = Object.entries(h).map(([k, v]) => k + ': ' + (Array.isArray(v) ? v.join(', ') : v));
-    if (url && !lines.some(l => /^host\s*:/i.test(l))) {
-      try { lines.unshift('Host: ' + new URL(url).host); } catch (e) {}
-    }
-    return lines.join('\n');
-  };
-  const colorizeHeaders = text => {
-    if (!text) return '';
-    return text.split('\n').map(line => {
-      const ci = line.indexOf(':');
-      if (ci === -1) return escapeHtml(line);
-      return '<span class="hdr-key">' + escapeHtml(line.slice(0, ci)) + '</span><span class="hdr-sep">:</span><span class="hdr-val">' + escapeHtml(line.slice(ci + 1)) + '</span>';
-    }).join('\n');
-  };
-  const fmtHHtml = (h, url) => colorizeHeaders(fmtH(h, url));
-
-  const buildCmpText = (req, view) => {
-    if (!req) return '';
-    if (view === 'request') {
-      return req.method + ' ' + req.url + '\n' + fmtH(req.headers, req.url) + (req.body ? '\n\n' + req.body : '');
-    }
-    return 'HTTP ' + (req.response_status || '(no response)') + '\n' + fmtH(req.response_headers) + '\n\n' + (req.response_body || '');
-  };
 
   // --- Sensitive scan logic ---
   const runSensitiveScan = async () => {
-    sensStopRef.current = false;
-    setSensScanning(true);
-    setSensResults([]);
-    setSensPct(0);
-    setSensSelResult(null);
-    setSensSelDetail(null);
+    try {
+      sensStopRef.current = false;
+      setSensScanning(true);
+      setSensResults([]);
+      setSensPct(0);
+      setSensSelResult(null);
+      setSensSelDetail(null);
 
-    const allPatterns = [
-      ...sensPatterns.general.filter(p => p.enabled),
-      ...sensPatterns.tokens.filter(p => p.enabled),
-      ...sensPatterns.urls.filter(p => p.enabled),
-      ...sensPatterns.files.filter(p => p.enabled),
-    ];
+      const allPatterns = [
+        ...sensPatterns.general.filter(p => p.enabled),
+        ...sensPatterns.tokens.filter(p => p.enabled),
+        ...sensPatterns.urls.filter(p => p.enabled),
+        ...sensPatterns.files.filter(p => p.enabled),
+      ];
 
-    let targets = reqs;
-    if (sensScopeOnly) targets = targets.filter(r => r.in_scope);
+      if (allPatterns.length === 0) {
+        toast('No patterns enabled', 'error');
+        setSensScanning(false);
+        return;
+      }
 
-    const results = [];
-    const total = targets.length;
-    let done = 0;
+      // Load ALL requests for scanning, not just current page
+      toast('Loading requests for scan...', 'info');
+      const allReqsData = await requestService.search('', 1, 50000, false, sensScopeOnly, null);
+      let targets = allReqsData.requests || [];
+
+      if (targets.length === 0) {
+        const msg = sensScopeOnly ? 'No requests in scope to scan' : 'No requests to scan';
+        toast(msg, 'warning');
+        setSensScanning(false);
+        return;
+      }
+
+      const results = [];
+      const total = targets.length;
+      let done = 0;
 
     const processBatch = async (batch) => {
       const details = await Promise.all(batch.map(async r => {
         try {
-          const d = await api.get('/api/requests/' + r.id + '/detail');
+          const d = await requestService.getDetail(r.id);
           return d;
         } catch { return null; }
       }));
@@ -3353,9 +2483,9 @@ function Blackwire() {
         if (!d || sensStopRef.current) continue;
         const sections = {
           reqUrl: d.url || '',
-          reqHeaders: d.headers || '',
+          reqHeaders: typeof d.headers === 'object' ? Object.entries(d.headers || {}).map(([k, v]) => `${k}: ${v}`).join('\n') : (d.headers || ''),
           reqBody: d.body || '',
-          respHeaders: d.response_headers || '',
+          respHeaders: typeof d.response_headers === 'object' ? Object.entries(d.response_headers || {}).map(([k, v]) => `${k}: ${v}`).join('\n') : (d.response_headers || ''),
           respBody: d.response_body || '',
         };
 
@@ -3396,18 +2526,25 @@ function Blackwire() {
       }
     };
 
-    for (let i = 0; i < total; i += sensBatch) {
-      if (sensStopRef.current) break;
-      const batch = targets.slice(i, i + sensBatch);
-      await processBatch(batch);
-      done += batch.length;
-      setSensPct(Math.round((done / total) * 100));
-      setSensResults([...results]);
-    }
+      for (let i = 0; i < total; i += sensBatch) {
+        if (sensStopRef.current) break;
+        const batch = targets.slice(i, i + sensBatch);
+        await processBatch(batch);
+        done += batch.length;
+        const pct = Math.round((done / total) * 100);
+        setSensPct(pct);
+        setSensResults([...results]);
+      }
 
-    setSensScanning(false);
-    setSensPct(100);
-    setSensResults([...results]);
+      setSensPct(100);
+      setSensResults([...results]);
+      toast(`Scan complete: ${results.length} findings`, 'success');
+    } catch (err) {
+      console.error('Sensitive scan error:', err);
+      toast('Scan failed: ' + (err.message || 'Unknown error'), 'error');
+    } finally {
+      setSensScanning(false);
+    }
   };
 
   const stopSensitiveScan = () => { sensStopRef.current = true; };
@@ -3433,7 +2570,7 @@ function Blackwire() {
   const loadSensDetail = async (result) => {
     setSensSelResult(result);
     try {
-      const d = await api.get('/api/requests/' + result.requestId + '/detail');
+      const d = await requestService.getDetail(result.requestId);
       setSensSelDetail(d);
     } catch { setSensSelDetail(null); }
   };
@@ -3443,7 +2580,19 @@ function Blackwire() {
     return diffLines(buildCmpText(cmpA, cmpView), buildCmpText(cmpB, cmpView));
   }, [cmpA, cmpB, cmpView]);
 
-  const siteTree = React.useMemo(() => buildSiteTree(reqs), [reqs]);
+  // Sitemap: fetch ALL requests (not paginated) for global view
+  const [allReqsForSitemap, setAllReqsForSitemap] = useState([]);
+
+  useEffect(() => {
+    if (histSubTab === 'sitemap' && curPrj) {
+      // Fetch all requests with large page size for sitemap
+      requestService.search('', 1, 10000, false, false, null)
+        .then(data => setAllReqsForSitemap(data.requests || []))
+        .catch(err => console.error('Failed to load sitemap data:', err));
+    }
+  }, [histSubTab, curPrj]);
+
+  const siteTree = React.useMemo(() => buildSiteTree(allReqsForSitemap.length > 0 ? allReqsForSitemap : reqs), [allReqsForSitemap, reqs]);
   const smNodeReqs = React.useMemo(() => {
     if (!smSelNode) return [];
     let filtered = collectNodeReqs(smSelNode);
@@ -3462,10 +2611,10 @@ function Blackwire() {
     }
     if (smFilterText) filtered = filtered.filter(r => r.url.toLowerCase().includes(smFilterText.toLowerCase()));
     return filtered;
-  }, [smSelNode, reqs, smFilterMethod, smFilterStatus, smFilterExt, smFilterText]);
+  }, [smSelNode, allReqsForSitemap, reqs, smFilterMethod, smFilterStatus, smFilterExt, smFilterText]);
 
   const smStats = React.useMemo(() => {
-    const allReqs = reqs;
+    const allReqs = allReqsForSitemap.length > 0 ? allReqsForSitemap : reqs;
     const methods = {};
     const statuses = {};
     const extensions = {};
@@ -3480,10 +2629,10 @@ function Blackwire() {
       } catch (e) {}
     });
     return { methods, statuses, extensions };
-  }, [reqs]);
+  }, [allReqsForSitemap, reqs]);
 
   const exportSitemap = (format) => {
-    const data = smSelNode ? smNodeReqs : reqs;
+    const data = smSelNode ? smNodeReqs : (allReqsForSitemap.length > 0 ? allReqsForSitemap : reqs);
     if (format === 'json') {
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -3650,7 +2799,7 @@ function Blackwire() {
 .git-pnl{padding:24px;max-width:700px;margin:0 auto;width:100%}.git-sec{margin-bottom:20px}
 .git-ttl{font-size:13px;font-weight:600;margin-bottom:10px;color:var(--txt2)}.cmt-form{display:flex;gap:10px}
 .cmt-in{flex:1;padding:8px 12px;background:var(--bg3);border:1px solid var(--brd);border-radius:5px;color:var(--txt);outline:none}
-.cmt-list{background:var(--bg2);border-radius:8px;border:1px solid var(--brd)}.cmt-item{display:flex;gap:14px;padding:12px 14px;border-bottom:1px solid var(--brd);font-family:var(--font-mono);font-size:11px;align-items:center}
+.cmt-list{background:var(--bg2);border-radius:8px;border:1px solid var(--brd);max-height:500px;overflow:auto}.cmt-item{display:flex;gap:14px;padding:12px 14px;border-bottom:1px solid var(--brd);font-family:var(--font-mono);font-size:11px;align-items:center}
 .cmt-item:last-child{border-bottom:none}.cmt-hash{color:var(--purple);font-weight:500}.cmt-msg{flex:1}.cmt-date{color:var(--txt3);font-size:10px}
 .toast-c{position:fixed;bottom:20px;right:20px;z-index:1000}.toast{padding:10px 18px;background:var(--bg3);border:1px solid var(--brd);border-radius:6px;font-size:12px;margin-top:6px;animation:slideIn .2s}
 .toast.success{border-color:var(--green)}.toast.error{border-color:var(--red)}@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
@@ -3756,9 +2905,9 @@ function Blackwire() {
 .hdr-key{color:var(--cyan);font-weight:500}
 .hdr-sep{color:var(--txt3)}
 .hdr-val{color:var(--orange)}
-.hdr-wrap{position:relative;width:100%;display:flex;flex-direction:column}
-.hdr-highlight{position:absolute;top:0;left:0;right:0;bottom:0;margin:0;border:1px solid transparent;white-space:pre-wrap;word-wrap:break-word;overflow:hidden;pointer-events:none;box-sizing:border-box}
-.hdr-ta{background:transparent!important;color:transparent!important;caret-color:var(--txt);position:relative;z-index:1;flex:1}
+.hdr-wrap{position:relative;width:100%;display:grid}
+.hdr-highlight{grid-area:1/1;margin:0;border:1px solid transparent;white-space:pre-wrap;word-wrap:break-word;pointer-events:none;box-sizing:border-box;padding:10px;font-family:var(--font-mono);font-size:12px;line-height:1.5;overflow:hidden;height:100%}
+.hdr-ta{grid-area:1/1;background:transparent!important;color:transparent!important;caret-color:var(--txt);z-index:1;padding:10px;font-family:var(--font-mono);font-size:12px;line-height:1.5;border:1px solid var(--brd);border-radius:6px;box-sizing:border-box;resize:vertical;min-height:80px}
 .int-payloads{flex:1;overflow:auto;padding:14px}
 .int-resource{flex:1;overflow:auto;padding:14px}
 .int-results-cnt{flex:1;display:flex;flex-direction:column;overflow:hidden}
@@ -3790,7 +2939,7 @@ function Blackwire() {
         <div className="logo">
           <div className="logo-i">BW</div>
           <span className="logo-t">Blackwire</span>
-          {curPrj && <span className="prj-badge">{curPrj}</span>}
+          {curPrj && <span className="prj-badge">{curPrj.project}</span>}
         </div>
         <div className="hdr-ctrl">
           <select className="sel" value={themeId} onChange={e => setThemeId(e.target.value)} title="Theme">
@@ -3800,7 +2949,7 @@ function Blackwire() {
           </select>
           {curPrj && (
             <React.Fragment>
-              <div className={'int-tog' + (intOn ? ' on' : '')} onClick={togInt}>
+              <div className={'int-tog' + (intOn ? ' on' : '')} onClick={() => intercept.toggle()}>
                 <span className="int-dot"></span>
                 Intercept {intOn ? 'ON' : 'OFF'}
                 {pending.length > 0 && <span className="pend-badge">{pending.length}</span>}
@@ -3812,9 +2961,9 @@ function Blackwire() {
               {!pxRun ? (
                 <button className="btn btn-g" onClick={startPx} disabled={loading}>▶ Start</button>
               ) : (
-                <button className="btn btn-d" onClick={stopPx}>■ Stop</button>
+                <button className="btn btn-d" onClick={() => proxy.stop()}>■ Stop</button>
               )}
-              <button className="btn btn-s" onClick={launchBr} disabled={!pxRun}>🌐</button>
+              <button className="btn btn-s" onClick={() => proxy.launchBrowser()} disabled={!pxRun}>🌐</button>
             </React.Fragment>
           )}
           <button className="btn btn-sm btn-s" title="Shutdown server" onClick={() => { if (confirm('Shut down Blackwire server?')) api.post('/api/shutdown'); }} style={{ marginLeft: '4px', color: 'var(--red)', fontSize: '14px', padding: '4px 8px' }}>⏻</button>
@@ -3836,7 +2985,7 @@ function Blackwire() {
             <div className={'tab' + (tab === 'compare' ? ' act' : '')} onClick={() => setTab('compare')}>Compare</div>
             <div className={'tab' + (tab === 'sensitive' ? ' act' : '')} onClick={() => setTab('sensitive')}>Sensitive</div>
             <div className={'tab' + (tab === 'extensions' ? ' act' : '')} onClick={() => setTab('extensions')}>Extensions</div>
-            {extensions.filter(ext => ext.enabled && ext.tabs && ext.tabs.length > 0 && ext.name !== 'sensitive').map(ext =>
+            {extensions.extensions.filter(ext => ext.enabled && ext.tabs && ext.tabs.length > 0 && ext.name !== 'sensitive').map(ext =>
               ext.tabs.map(extTab => (
                 <div key={ext.name + '_' + extTab.id} className={'tab' + (tab === ext.name ? ' act' : '')} onClick={() => setTab(ext.name)}>
                   {extTab.label}
@@ -4081,7 +3230,7 @@ function Blackwire() {
                       <span className="pagination-info">Page {currentPage} of {totalPages}</span>
                       <button className="btn btn-sm btn-s" onClick={nextPage} disabled={currentPage === totalPages} title="Next page">›</button>
                       <button className="btn btn-sm btn-s" onClick={lastPage} disabled={currentPage === totalPages} title="Last page">»</button>
-                      <select className="pagination-size" value={pageSize} onChange={e => { setPageSize(Number(e.target.value)); setCurrentPage(1); }}>
+                      <select className="pagination-size" value={pageSize} onChange={e => setPageSize(Number(e.target.value))}>
                         <option value="100">100</option>
                         <option value="250">250</option>
                         <option value="500">500</option>
@@ -4154,7 +3303,7 @@ function Blackwire() {
                       {!selReqFull ? (
                         <div className="empty"><div className="splash-spin" style={{margin:'20px auto'}} /></div>
                       ) : (
-                      <div className="code" ref={histCodeRef}>
+                      <div className="code" ref={histSearch.contentRef}>
                         {(() => {
                           const d = selReqFull;
                           if (detTab === 'response' && respFormat === 'render') {
@@ -4174,10 +3323,10 @@ function Blackwire() {
                                 try { return new URL(d.url).pathname; } catch (e) { return d.url; }
                               })()) + '\n\n' + fmtHHtml(d.headers, d.url) + (d.body ? '\n\n' + (reqFormatted.html ? reqFormatted.text : escapeHtml(reqFormatted.text)) : ''))
                             : (escapeHtml('HTTP ' + d.response_status) + '\n\n' + fmtHHtml(d.response_headers) + '\n\n' + (respFormatted.html ? respFormatted.text : escapeHtml(respFormatted.text)));
-                          if (histBodySearch) {
+                          if (histSearch.searchTerm) {
                             const plainText = rawContent.replace(/<[^>]*>/g, '');
-                            const hl = highlightMatches(plainText, histBodySearch, histBodySearchRegex, histBodySearchIdx);
-                            if (hl.count !== histBodySearchCount) setTimeout(() => setHistBodySearchCount(hl.count), 0);
+                            const hl = highlightMatches(plainText, histSearch.searchTerm, histSearch.isRegex, histSearch.matchIndex);
+                            if (hl.count !== histSearch.matchCount) setTimeout(() => histSearch.setMatchCount(hl.count), 0);
                             return <div dangerouslySetInnerHTML={{ __html: hl.html }} />;
                           }
                           return <div dangerouslySetInnerHTML={{ __html: rawContent }} />;
@@ -4186,20 +3335,20 @@ function Blackwire() {
                       )}
                       <div className="search-bar" style={{ borderTop: '1px solid var(--brd)' }}>
                         <input
-                          placeholder={histBodySearchRegex ? 'Regex search...' : 'Search body...'}
-                          value={histBodySearch}
-                          onChange={e => { setHistBodySearch(e.target.value); setHistBodySearchIdx(0); }}
+                          placeholder={histSearch.isRegex ? 'Regex search...' : 'Search body...'}
+                          value={histSearch.searchTerm}
+                          onChange={e => { histSearch.setSearchTerm(e.target.value); histSearch.setMatchIndex(0); }}
                           onKeyDown={e => {
-                            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); setHistBodySearchIdx(i => histBodySearchCount > 0 ? (i + 1) % histBodySearchCount : 0); }
-                            if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); setHistBodySearchIdx(i => histBodySearchCount > 0 ? (i - 1 + histBodySearchCount) % histBodySearchCount : 0); }
-                            if (e.key === 'Escape') { setHistBodySearch(''); setHistBodySearchIdx(0); setHistBodySearchCount(0); }
+                            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); histSearch.nextMatch(); }
+                            if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); histSearch.prevMatch(); }
+                            if (e.key === 'Escape') { histSearch.close(); }
                           }}
                         />
-                        <button className={'srch-btn' + (histBodySearchRegex ? ' act' : '')} onClick={() => { setHistBodySearchRegex(!histBodySearchRegex); setHistBodySearchIdx(0); }} title="Toggle regex">.*</button>
-                        <span className="search-info">{histBodySearchCount > 0 ? (histBodySearchIdx + 1) + '/' + histBodySearchCount : '0/0'}</span>
-                        <button className="srch-btn" onClick={() => setHistBodySearchIdx(i => histBodySearchCount > 0 ? (i - 1 + histBodySearchCount) % histBodySearchCount : 0)} disabled={histBodySearchCount === 0}>▲</button>
-                        <button className="srch-btn" onClick={() => setHistBodySearchIdx(i => histBodySearchCount > 0 ? (i + 1) % histBodySearchCount : 0)} disabled={histBodySearchCount === 0}>▼</button>
-                        <button className="srch-btn" onClick={() => { setHistBodySearch(''); setHistBodySearchIdx(0); setHistBodySearchCount(0); }}>✕</button>
+                        <button className={'srch-btn' + (histSearch.isRegex ? ' act' : '')} onClick={() => { histSearch.toggleRegex(); histSearch.setMatchIndex(0); }} title="Toggle regex">.*</button>
+                        <span className="search-info">{histSearch.matchCount > 0 ? (histSearch.matchIndex + 1) + '/' + histSearch.matchCount : '0/0'}</span>
+                        <button className="srch-btn" onClick={histSearch.prevMatch} disabled={histSearch.matchCount === 0}>▲</button>
+                        <button className="srch-btn" onClick={histSearch.nextMatch} disabled={histSearch.matchCount === 0}>▼</button>
+                        <button className="srch-btn" onClick={histSearch.close}>✕</button>
                       </div>
                     </React.Fragment>
                   ) : (
@@ -4469,7 +3618,7 @@ function Blackwire() {
           <div className="icept-pnl">
             {/* Control bar */}
             <div className="icept-bar">
-              <button className={'icept-toggle ' + (intOn ? 'on' : 'off')} onClick={togInt} title={intOn ? 'Disable intercept' : 'Enable intercept'}>
+              <button className={'icept-toggle ' + (intOn ? 'on' : 'off')} onClick={() => intercept.toggle()} title={intOn ? 'Disable intercept' : 'Enable intercept'}>
                 <span className="icept-dot" style={{ background: intOn ? '#ef4444' : 'var(--txt3)' }} />
                 {intOn ? 'Intercept ON' : 'Intercept OFF'}
               </button>
@@ -4545,9 +3694,9 @@ function Blackwire() {
                     </div>
                     <div className="icept-section">Headers</div>
                     <div className="hdr-wrap" style={{ height: '38%', flexShrink: 0 }}>
-                      <pre className="hdr-highlight ed-ta" aria-hidden="true" style={{ pointerEvents: 'none' }}
+                      <pre ref={interceptHeadersHighlightRef} className="hdr-highlight ed-ta" aria-hidden="true" style={{ pointerEvents: 'none' }}
                         dangerouslySetInnerHTML={{ __html: colorizeHeaders(editReq.rawHeaders || '') + '\n' }} />
-                      <textarea className="ed-ta hdr-ta"
+                      <textarea ref={interceptHeadersRef} className="ed-ta hdr-ta"
                         value={editReq.rawHeaders || ''}
                         onChange={e => {
                           const raw = e.target.value;
@@ -4555,6 +3704,7 @@ function Blackwire() {
                           raw.split('\n').forEach(l => { const ci = l.indexOf(':'); if (ci > 0) h[l.slice(0, ci).trim()] = l.slice(ci + 1).trim(); });
                           setEditReq({ ...editReq, rawHeaders: raw, headers: h });
                         }}
+                        onScroll={e => { if (interceptHeadersHighlightRef.current) interceptHeadersHighlightRef.current.scrollTop = e.target.scrollTop; }}
                         spellCheck="false"
                       />
                     </div>
@@ -4604,8 +3754,8 @@ function Blackwire() {
                   <span className={'rul-type rul-' + (r.rule_type === 'include' ? 'inc' : 'exc')}>{r.rule_type}</span>
                   <span className="rul-pat">{r.pattern}</span>
                   <div className="rul-acts">
-                    <button className="btn btn-sm btn-s" onClick={() => togRule(r.id)}>{r.enabled ? 'Disable' : 'Enable'}</button>
-                    <button className="btn btn-sm btn-d" onClick={() => delRule(r.id)}>×</button>
+                    <button className="btn btn-sm btn-s" onClick={() => scope.toggleRule(r.id)}>{r.enabled ? 'Disable' : 'Enable'}</button>
+                    <button className="btn btn-sm btn-d" onClick={() => scope.deleteRule(r.id)}>×</button>
                   </div>
                 </div>
               ))}
@@ -4672,8 +3822,10 @@ function Blackwire() {
                     <span>Headers</span>
                   </div>
                   <div className="hdr-wrap" style={{ height: '40%' }}>
-                    <pre className="hdr-highlight ed-ta" aria-hidden="true" style={{ pointerEvents: 'none' }} dangerouslySetInnerHTML={{ __html: (repH ? colorizeHeaders(repH) : '') + '\n' }} />
-                    <textarea className="ed-ta hdr-ta" value={repH} onChange={e => setRepH(e.target.value)} spellCheck="false" />
+                    <pre ref={repHeadersHighlightRef} className="hdr-highlight ed-ta" aria-hidden="true" style={{ pointerEvents: 'none' }} dangerouslySetInnerHTML={{ __html: (repH ? colorizeHeaders(repH) : '') + '\n' }} />
+                    <textarea ref={repHeadersRef} className="ed-ta hdr-ta" value={repH} onChange={e => setRepH(e.target.value)}
+                      onScroll={e => { if (repHeadersHighlightRef.current) repHeadersHighlightRef.current.scrollTop = e.target.scrollTop; }}
+                      spellCheck="false" />
                   </div>
                   <div className="ed-hdr">
                     <span>Body</span>
@@ -4706,7 +3858,7 @@ function Blackwire() {
                       {repResp && repResp.body && !repResp.error && (
                         <div style={{ display: 'flex', gap: '4px' }}>
                           <button className={'btn btn-sm ' + (repRespFormat === 'code' ? 'btn-p' : 'btn-s')} onClick={() => setRepRespFormat('code')}>Raw</button>
-                          <button className="btn btn-sm btn-s" onClick={() => { setRepRespBody(prettyPrint(repRespBody)); setRepRespFormat('code'); }} title="Pretty Print">Pretty</button>
+                          <button className="btn btn-sm btn-s" onClick={() => { setRepRespBody(prettyPrint(repRespBody)); }} title="Pretty Print">Pretty</button>
                           <button className={'btn btn-sm ' + (repRespFormat === 'render' ? 'btn-p' : 'btn-s')} onClick={() => setRepRespFormat('render')}>Render</button>
                         </div>
                       )}
@@ -4755,10 +3907,10 @@ function Blackwire() {
                             />
                           );
                         }
-                        if (repBodySearch) {
-                          const hl = highlightMatches(repRespBody, repBodySearch, repBodySearchRegex, repBodySearchIdx);
-                          if (hl.count !== repBodySearchCount) setTimeout(() => setRepBodySearchCount(hl.count), 0);
-                          return <div className="code" ref={repCodeRef} style={{ flex: 1, overflow: 'auto' }} dangerouslySetInnerHTML={{ __html: hl.html }} />;
+                        if (repSearch.searchTerm) {
+                          const hl = highlightMatches(repRespBody, repSearch.searchTerm, repSearch.isRegex, repSearch.matchIndex);
+                          if (hl.count !== repSearch.matchCount) setTimeout(() => repSearch.setMatchCount(hl.count), 0);
+                          return <div className="code" ref={repSearch.contentRef} style={{ flex: 1, overflow: 'auto' }} dangerouslySetInnerHTML={{ __html: hl.html }} />;
                         }
                         const highlighted = colorizeBody(repRespBody);
                         return highlighted.html
@@ -4773,20 +3925,20 @@ function Blackwire() {
                       })()}
                       <div className="search-bar" style={{ borderTop: '1px solid var(--brd)' }}>
                         <input
-                          placeholder={repBodySearchRegex ? 'Regex search...' : 'Search body...'}
-                          value={repBodySearch}
-                          onChange={e => { setRepBodySearch(e.target.value); setRepBodySearchIdx(0); }}
+                          placeholder={repSearch.isRegex ? 'Regex search...' : 'Search body...'}
+                          value={repSearch.searchTerm}
+                          onChange={e => { repSearch.setSearchTerm(e.target.value); repSearch.setMatchIndex(0); }}
                           onKeyDown={e => {
-                            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); setRepBodySearchIdx(i => repBodySearchCount > 0 ? (i + 1) % repBodySearchCount : 0); }
-                            if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); setRepBodySearchIdx(i => repBodySearchCount > 0 ? (i - 1 + repBodySearchCount) % repBodySearchCount : 0); }
-                            if (e.key === 'Escape') { setRepBodySearch(''); setRepBodySearchIdx(0); setRepBodySearchCount(0); }
+                            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); repSearch.nextMatch(); }
+                            if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); repSearch.prevMatch(); }
+                            if (e.key === 'Escape') { repSearch.close(); }
                           }}
                         />
-                        <button className={'srch-btn' + (repBodySearchRegex ? ' act' : '')} onClick={() => { setRepBodySearchRegex(!repBodySearchRegex); setRepBodySearchIdx(0); }} title="Toggle regex">.*</button>
-                        <span className="search-info">{repBodySearchCount > 0 ? (repBodySearchIdx + 1) + '/' + repBodySearchCount : '0/0'}</span>
-                        <button className="srch-btn" onClick={() => setRepBodySearchIdx(i => repBodySearchCount > 0 ? (i - 1 + repBodySearchCount) % repBodySearchCount : 0)} disabled={repBodySearchCount === 0}>▲</button>
-                        <button className="srch-btn" onClick={() => setRepBodySearchIdx(i => repBodySearchCount > 0 ? (i + 1) % repBodySearchCount : 0)} disabled={repBodySearchCount === 0}>▼</button>
-                        <button className="srch-btn" onClick={() => { setRepBodySearch(''); setRepBodySearchIdx(0); setRepBodySearchCount(0); }}>✕</button>
+                        <button className={'srch-btn' + (repSearch.isRegex ? ' act' : '')} onClick={() => { repSearch.toggleRegex(); repSearch.setMatchIndex(0); }} title="Toggle regex">.*</button>
+                        <span className="search-info">{repSearch.matchCount > 0 ? (repSearch.matchIndex + 1) + '/' + repSearch.matchCount : '0/0'}</span>
+                        <button className="srch-btn" onClick={repSearch.prevMatch} disabled={repSearch.matchCount === 0}>▲</button>
+                        <button className="srch-btn" onClick={repSearch.nextMatch} disabled={repSearch.matchCount === 0}>▼</button>
+                        <button className="srch-btn" onClick={repSearch.close}>✕</button>
                       </div>
                     </div>
                   ) : (
@@ -4839,7 +3991,7 @@ function Blackwire() {
                 <span>No extensions installed</span>
               </div>
             )}
-            {extensions.filter(ext => ext.name !== 'sensitive').map(ext => (
+            {extensions.extensions.filter(ext => ext.name !== 'sensitive').map(ext => (
               <div key={ext.name} style={{ background: 'var(--bg2)', border: '1px solid var(--brd)', borderRadius: '8px', padding: '16px', marginBottom: '12px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
                   <div>
@@ -5141,8 +4293,8 @@ function Blackwire() {
                     <button className="btn btn-p" onClick={addSessionRule}>Add Rule</button>
                   </div>
 
-                  <div style={{ marginBottom: '16px', fontSize: '13px', fontWeight: 600 }}>Active Rules ({sessionRules.length})</div>
-                  {sessionRules.map(rule => (
+                  <div style={{ marginBottom: '16px', fontSize: '13px', fontWeight: 600 }}>Active Rules ({sessionRulesData.length})</div>
+                  {sessionRulesData.map(rule => (
                     <div key={rule.id} style={{ marginBottom: '12px', padding: '12px', background: 'var(--bg2)', border: '1px solid var(--brd)', borderRadius: '4px', opacity: rule.enabled ? 1 : 0.5 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
                         <input type="checkbox" checked={rule.enabled} onChange={e => toggleSessionRule(rule.id, e.target.checked)} />
@@ -5162,7 +4314,7 @@ function Blackwire() {
                       </div>
                     </div>
                   ))}
-                  {sessionRules.length === 0 && (
+                  {sessionRulesData.length === 0 && (
                     <div className="empty" style={{ padding: '30px' }}>
                       <span>No session rules configured</span>
                     </div>
@@ -5691,12 +4843,13 @@ function Blackwire() {
                     <select className="mth-sel" value={intMethod} onChange={e => setIntMethod(e.target.value)} style={{ fontSize: 11 }}>
                       <option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option><option>HEAD</option><option>OPTIONS</option>
                     </select>
-                    <input className="url-in" placeholder="https://example.com/api/endpoint" value={intUrl} onChange={e => setIntUrl(e.target.value)} style={{ flex: 1 }} />
+                    <input ref={intUrlRef} className="url-in" placeholder="https://example.com/api/endpoint" value={intUrl} onChange={e => setIntUrl(e.target.value)} style={{ flex: 1 }} />
                   </div>
                   <label style={{ fontSize: 10, color: 'var(--txt3)', display: 'block', marginBottom: 4 }}>Headers</label>
                   <div className="hdr-wrap">
-                    <pre className="hdr-highlight int-editor" aria-hidden="true" dangerouslySetInnerHTML={{ __html: (intHeaders ? colorizeHeaders(intHeaders) : '') + '\n' }} />
+                    <pre ref={intHeadersHighlightRef} className="hdr-highlight int-editor" aria-hidden="true" dangerouslySetInnerHTML={{ __html: (intHeaders ? colorizeHeaders(intHeaders) : '') + '\n' }} />
                     <textarea ref={intHeadersRef} className="int-editor hdr-ta" rows={4} value={intHeaders} onChange={e => setIntHeaders(e.target.value)}
+                      onScroll={e => { if (intHeadersHighlightRef.current) intHeadersHighlightRef.current.scrollTop = e.target.scrollTop; }}
                       placeholder={'Content-Type: application/json\nAuthorization: Bearer \u00a7token\u00a7'} spellCheck="false" />
                   </div>
                   <label style={{ fontSize: 10, color: 'var(--txt3)', display: 'block', marginBottom: 4, marginTop: 8 }}>Body</label>
@@ -5707,7 +4860,7 @@ function Blackwire() {
                 <div className="int-section">
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <button className="btn btn-sm btn-p" onClick={() => {
-                      const ref = intBodyRef.current || intHeadersRef.current;
+                      const ref = intUrlRef.current || intHeadersRef.current || intBodyRef.current;
                       if (!ref) return;
                       const start = ref.selectionStart;
                       const end = ref.selectionEnd;
@@ -5715,8 +4868,10 @@ function Blackwire() {
                       const val = ref.value;
                       const selected = val.substring(start, end);
                       const nv = val.substring(0, start) + '\u00a7' + selected + '\u00a7' + val.substring(end);
-                      if (ref === intBodyRef.current) setIntBody(nv);
-                      else setIntHeaders(nv);
+                      if (ref === intUrlRef.current) setIntUrl(nv);
+                      else if (ref === intHeadersRef.current) setIntHeaders(nv);
+                      else if (ref === intBodyRef.current) setIntBody(nv);
+                      setTimeout(() => ref.focus(), 0);
                     }}>{'\u00a7'} Add {'\u00a7'}</button>
                     <button className="btn btn-sm btn-s" onClick={() => {
                       setIntUrl(intUrl.replace(/\u00a7[^\u00a7]*\u00a7/g, m => m.slice(1, -1)));
@@ -6043,7 +5198,7 @@ function Blackwire() {
           const hardcodedTabs = ['chepy', 'sensitive', 'intruder'];
 
           // Check if current tab matches an extension name (excluding hardcoded ones)
-          const activeExt = extensions.find(ext =>
+          const activeExt = extensions.extensions.find(ext =>
             ext.enabled &&
             ext.tabs &&
             ext.tabs.length > 0 &&
