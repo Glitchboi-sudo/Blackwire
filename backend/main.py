@@ -32,6 +32,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import aiosqlite
 import httpx
+from proxy_console import router as console_router, setup_console_handler
 
 BASE_DIR = Path(__file__).parent.parent
 PROJECTS_DIR = BASE_DIR / "projects"
@@ -719,7 +720,8 @@ async def start_proxy(port: int = 8080, mode: str = "regular", extra_args: str =
     
     logger.debug('Spawning mitmproxy subprocess...')
     logger.info("Launching proxy subprocess: %s", " ".join(map(str, cmd)))
-    proxy_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    proxy_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                      env={**os.environ, "PYTHONUNBUFFERED": "1"})
     # Give the process a moment to initialize and bind the port
     await asyncio.sleep(1.0)
     if proxy_process.poll() is None:
@@ -778,6 +780,7 @@ def transpile_jsx():
 async def lifespan(app: FastAPI):
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
     setup_logging()
+    setup_console_handler()
     transpile_jsx()
     project = get_current_project()
     if project:
@@ -787,6 +790,7 @@ async def lifespan(app: FastAPI):
     await stop_proxy()
 
 app = FastAPI(title="Blackwire API", lifespan=lifespan)
+app.include_router(console_router)
 app.add_middleware(GZipMiddleware, minimum_size=500)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 

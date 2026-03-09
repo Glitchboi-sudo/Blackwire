@@ -21,6 +21,48 @@ def vlog(msg: str):
         ctx.log.info(f'[blackwire][verbose] {msg}')
 
 
+# ---------------------------------------------------------------------------
+# Console log forwarding (sends to Blackwire's /api/console/addon_log)
+# Uses urllib (stdlib, no extra deps) with fire-and-forget threads so it
+# never blocks the mitmproxy event loop.  Silent on failure — never recurse.
+# ---------------------------------------------------------------------------
+import urllib.request as _urlreq
+import json as _json
+import threading as _threading
+
+_CONSOLE_URL = "http://127.0.0.1:5000/api/console/addon_log"
+_MITM_LEVEL_MAP = {
+    "debug": "DEBUG", "info": "INFO",
+    "warn": "WARNING", "warning": "WARNING",
+    "error": "ERROR", "alert": "ERROR",
+}
+# Minimum level to forward to avoid debug spam
+_CONSOLE_MIN_LEVELS = {"INFO", "WARNING", "ERROR"}
+
+# Thread-local flag to detect re-entrancy from the log hook itself
+_in_log_send = _threading.local()
+
+
+def _send_console_log(level: str, msg: str, name: str = "mitmproxy") -> None:
+    """POST a log entry to the backend console endpoint.  Never raises.
+    Uses a thread-local guard to prevent any re-entrancy."""
+    if getattr(_in_log_send, 'active', False):
+        return
+    _in_log_send.active = True
+    try:
+        payload = _json.dumps({"level": level, "msg": msg, "name": name}).encode()
+        req = _urlreq.Request(
+            _CONSOLE_URL, data=payload,
+            headers={"Content-Type": "application/json"}, method="POST"
+        )
+        with _urlreq.urlopen(req, timeout=0.5):
+            pass
+    except Exception:
+        pass  # Always silent — must never create more log entries
+    finally:
+        _in_log_send.active = False
+
+
 
 BACKEND_URL = "http://127.0.0.1:5000"
 CONFIG_PATH = Path(__file__).parent / ".proxy_config.json"
@@ -265,6 +307,24 @@ class BlackwireAddon:
             except Exception as e:
                 ctx.log.warn(f"[blackwire][ext] {hook} failed ({ext_name}): {e}")
 
+    def log(self, entry) -> None:
+        """Capture mitmproxy's own log messages and forward to Blackwire console.
+        Runs synchronously on mitmproxy's event loop — must return fast."""
+        try:
+            raw_level = str(getattr(entry, 'level', 'info')).lower()
+            level = _MITM_LEVEL_MAP.get(raw_level, "INFO")
+            if level not in _CONSOLE_MIN_LEVELS:
+                return
+            msg = str(getattr(entry, 'msg', entry))
+            # Fire-and-forget so we never block the event loop
+            _threading.Thread(
+                target=_send_console_log,
+                args=(level, msg, "mitmproxy"),
+                daemon=True
+            ).start()
+        except Exception:
+            pass
+
     def request(self, flow: http.HTTPFlow):
         """Handle incoming request - check for interception"""
         try:
@@ -281,6 +341,14 @@ class BlackwireAddon:
 
         url = flow.request.pretty_url
         vlog(f"Request: {flow.request.method} {url}")
+
+        # Log every request to the frontend console
+        scope_tag = "" if match_scope(url, self.config.get("scope_rules", [])) else " [out-of-scope]"
+        _threading.Thread(
+            target=_send_console_log,
+            args=("INFO", f">> {flow.request.method} {url}{scope_tag}", "proxy"),
+            daemon=True
+        ).start()
 
         # Check scope
         in_scope = match_scope(url, self.config.get("scope_rules", []))
@@ -359,6 +427,16 @@ class BlackwireAddon:
             url = flow.request.pretty_url
             in_scope = match_scope(url, self.config.get("scope_rules", []))
             vlog(f"Response: {flow.request.method} {url} status={flow.response.status_code if flow.response else 'n/a'} in_scope={in_scope}")
+
+            # Log every response to the frontend console
+            if flow.response:
+                status = flow.response.status_code
+                level = "WARNING" if status >= 400 else "INFO"
+                _threading.Thread(
+                    target=_send_console_log,
+                    args=(level, f"<< {status} {flow.request.method} {url}", "proxy"),
+                    daemon=True
+                ).start()
 
             # Check if response interception is enabled
             if self.config.get("intercept_enabled") and self.config.get("intercept_responses", False) and in_scope and flow.response:

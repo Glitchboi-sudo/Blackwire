@@ -100,6 +100,7 @@ import { useRepeater } from './src/hooks/useRepeater.js';
 import { useCollections } from './src/hooks/useCollections.js';
 import { useIntruder } from './src/hooks/useIntruder.js';
 import { useSensitive } from './src/hooks/useSensitive.js';
+import { useConsole } from './src/hooks/useConsole.js';
 
 const { useState, useEffect, useRef } = React;
 
@@ -360,6 +361,7 @@ function Blackwire() {
   const collections = useCollections(hookToast, projects.currentProject);
   const intruder = useIntruder(hookToast);
   const sensitive = useSensitive(hookToast);
+  const proxyConsole = useConsole();
 
   // Initialize pagination after requests hook (needs requests.totalRequests)
   const pagination = usePagination({
@@ -409,6 +411,7 @@ function Blackwire() {
   const repHeadersHighlightRef = useRef(null);
   const interceptHeadersRef = useRef(null);
   const interceptHeadersHighlightRef = useRef(null);
+  const consoleEndRef = useRef(null);
   const webhookExt = extensions.extensions.find(e => e.name === 'webhook_site');
 
   const getSelectedText = () => {
@@ -803,6 +806,13 @@ function Blackwire() {
       chepy.loadOperations();
     }
   }, [tab]);
+
+  // Auto-scroll console to bottom when new logs arrive
+  useEffect(() => {
+    if (proxyConsole.autoScroll && consoleEndRef.current) {
+      consoleEndRef.current.scrollIntoView({ behavior: 'instant' });
+    }
+  }, [proxyConsole.filteredLogs.length, proxyConsole.autoScroll]);
 
   useEffect(() => {
     setWhkApiKey(_optionalChain([webhookExt, 'optionalAccess', _6 => _6.config, 'optionalAccess', _7 => _7.api_key]) || '');
@@ -2985,6 +2995,10 @@ function Blackwire() {
             , React.createElement('div', { className: 'tab' + (tab === 'compare' ? ' act' : ''), onClick: () => setTab('compare'),}, "Compare")
             , React.createElement('div', { className: 'tab' + (tab === 'sensitive' ? ' act' : ''), onClick: () => setTab('sensitive'),}, "Sensitive")
             , React.createElement('div', { className: 'tab' + (tab === 'extensions' ? ' act' : ''), onClick: () => setTab('extensions'),}, "Extensions")
+            , React.createElement('div', { className: 'tab' + (tab === 'console' ? ' act' : ''), onClick: () => setTab('console'),}, "Console"
+
+              , proxyConsole.connected && React.createElement('span', { style: { display: 'inline-block', width: '6px', height: '6px', borderRadius: '50%', background: 'var(--green)', marginLeft: '5px', verticalAlign: 'middle' },} )
+            )
             , extensions.extensions.filter(ext => ext.enabled && ext.tabs && ext.tabs.length > 0 && ext.name !== 'sensitive').map(ext =>
               ext.tabs.map(extTab => (
                 React.createElement('div', { key: ext.name + '_' + extTab.id, className: 'tab' + (tab === ext.name ? ' act' : ''), onClick: () => setTab(ext.name),}
@@ -5411,6 +5425,73 @@ function Blackwire() {
           )
         )
       )
+
+        , tab === 'console' && curPrj && (() => {
+          const levelColor = { DEBUG: 'var(--txt3)', INFO: 'var(--cyan)', WARNING: 'var(--orange)', ERROR: 'var(--red)', CRITICAL: 'var(--red)' };
+          const levelBg   = { DEBUG: 'transparent', INFO: 'transparent', WARNING: 'rgba(255,165,0,0.06)', ERROR: 'rgba(220,50,50,0.08)', CRITICAL: 'rgba(220,50,50,0.12)' };
+          return (
+            React.createElement('div', { style: { display: 'flex', flexDirection: 'column', width: '100%', height: '100%', overflow: 'hidden' },}
+              /* Toolbar */
+              , React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', borderBottom: '1px solid var(--brd)', flexShrink: 0, flexWrap: 'wrap' },}
+                , React.createElement('span', { style: { fontSize: '11px', color: proxyConsole.connected ? 'var(--green)' : 'var(--txt3)', display: 'flex', alignItems: 'center', gap: '5px', minWidth: '80px' },}
+                  , React.createElement('span', { style: { width: '7px', height: '7px', borderRadius: '50%', background: proxyConsole.connected ? 'var(--green)' : 'var(--txt3)', display: 'inline-block' },} )
+                  , proxyConsole.connected ? 'Live' : 'Disconnected'
+                )
+                , React.createElement('input', {
+                  className: "inp",
+                  style: { flex: 1, minWidth: '160px', fontSize: '11px', padding: '4px 8px' },
+                  placeholder: "Filter messages..." ,
+                  value: proxyConsole.filter,
+                  onChange: e => proxyConsole.setFilter(e.target.value),}
+                )
+                , React.createElement('select', {
+                  className: "sel",
+                  style: { fontSize: '11px', padding: '4px 6px' },
+                  value: proxyConsole.levelFilter,
+                  onChange: e => proxyConsole.setLevelFilter(e.target.value),}
+
+                  , React.createElement('option', { value: "ALL",}, "All levels" )
+                  , React.createElement('option', { value: "DEBUG",}, "DEBUG")
+                  , React.createElement('option', { value: "INFO",}, "INFO")
+                  , React.createElement('option', { value: "WARNING",}, "WARNING")
+                  , React.createElement('option', { value: "ERROR",}, "ERROR")
+                  , React.createElement('option', { value: "CRITICAL",}, "CRITICAL")
+                )
+                , React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px', color: 'var(--txt2)', cursor: 'pointer', userSelect: 'none' },}
+                  , React.createElement('input', { type: "checkbox", checked: proxyConsole.autoScroll, onChange: e => proxyConsole.setAutoScroll(e.target.checked),} ), "Auto-scroll"
+
+                )
+                , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: proxyConsole.clearLogs,}, "Clear")
+                , React.createElement('span', { style: { fontSize: '10px', color: 'var(--txt3)' },}, proxyConsole.filteredLogs.length, " entries" )
+              )
+              /* Log area */
+              , React.createElement('div', { style: { flex: 1, overflowY: 'auto', fontFamily: 'var(--font-mono)', fontSize: '11px', padding: '4px 0' },}
+                , proxyConsole.filteredLogs.length === 0 ? (
+                  React.createElement('div', { className: "empty",}
+                    , React.createElement('div', { className: "empty-i",}, "▶")
+                    , React.createElement('span', null, proxyConsole.logs.length === 0 ? 'No proxy logs yet. Start the proxy to see output here.' : 'No entries match the current filter.')
+                  )
+                ) : (
+                  proxyConsole.filteredLogs.map((entry, i) => (
+                    React.createElement('div', { key: i, style: { display: 'flex', gap: '8px', padding: '2px 12px', borderBottom: '1px solid var(--brd)', background: levelBg[entry.level] || 'transparent', lineHeight: '1.5' },}
+                      , React.createElement('span', { style: { color: 'var(--txt3)', flexShrink: 0, minWidth: '82px' },}
+                        , entry.ts ? entry.ts.replace('T', ' ').replace(/\.\d+Z$/, 'Z') : ''
+                      )
+                      , React.createElement('span', { style: { color: levelColor[entry.level] || 'var(--txt)', fontWeight: '600', flexShrink: 0, minWidth: '50px' },}
+                        , entry.level
+                      )
+                      , React.createElement('span', { style: { color: 'var(--txt3)', flexShrink: 0, minWidth: '90px', maxWidth: '130px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: entry.name,}
+                        , entry.name
+                      )
+                      , React.createElement('span', { style: { color: 'var(--txt)', wordBreak: 'break-all', whiteSpace: 'pre-wrap' },}, entry.msg)
+                    )
+                  ))
+                )
+                , React.createElement('div', { ref: consoleEndRef,} )
+              )
+            )
+          );
+        })()
 
       , showProxyCfg && (
         React.createElement('div', { style: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1001 }, onClick: () => setShowProxyCfg(false),}

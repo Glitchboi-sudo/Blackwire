@@ -15,6 +15,7 @@ export { useRepeater } from './useRepeater.js';
 export { useCollections } from './useCollections.js';
 export { useIntruder } from './useIntruder.js';
 export { useSensitive } from './useSensitive.js';
+export { useConsole } from './useConsole.js';
 
 // Export utility hooks
 export { usePagination } from './usePagination.js';
