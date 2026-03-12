@@ -119,6 +119,12 @@ export function useRequests(toast) {
     }
   }, []);
 
+  // Add new request to the list (for WebSocket updates)
+  const addRequest = useCallback((newReq) => {
+    setRequests(prev => [newReq, ...prev]);
+    setTotalRequests(prev => prev + 1);
+  }, []);
+
   return {
     requests,
     selectedReq,
@@ -138,6 +144,7 @@ export function useRequests(toast) {
     toggleSave,
     deleteReq,
     clearHistory,
-    selectRequest
+    selectRequest,
+    addRequest
   };
 }

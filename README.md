@@ -24,6 +24,8 @@
 
 ## Quick Start
 
+### Versión Web (Desarrollo)
+
 ```bash
 # 1. Clonar e instalar
 git clone https://github.com/Glitchboi-sudo/Blackwire.git
@@ -35,6 +37,20 @@ cd Blackwire
 ```
 
 **Eso es todo.** Abre en http://localhost:5000
+
+### Versión Desktop (Producción)
+
+**Aplicación standalone con aislamiento Docker completo.**
+
+Para compilar instaladores nativos (.deb, .AppImage, .rpm, .dmg, .msi), ver:
+
+📦 **[Blackwire-compile](https://github.com/yourusername/Blackwire-compile)**
+
+**Características:**
+- ✅ Ventana nativa con Tauri (Rust + WebView)
+- ✅ Backend aislado en Docker (seguridad)
+- ✅ System tray integration
+- ✅ Instaladores para Linux, macOS y Windows
 
 ---
 
@@ -134,7 +150,7 @@ def register():
 - **15 Temas** - Midnight, Gruvbox, Solarized, Noir, Synth, etc.
 - **100% Portable** - Sin rutas hardcoded, funciona desde cualquier directorio
 
-## 🏗️ Arquitectura
+## Arquitectura
 
 ```
 BlackWire/
@@ -174,7 +190,6 @@ Este proyecto es **espacio abierto para aprender y construir juntos**. Contribuc
 ---
 
 ## Troubleshooting
-
 ### Problemas Comunes
 
 **Puerto en uso:**
@@ -197,7 +212,7 @@ npx sucrase App.jsx -d . --transforms jsx
 ```
 ---
 
-## 💡 Créditos
+## Créditos
 
 Proyecto inspirado en [Burp Suite](https://portswigger.net/burp), [OWASP ZAP](https://www.zaproxy.org/), [mitmproxy](https://mitmproxy.org/) y [Caido](https://caido.io/).
 

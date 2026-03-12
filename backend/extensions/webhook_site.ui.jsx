@@ -36,7 +36,17 @@
         const res = await fetch(url);
         if (res.ok) {
           const data = await res.json();
-          setWhkReqs(data.requests || []);
+          const newRequests = data.requests || [];
+          setWhkReqs(newRequests);
+
+          // Preserve selected request after refresh
+          setSelectedReq(currentSelected => {
+            if (!currentSelected) return null;
+
+            // Find the same request in the new list by ID
+            const updated = newRequests.find(r => r.request_id === currentSelected.request_id);
+            return updated || currentSelected; // Keep old if not found (shouldn't happen)
+          });
         }
       } catch (err) {
         console.error('Error loading webhook requests:', err);

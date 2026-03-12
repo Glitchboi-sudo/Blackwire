@@ -1,8 +1,10 @@
 const { useState, useRef, useEffect } = React;
+import { useDebounce } from './useDebounce.js';
 
 /**
  * Custom hook for searching within body text
  * Handles search term, regex mode, match navigation, and auto-scrolling
+ * Now with debouncing for better performance on large texts
  * @returns {Object} Search state and controls
  */
 export function useBodySearch() {
@@ -11,7 +13,20 @@ export function useBodySearch() {
   const [matchIndex, setMatchIndex] = useState(0);
   const [matchCount, setMatchCount] = useState(0);
   const [show, setShow] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
   const contentRef = useRef(null);
+
+  // Debounce search term to avoid excessive processing on large texts
+  const debouncedSearchTerm = useDebounce(searchTerm, 300);
+
+  // Track if we're waiting for debounce
+  useEffect(() => {
+    if (searchTerm !== debouncedSearchTerm && searchTerm.length > 0) {
+      setIsSearching(true);
+    } else {
+      setIsSearching(false);
+    }
+  }, [searchTerm, debouncedSearchTerm]);
 
   const toggleRegex = () => setIsRegex(prev => !prev);
 
@@ -53,6 +68,7 @@ export function useBodySearch() {
 
   return {
     searchTerm,
+    debouncedSearchTerm,
     setSearchTerm,
     isRegex,
     setIsRegex,
@@ -67,6 +83,7 @@ export function useBodySearch() {
     close,
     nextMatch,
     prevMatch,
-    contentRef
+    contentRef,
+    isSearching
   };
 }

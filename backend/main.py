@@ -33,12 +33,19 @@ from pydantic import BaseModel
 import aiosqlite
 import httpx
 from proxy_console import router as console_router, setup_console_handler
+from routes.requests import router as requests_v2_router, init_routes
+from routes.bypass import router as bypass_router, init_bypass_routes
 
 BASE_DIR = Path(__file__).parent.parent
-PROJECTS_DIR = BASE_DIR / "projects"
-CURRENT_PROJECT_FILE = BASE_DIR / ".current_project"
+# Use Docker volumes in container, local paths in dev
+_data_dir = Path(os.getenv("BLACKWIRE_DATA", str(BASE_DIR / "projects")))
+PROJECTS_DIR = _data_dir
+CURRENT_PROJECT_FILE = _data_dir.parent / ".current_project"
 EXTENSIONS_DIR = Path(__file__).parent / "extensions"
-EXTENSIONS_UI_COMPILED_DIR = EXTENSIONS_DIR / ".compiled_ui"
+# Use writable directory in Docker for compiled UI and config files
+_writable_dir = Path(os.getenv("BLACKWIRE_DATA", str(BASE_DIR / "projects"))).parent
+EXTENSIONS_UI_COMPILED_DIR = _writable_dir / ".compiled_ui"
+PROXY_CONFIG_PATH = _writable_dir / ".proxy_config.json"
 FRONTEND_DIR = BASE_DIR / "frontend"
 APP_JSX_PATH = FRONTEND_DIR / "App.jsx"
 APP_COMPILED_PATH = FRONTEND_DIR / "App.compiled.js"
@@ -409,6 +416,10 @@ async def init_db(name: str):
         await db.execute("""CREATE TABLE IF NOT EXISTS filter_presets (
             id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
             query TEXT NOT NULL, ast_json TEXT NOT NULL, created_at TEXT NOT NULL)""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS bypass_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL,
+            is_regex INTEGER DEFAULT 0, description TEXT, enabled INTEGER DEFAULT 1,
+            created_at TEXT NOT NULL)""")
         await db.execute("""CREATE TABLE IF NOT EXISTS intruder_attacks (
             id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
             config TEXT NOT NULL, results TEXT NOT NULL,
@@ -672,8 +683,8 @@ async def update_proxy_config():
         "project": get_current_project(),
         "extensions": extensions_config,
     }
-    (Path(__file__).parent / ".proxy_config.json").write_text(json.dumps(config))
-    logger.debug('Proxy config updated at %s: %s', Path(__file__).parent / '.proxy_config.json', config)
+    PROXY_CONFIG_PATH.write_text(json.dumps(config))
+    logger.debug('Proxy config updated at %s: %s', PROXY_CONFIG_PATH, config)
 
 
 def _stream_pipe(pipe, level_fn, label: str):
@@ -698,11 +709,35 @@ async def start_proxy(port: int = 8080, mode: str = "regular", extra_args: str =
     logger.debug('start_proxy called (port=%s)', port)
     if proxy_process and proxy_process.poll() is None:
         return {"status": "already_running", "port": port}
-    
+
     await update_proxy_config()
     addon_path = Path(__file__).parent / "mitm_addon.py"
     logger.info('Starting mitmproxy (port=%s) with addon=%s', port, addon_path)
-    
+
+    # Load bypass rules
+    ignore_hosts = None
+    try:
+        from utils.bypass_manager import BypassManager
+        async with await get_db() as db:
+            cursor = await db.execute(
+                "SELECT id, pattern, is_regex, description, enabled FROM bypass_rules WHERE enabled = 1"
+            )
+            rows = await cursor.fetchall()
+            bypass_rules = [
+                {"id": r[0], "pattern": r[1], "is_regex": bool(r[2]),
+                 "description": r[3] or "", "enabled": bool(r[4])}
+                for r in rows
+            ]
+
+        if bypass_rules:
+            manager = BypassManager()
+            manager.load_rules(bypass_rules)
+            ignore_hosts = manager.get_ignore_hosts_pattern()
+            if ignore_hosts:
+                logger.info(f"Bypass: Loaded {len(bypass_rules)} rules, ignoring hosts matching: {ignore_hosts[:100]}...")
+    except Exception as e:
+        logger.warning(f"Could not load bypass rules: {e}")
+
     # Use mitmdump (headless) instead of mitmproxy UI; running the dump module directly does nothing.
     mitmdump_bin = Path(sys.executable).with_name("mitmdump")
     if not mitmdump_bin.exists():
@@ -714,6 +749,11 @@ async def start_proxy(port: int = 8080, mode: str = "regular", extra_args: str =
     extra = shlex.split(extra_args) if extra_args else []
     cmd = [str(mitmdump_bin), "--mode", mode, "-p", str(port),
            "-s", str(addon_path), "--set", "connection_strategy=lazy", "--ssl-insecure"]
+
+    # Add ignore-hosts if we have bypass rules
+    if ignore_hosts:
+        cmd.extend(["--ignore-hosts", ignore_hosts])
+
     if extra:
         cmd.extend(extra)
     logger.debug('mitmproxy command: %s', ' '.join(cmd))
@@ -792,6 +832,21 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Blackwire API", lifespan=lifespan)
 app.include_router(console_router)
 app.add_middleware(GZipMiddleware, minimum_size=500)
+
+# Include optimized request routes
+try:
+    app.include_router(requests_v2_router)
+    logger.info("Optimized request routes loaded successfully")
+except Exception as e:
+    logger.warning(f"Could not load optimized routes: {e}")
+
+# Include bypass routes
+try:
+    init_bypass_routes(get_db=get_db)
+    app.include_router(bypass_router)
+    logger.info("Bypass routes loaded successfully")
+except Exception as e:
+    logger.warning(f"Could not load bypass routes: {e}")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 # Usar el frontend.html original que tiene toda la funcionalidad
@@ -817,6 +872,11 @@ async def app_jsx():
     if APP_JSX_PATH.exists():
         return FileResponse(APP_JSX_PATH, media_type="text/javascript", headers=_static_headers())
     raise HTTPException(status_code=404, detail="App.jsx not found")
+
+@app.get("/App.compiled.js")
+async def app_compiled_js():
+    # Alias for App.jsx route - serves the compiled file
+    return await app_jsx()
 
 @app.get("/themes.js")
 async def themes_js():
@@ -1932,6 +1992,19 @@ def _row_to_list_item(r):
     return {"id": r[0], "method": r[1], "url": r[2], "response_status": r[3],
             "timestamp": r[4], "request_type": r[5], "saved": bool(r[6]), "in_scope": bool(r[7])}
 
+# Initialize optimized routes
+try:
+    init_routes(
+        get_db=get_db,
+        get_project_db=get_project_db,
+        get_current_project=get_current_project,
+        req_list_cols=REQ_LIST_COLS,
+        row_to_list_item=_row_to_list_item,
+        compile_httpql_ast=compile_httpql_ast
+    )
+except ImportError as e:
+    logger.warning(f"Could not initialize optimized routes: {e}")
+
 @app.get("/api/requests")
 async def get_requests(limit: int = 10000, saved_only: bool = False, in_scope_only: bool = False, search: str = ""):
     async with await get_db() as db:
@@ -2185,6 +2258,49 @@ async def download_request_body(rid: int):
         except:
             # Si no es JSON, usar .txt
             pass
+
+        return Response(
+            content=body.encode('utf-8') if isinstance(body, str) else body,
+            media_type='application/octet-stream',
+            headers={
+                'Content-Disposition': f'attachment; filename="{filename}"'
+            }
+        )
+
+@app.get("/api/requests/{rid}/download-response-body")
+async def download_response_body(rid: int):
+    from fastapi.responses import Response
+    async with await get_db() as db:
+        cursor = await db.execute("SELECT response_body, response_headers FROM requests WHERE id = ?", (rid,))
+        row = await cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Request not found")
+
+        body, headers_json = row
+        if not body:
+            raise HTTPException(status_code=404, detail="No response body in this request")
+
+        # Intentar determinar la extensión del archivo según el tipo de contenido
+        filename = f"response_{rid}_body.txt"
+        try:
+            # Intentar parsear como JSON
+            json.loads(body)
+            filename = f"response_{rid}_body.json"
+        except:
+            # Intentar determinar por Content-Type
+            try:
+                headers = json.loads(headers_json) if headers_json else {}
+                ct = headers.get('Content-Type', headers.get('content-type', ''))
+                if 'html' in ct.lower():
+                    filename = f"response_{rid}_body.html"
+                elif 'xml' in ct.lower():
+                    filename = f"response_{rid}_body.xml"
+                elif 'css' in ct.lower():
+                    filename = f"response_{rid}_body.css"
+                elif 'javascript' in ct.lower() or 'js' in ct.lower():
+                    filename = f"response_{rid}_body.js"
+            except:
+                pass
 
         return Response(
             content=body.encode('utf-8') if isinstance(body, str) else body,

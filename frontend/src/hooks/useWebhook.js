@@ -19,7 +19,17 @@ export function useWebhook(toast) {
     setLoading(true);
     try {
       const data = await webhookService.getRequests(tokenId);
-      setRequests(Array.isArray(data) ? data : (data.requests || []));
+      const newRequests = Array.isArray(data) ? data : (data.requests || []);
+      setRequests(newRequests);
+
+      // Preserve selected request after refresh
+      setSelectedReq(currentSelected => {
+        if (!currentSelected) return null;
+
+        // Find the same request in the new list by ID
+        const updated = newRequests.find(r => r.request_id === currentSelected.request_id);
+        return updated || currentSelected; // Keep old if not found
+      });
     } catch (err) {
       console.error('Failed to load webhook requests:', err);
       toast('Failed to load webhook requests', 'error');
@@ -29,9 +39,11 @@ export function useWebhook(toast) {
   }, [toast]);
 
   // Refresh webhook requests
-  const refresh = useCallback(async (tokenId = null) => {
+  const refresh = useCallback(async (tokenId = null, silent = false) => {
     await loadRequests(tokenId);
-    toast('Requests refreshed', 'success');
+    if (!silent) {
+      toast('Requests refreshed', 'success');
+    }
   }, [loadRequests, toast]);
 
   // Create new webhook token

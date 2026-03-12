@@ -160,6 +160,154 @@ export const minify = text => {
   return text.replace(/\s+/g, ' ').trim();
 };
 
+export const beautifyJs = code => {
+  if (!code || typeof code !== 'string') return code;
+
+  let result = '';
+  let indent = 0;
+  let inString = false;
+  let stringChar = '';
+  let inComment = false;
+  let inMultilineComment = false;
+  let lastChar = '';
+  let parenDepth = 0;
+
+  const getIndent = () => '  '.repeat(indent);
+
+  for (let i = 0; i < code.length; i++) {
+    const char = code[i];
+    const nextChar = code[i + 1] || '';
+    const prevChar = i > 0 ? code[i - 1] : '';
+
+    // Handle strings (with proper escape handling)
+    if ((char === '"' || char === "'" || char === '`') && lastChar !== '\\') {
+      if (!inString) {
+        inString = true;
+        stringChar = char;
+      } else if (char === stringChar) {
+        inString = false;
+        stringChar = '';
+      }
+    }
+
+    // Handle comments
+    if (!inString) {
+      if (char === '/' && nextChar === '/' && !inMultilineComment) {
+        inComment = true;
+      } else if (char === '/' && nextChar === '*') {
+        inMultilineComment = true;
+      } else if (char === '*' && nextChar === '/' && inMultilineComment) {
+        result += char + nextChar;
+        i++;
+        inMultilineComment = false;
+        lastChar = '/';
+        continue;
+      } else if (char === '\n' && inComment) {
+        inComment = false;
+      }
+    }
+
+    // Keep comments as-is
+    if (inComment || inMultilineComment) {
+      result += char;
+      lastChar = char;
+      continue;
+    }
+
+    // Format code if not in string
+    if (!inString) {
+      // Track parentheses depth
+      if (char === '(') parenDepth++;
+      if (char === ')') parenDepth = Math.max(0, parenDepth - 1);
+
+      // Opening braces
+      if (char === '{' || char === '[') {
+        result += char + '\n';
+        indent++;
+        result += getIndent();
+        lastChar = char;
+        continue;
+      }
+
+      // Closing braces
+      if (char === '}' || char === ']') {
+        indent = Math.max(0, indent - 1);
+        result = result.trimEnd() + '\n' + getIndent() + char;
+        lastChar = char;
+        continue;
+      }
+
+      // Semicolons
+      if (char === ';') {
+        result += char;
+        if (nextChar !== '\n' && nextChar !== '}' && nextChar !== ')') {
+          result += '\n' + getIndent();
+        }
+        lastChar = char;
+        continue;
+      }
+
+      // Commas - add newline if in arrays/objects (not in function calls)
+      if (char === ',' && parenDepth === 0) {
+        result += char;
+        if (nextChar !== '\n' && nextChar !== ' ') {
+          result += '\n' + getIndent();
+        } else if (nextChar === ' ' && code[i + 2] !== '\n') {
+          result += '\n' + getIndent();
+          i++; // Skip the space
+        }
+        lastChar = char;
+        continue;
+      }
+
+      // Add space after operators for readability
+      if (char === '=' && nextChar === '=' && code[i + 2] === '=') {
+        result += ' === ';
+        i += 2;
+        lastChar = '=';
+        continue;
+      }
+      if (char === '=' && nextChar === '=') {
+        result += ' == ';
+        i++;
+        lastChar = '=';
+        continue;
+      }
+      if (char === '!' && nextChar === '=' && code[i + 2] === '=') {
+        result += ' !== ';
+        i += 2;
+        lastChar = '=';
+        continue;
+      }
+      if (char === '!' && nextChar === '=') {
+        result += ' != ';
+        i++;
+        lastChar = '=';
+        continue;
+      }
+
+      // Remove multiple consecutive spaces
+      if (char === ' ' && (lastChar === ' ' || lastChar === '\n')) {
+        continue;
+      }
+
+      // Handle newlines - preserve indent
+      if (char === '\n') {
+        if (lastChar !== '\n' && lastChar !== '{' && lastChar !== '[') {
+          result = result.trimEnd() + '\n' + getIndent();
+        }
+        lastChar = char;
+        continue;
+      }
+    }
+
+    result += char;
+    lastChar = char;
+  }
+
+  return result.trim();
+};
+
 export const formatXml = xml => {
   const PADDING = '  ';
   const reg = /(>)(<)(\/*)/g;

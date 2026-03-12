@@ -31,8 +31,14 @@ import {
   colorizeHeaders,
   buildCmpText,
   fmtTime,
-  stCls
+  stCls,
+  beautifyJs
 } from './src/utils/formatters.js';
+import {
+  deobfuscate,
+  deobfuscateAndBeautify,
+  detectObfuscationType
+} from './src/utils/deobfuscator.js';
 import {
   httpqlTokenize,
   httpqlParse,
@@ -82,6 +88,9 @@ import { proxyService } from './src/services/proxyService.js';
 import { usePagination } from './src/hooks/usePagination.js';
 import { useLocalStorage } from './src/hooks/useLocalStorage.js';
 import { useBodySearch } from './src/hooks/useBodySearch.js';
+import { useBypass } from './src/hooks/useBypass.js';
+import { useDeobfuscator } from './src/hooks/useDeobfuscator.js';
+import { useDebounce } from './src/hooks/useDebounce.js';
 
 // Domain Hooks
 import { useToast } from './src/hooks/useToast.js';
@@ -101,6 +110,8 @@ import { useCollections } from './src/hooks/useCollections.js';
 import { useIntruder } from './src/hooks/useIntruder.js';
 import { useSensitive } from './src/hooks/useSensitive.js';
 import { useConsole } from './src/hooks/useConsole.js';
+
+// Bypass Manager Component (defined inline to avoid MIME type issues)
 
 const { useState, useEffect, useRef } = React;
 
@@ -202,22 +213,193 @@ function BodySearchBar({ value, onChange, isRegex, onToggleRegex, matchIdx, matc
   );
 }
 
+/**
+ * Optimized highlightMatches for large texts
+ * Limits processing to avoid UI freezing
+ */
 function highlightMatches(text, pattern, isRegex, currentIdx) {
   if (!pattern) return { html: text, count: 0 };
+
   try {
-    const safe = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    // For very large texts (>500KB), limit processing or show warning
+    const MAX_HIGHLIGHT_SIZE = 500 * 1024; // 500KB limit
+    const MAX_MATCHES = 10000; // Maximum number of matches to highlight
+
+    let processText = text;
+    let isTruncated = false;
+
+    if (text.length > MAX_HIGHLIGHT_SIZE) {
+      // Process only first 500KB for performance
+      processText = text.substring(0, MAX_HIGHLIGHT_SIZE);
+      isTruncated = true;
+    }
+
+    // Escape HTML
+    const safe = processText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const escaped = isRegex ? pattern : pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const re = new RegExp('(' + escaped + ')', 'gi');
+
     let count = 0;
+    let matchCount = 0;
+
+    // Count total matches first (with limit)
+    const matches = safe.match(re);
+    const totalMatches = matches ? Math.min(matches.length, MAX_MATCHES) : 0;
+
+    // Replace with highlights
     const html = safe.replace(re, (match) => {
+      if (matchCount >= MAX_MATCHES) {
+        return match; // Stop highlighting after limit
+      }
+
       const cls = count === currentIdx ? 'search-hl search-cur' : 'search-hl';
       count++;
+      matchCount++;
       return '<mark class="' + cls + '">' + match + '</mark>';
     });
-    return { html, count };
+
+    // Add warning if truncated or limited
+    let finalHtml = html;
+    if (isTruncated) {
+      finalHtml = html + '\n\n<div style="color: var(--orange); padding: 10px; background: rgba(210,153,34,0.1); margin-top: 10px;">' +
+        '⚠ Search limited to first 500KB for performance. Total text size: ' + (text.length / 1024).toFixed(0) + 'KB' +
+        '</div>';
+    } else if (matchCount >= MAX_MATCHES) {
+      finalHtml = html + '\n\n<div style="color: var(--orange); padding: 10px; background: rgba(210,153,34,0.1); margin-top: 10px;">' +
+        '⚠ Showing first 10,000 matches only. Refine your search for better results.' +
+        '</div>';
+    }
+
+    return { html: finalHtml, count: totalMatches };
   } catch (e) {
-    return { html: text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'), count: 0 };
+    console.error('Search error:', e);
+    return {
+      html: text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+      count: 0
+    };
   }
+}
+
+// Bypass Manager Component
+function BypassManagerComponent({ toast, bypass }) {
+  const { rules, presets, status, loading, loadRules, loadPresets, loadStatus, createRule, updateRule, deleteRule, toggleRule, applyPreset } = bypass;
+  const [showPresets, setShowPresets] = useState(false);
+  const [editingRule, setEditingRule] = useState(null);
+  const [formData, setFormData] = useState({ pattern: '', is_regex: false, description: '', enabled: true });
+
+  useEffect(() => { loadRules(); loadPresets(); loadStatus(); }, []);
+
+  const handleSubmit = async () => {
+    if (!formData.pattern.trim()) { toast('Pattern is required', 'error'); return; }
+    if (editingRule) { await updateRule(editingRule.id, formData); setEditingRule(null); } else { await createRule(formData); }
+    setFormData({ pattern: '', is_regex: false, description: '', enabled: true });
+  };
+
+  const handleEdit = (rule) => { setEditingRule(rule); setFormData({ pattern: rule.pattern, is_regex: rule.is_regex, description: rule.description || '', enabled: rule.enabled }); };
+  const handleDelete = async (id) => { if (confirm('Delete this bypass rule?')) await deleteRule(id); };
+  const handleApplyPreset = async (presetName) => { if (confirm(`Apply ${presetName} preset?`)) { await applyPreset(presetName); setShowPresets(false); } };
+  const cancelEdit = () => { setEditingRule(null); setFormData({ pattern: '', is_regex: false, description: '', enabled: true }); };
+
+  return React.createElement('div', { className: 'scp-pnl' },
+    React.createElement('div', { className: 'scp-hdr' },
+      React.createElement('h3', null, 'Proxy Bypass'),
+      React.createElement('p', null, 'Exclude URLs from MITM interception'),
+      status && status.status === 'active' && React.createElement('p', { style: { fontSize: '11px', color: 'var(--green)', marginTop: '6px' } },
+        `Active: ${status.enabled_rules_count} rule${status.enabled_rules_count !== 1 ? 's' : ''} • Restart proxy to apply changes`)
+    ),
+
+    React.createElement('div', { className: 'scp-form' },
+      React.createElement('input', {
+        className: 'inp',
+        style: { flex: 1, fontFamily: 'monospace', fontSize: '12px' },
+        placeholder: editingRule ? 'Edit pattern' : '*.google.com or regex pattern',
+        value: formData.pattern,
+        onChange: e => setFormData({ ...formData, pattern: e.target.value })
+      }),
+      React.createElement('input', {
+        className: 'inp',
+        style: { width: '200px', fontSize: '12px' },
+        placeholder: 'Description',
+        value: formData.description,
+        onChange: e => setFormData({ ...formData, description: e.target.value })
+      }),
+      React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', whiteSpace: 'nowrap', cursor: 'pointer' } },
+        React.createElement('input', {
+          type: 'checkbox',
+          checked: formData.is_regex,
+          onChange: e => setFormData({ ...formData, is_regex: e.target.checked })
+        }),
+        'Regex'
+      ),
+      React.createElement('button', {
+        className: 'btn btn-p',
+        onClick: handleSubmit,
+        disabled: loading || !formData.pattern.trim()
+      }, editingRule ? 'Update' : '+ Add'),
+      editingRule && React.createElement('button', { className: 'btn btn-s', onClick: cancelEdit }, 'Cancel'),
+      React.createElement('button', {
+        className: 'btn btn-s',
+        onClick: () => setShowPresets(!showPresets)
+      }, showPresets ? 'Hide Presets' : 'Presets')
+    ),
+
+    showPresets && React.createElement('div', { style: { margin: '0 0 16px 0', padding: '12px', background: 'var(--bg2)', border: '1px solid var(--brd)', borderRadius: '4px' } },
+      React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '8px' } },
+        Object.entries(presets).map(([name, rules]) =>
+          React.createElement('div', {
+            key: name,
+            style: { padding: '10px', background: 'var(--bg)', border: '1px solid var(--brd)', borderRadius: '3px', cursor: 'pointer' },
+            onClick: () => handleApplyPreset(name)
+          },
+            React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', marginBottom: '4px' } },
+              React.createElement('span', { style: { fontWeight: '600', fontSize: '12px', textTransform: 'capitalize' } }, name.replace(/_/g, ' ')),
+              React.createElement('span', { style: { fontSize: '10px', padding: '2px 5px', background: 'var(--bg2)', borderRadius: '2px', color: 'var(--txt3)' } }, rules.length)
+            ),
+            React.createElement('div', { style: { fontSize: '10px', color: 'var(--txt3)' } },
+              rules.slice(0, 2).map(r => r.pattern).join(', ') + (rules.length > 2 ? '...' : '')
+            )
+          )
+        )
+      )
+    ),
+
+    React.createElement('div', { className: 'scp-rules' },
+      rules.length === 0 ?
+        React.createElement('div', { className: 'empty', style: { padding: 30 } },
+          React.createElement('span', null, 'No bypass rules')
+        ) :
+        rules.map(rule =>
+          React.createElement('div', { key: rule.id, className: 'scp-rule' + (rule.enabled ? '' : ' dis') },
+            React.createElement('input', {
+              type: 'checkbox',
+              checked: rule.enabled,
+              onChange: () => toggleRule(rule.id),
+              style: { cursor: 'pointer', marginRight: '12px' }
+            }),
+            React.createElement('div', { style: { flex: 1, minWidth: 0 } },
+              React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } },
+                React.createElement('code', { className: 'rul-pat' }, rule.pattern),
+                rule.is_regex && React.createElement('span', {
+                  style: {
+                    fontSize: '9px',
+                    padding: '1px 4px',
+                    background: 'var(--primary)',
+                    color: '#fff',
+                    borderRadius: '2px',
+                    fontWeight: '600'
+                  }
+                }, 'RE')
+              ),
+              rule.description && React.createElement('div', { style: { fontSize: '11px', color: 'var(--txt3)', marginTop: '2px' } }, rule.description)
+            ),
+            React.createElement('div', { className: 'rul-acts' },
+              React.createElement('button', { onClick: () => handleEdit(rule), className: 'btn btn-sm btn-s' }, 'Edit'),
+              React.createElement('button', { onClick: () => handleDelete(rule.id), className: 'btn btn-sm btn-d' }, '×')
+            )
+          )
+        )
+    )
+  );
 }
 
 function Blackwire() {
@@ -343,6 +525,17 @@ function Blackwire() {
   // Initialize toast first (needed by other hooks)
   const { toasts: hookToasts, toast: hookToast } = useToast();
 
+  // Deobfuscator with progress tracking
+  const deobfuscator = useDeobfuscator((progress) => {
+    if (progress.stage === 'detecting') {
+      hookToast(`Detecting obfuscation type: ${progress.obfuscationType || 'unknown'}...`, 'info');
+    } else if (progress.stage === 'deobfuscating') {
+      hookToast(`Deobfuscating... (${progress.iteration}/${progress.maxIterations})`, 'info');
+    } else if (progress.stage === 'beautifying') {
+      hookToast('Beautifying code...', 'info');
+    }
+  });
+
   // Initialize hooks that don't depend on others
   const git = useGit(hookToast);
   const scope = useScope(hookToast);
@@ -362,6 +555,7 @@ function Blackwire() {
   const intruder = useIntruder(hookToast);
   const sensitive = useSensitive(hookToast);
   const proxyConsole = useConsole();
+  const bypass = useBypass(hookToast);
 
   // Initialize pagination after requests hook (needs requests.totalRequests)
   const pagination = usePagination({
@@ -682,6 +876,11 @@ function Blackwire() {
   useEffect(() => {
     if (currentPage !== 1) {
       setCurrentPage(1);
+    } else {
+      // If already on page 1, reload with new filters
+      if (curPrj && tab === 'history') {
+        requests.loadRequests(1, pageSize);
+      }
     }
   }, [savedOnly, scopeOnly, search]);
 
@@ -692,19 +891,24 @@ function Blackwire() {
     }
   }, [pageSize]);
 
-  // Auto-refresh requests in real-time (every 3 seconds, avoid conflicts with WebSocket)
+  // Reload when page number changes
+  useEffect(() => {
+    if (curPrj && tab === 'history') {
+      requests.loadRequests(currentPage, pageSize);
+    }
+  }, [currentPage]);
+
+  // Auto-refresh requests in real-time (every 5 seconds, WebSocket handles immediate updates)
   useEffect(() => {
     if (!curPrj || tab !== 'history') return;
 
     const interval = setInterval(() => {
-      // Only auto-refresh if not currently loading to avoid race conditions
-      if (!requests.loading) {
-        requests.loadRequests(currentPage, pageSize);
-      }
-    }, 3000); // Refresh every 3 seconds
+      // Reload to catch any requests that might have been missed by WebSocket
+      requests.loadRequests(currentPage, pageSize);
+    }, 5000); // Refresh every 5 seconds as backup to WebSocket
 
     return () => clearInterval(interval);
-  }, [curPrj, tab, currentPage, pageSize, requests.loading]);
+  }, [curPrj, tab, currentPage, pageSize]);
 
   // Sync repeater saved tabs
   useEffect(() => {
@@ -825,10 +1029,12 @@ function Blackwire() {
   }, [_optionalChain([webhookExt, 'optionalAccess', _13 => _13.enabled]), _optionalChain([webhookExt, 'optionalAccess', _14 => _14.config, 'optionalAccess', _15 => _15.token_id])]);
 
   // Auto-refresh desde webhook.site cuando estemos en las pestañas relevantes
+  // NOTA: Deshabilitado para la pestaña 'webhook_site' ya que la UI personalizada maneja su propio refresh
   useEffect(() => {
-    if (tab !== 'extensions' && tab !== 'webhook_site') return;
+    // Solo auto-refresh en 'extensions' tab, no en la tab personalizada
+    if (tab !== 'extensions') return;
     if (!_optionalChain([webhookExt, 'optionalAccess', _16 => _16.enabled]) || !_optionalChain([webhookExt, 'optionalAccess', _17 => _17.config, 'optionalAccess', _18 => _18.token_id])) return;
-    const id = setInterval(() => webhook.refresh(webhookExt.config.token_id), 15000);
+    const id = setInterval(() => webhook.refresh(webhookExt.config.token_id, true), 15000); // silent refresh
     return () => clearInterval(id);
   }, [tab, _optionalChain([webhookExt, 'optionalAccess', _19 => _19.enabled]), _optionalChain([webhookExt, 'optionalAccess', _20 => _20.config, 'optionalAccess', _21 => _21.token_id])]);
 
@@ -882,8 +1088,10 @@ function Blackwire() {
       try {
         const m = JSON.parse(e.data);
         if (m.type === 'new_request') {
-          // Don't reload immediately - let auto-refresh handle it to avoid conflicts
-          // The auto-refresh will pick it up within 3 seconds
+          // Immediately add new request to the list if on history tab
+          if (tab === 'history' && m.data) {
+            requests.addRequest(m.data);
+          }
         }
         if (m.type === 'intercept_new') setPending(p => [...p, m.data]);
         if (m.type === 'intercept_status') setIntOn(m.enabled);
@@ -918,23 +1126,22 @@ function Blackwire() {
     await requests.loadRequests(page !== undefined ? page : currentPage, pageSize);
   };
 
-  // Pagination wrapper functions that integrate with loadReqs
-  const goToPage = async (page) => {
+  // Pagination wrapper functions - state changes trigger useEffect to load requests
+  const goToPage = (page) => {
     _goToPage(page);
-    await loadReqs(undefined, undefined, page);
   };
-  const nextPage = async () => {
+  const nextPage = () => {
     if (currentPage < totalPages) {
-      await goToPage(currentPage + 1);
+      _nextPage();
     }
   };
-  const prevPage = async () => {
+  const prevPage = () => {
     if (currentPage > 1) {
-      await goToPage(currentPage - 1);
+      _prevPage();
     }
   };
-  const firstPage = async () => await goToPage(1);
-  const lastPage = async () => await goToPage(totalPages);
+  const firstPage = () => _firstPage();
+  const lastPage = () => _lastPage();
 
   // These functions are now in hooks (repeater.load, git.loadHistory, scope.loadRules, extensions.loadExtensions, proxy.checkStatus)
 
@@ -1367,7 +1574,7 @@ function Blackwire() {
     if (!confirm('Delete collection?')) return;
     await collectionService.delete(id);
     if (selColl === id) { setSelColl(null); setCollItems([]); }
-    loadColls();
+    await loadColls();
     toast('Deleted', 'success');
   };
 
@@ -1491,8 +1698,9 @@ function Blackwire() {
       const item = repHistory[newIndex];
       setRepM(item.method);
       setRepU(item.url);
-      setRepH(item.headers);
-      setRepB(item.body);
+      // Convert headers to string if they're stored as object
+      setRepH(typeof item.headers === 'string' ? item.headers : Object.entries(item.headers || {}).map(([k, v]) => k + ': ' + v).join('\n'));
+      setRepB(item.body || '');
       setRepResp(item.response);
       setRepHistoryIndex(newIndex);
     }
@@ -1827,8 +2035,13 @@ function Blackwire() {
       });
     } catch (e) {}
     await repeaterService.save(n, repM, repU, h, repB, null);
-    loadRep();
+    await loadRep();
     toast('Saved', 'success');
+  };
+
+  const loadRep = async () => {
+    const items = await repeaterService.list();
+    setRepReqs(items);
   };
 
   const loadRepItem = r => {
@@ -1854,14 +2067,14 @@ function Blackwire() {
     const n = prompt('Rename:', item.name);
     if (!n || n === item.name) return;
     await repeaterService.update(id, n);
-    loadRep();
+    await loadRep();
     toast('Renamed', 'success');
   };
 
   const delRepItem = async id => {
     await repeaterService.delete(id);
     if (selRep === id) setSelRep(null);
-    loadRep();
+    await loadRep();
     toast('Deleted', 'success');
   };
 
@@ -1884,7 +2097,7 @@ function Blackwire() {
 
   const delReq = async id => {
     await requestService.delete(id);
-    loadReqs();
+    await loadReqs();
     if (_optionalChain([selReq, 'optionalAccess', _54 => _54.id]) === id) setSelReq(null);
   };
 
@@ -2231,6 +2444,13 @@ function Blackwire() {
   const formatBody = (body, format) => {
     if (!body) return { text: body, html: false };
 
+    if (format === 'deminify') {
+      // Only beautify (not deobfuscate) in History view for performance
+      // User can manually deobfuscate in Repeater with the Deminify button
+      const beautified = beautifyJs(body);
+      return { text: syntaxHighlightJS(beautified), html: true };
+    }
+
     if (format === 'pretty') {
       const lang = detectLanguage(body);
       if (!lang) return { text: body, html: false };
@@ -2367,18 +2587,53 @@ function Blackwire() {
         toast('Body copied', 'success');
         break;
       case 'download-body':
+        let bodyToDownload = null;
+        let filename = 'body.txt';
+        let isTruncated = false;
+
         if (source === 'history' && req.id) {
-          window.open(API + '/api/requests/' + req.id + '/download-body', '_blank');
-          toast('Downloading body...', 'success');
+          // For history items with response body, prioritize downloading response body
+          if (req.response_body) {
+            bodyToDownload = req.response_body;
+            filename = 'response-body.txt';
+            isTruncated = bodyToDownload && bodyToDownload.includes('[...TRUNCATED at');
+            if (!isTruncated) {
+              // If not truncated in memory, try to download from backend
+              window.open(API + '/api/requests/' + req.id + '/download-response-body', '_blank');
+              toast('Downloading response body...', 'success');
+              break;
+            }
+          } else {
+            // Otherwise download request body
+            window.open(API + '/api/requests/' + req.id + '/download-body', '_blank');
+            toast('Downloading request body...', 'success');
+            break;
+          }
         } else if (source === 'repeater-response' && req.response_body) {
-          const blob = new Blob([req.response_body], { type: 'application/octet-stream' });
+          bodyToDownload = req.response_body;
+          filename = 'response-body.txt';
+          isTruncated = bodyToDownload.includes('[...TRUNCATED at');
+        } else if (norm.body) {
+          bodyToDownload = norm.body;
+          filename = 'body.txt';
+          isTruncated = bodyToDownload.includes('[...TRUNCATED at');
+        }
+
+        if (bodyToDownload) {
+          const blob = new Blob([bodyToDownload], { type: 'application/octet-stream' });
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = url;
-          a.download = 'response-body.txt';
+          a.download = filename;
           a.click();
           URL.revokeObjectURL(url);
-          toast('Downloading body...', 'success');
+          if (isTruncated) {
+            toast('Downloaded truncated body (limited to 1MB)', 'warning');
+          } else {
+            toast('Downloading body...', 'success');
+          }
+        } else {
+          toast('No body available to download', 'error');
         }
         break;
       case 'replay-browser':
@@ -2994,6 +3249,7 @@ function Blackwire() {
             , React.createElement('div', { className: 'tab' + (tab === 'chepy' ? ' act' : ''), onClick: () => setTab('chepy'),}, "Cipher")
             , React.createElement('div', { className: 'tab' + (tab === 'compare' ? ' act' : ''), onClick: () => setTab('compare'),}, "Compare")
             , React.createElement('div', { className: 'tab' + (tab === 'sensitive' ? ' act' : ''), onClick: () => setTab('sensitive'),}, "Sensitive")
+            , React.createElement('div', { className: 'tab' + (tab === 'bypass' ? ' act' : ''), onClick: () => { setTab('bypass'); bypass.loadRules(); bypass.loadPresets(); bypass.loadStatus(); },}, "Bypass")
             , React.createElement('div', { className: 'tab' + (tab === 'extensions' ? ' act' : ''), onClick: () => setTab('extensions'),}, "Extensions")
             , React.createElement('div', { className: 'tab' + (tab === 'console' ? ' act' : ''), onClick: () => setTab('console'),}, "Console"
 
@@ -3308,8 +3564,13 @@ function Blackwire() {
 
                           )
                           , detTab === 'response' && (
-                            React.createElement('button', { className: 'btn btn-sm ' + (respFormat === 'render' ? 'btn-p' : 'btn-s'), onClick: () => setRespFormat('render'),}, "Render"
+                            React.createElement(React.Fragment, null
+                              , React.createElement('button', { className: 'btn btn-sm ' + (respFormat === 'deminify' ? 'btn-p' : 'btn-s'), onClick: () => setRespFormat('deminify'), title: "Beautify JavaScript" ,}, "Deminify"
 
+                              )
+                              , React.createElement('button', { className: 'btn btn-sm ' + (respFormat === 'render' ? 'btn-p' : 'btn-s'), onClick: () => setRespFormat('render'),}, "Render"
+
+                              )
                             )
                           )
                         )
@@ -3337,9 +3598,9 @@ function Blackwire() {
                                 try { return new URL(d.url).pathname; } catch (e) { return d.url; }
                               })()) + '\n\n' + fmtHHtml(d.headers, d.url) + (d.body ? '\n\n' + (reqFormatted.html ? reqFormatted.text : escapeHtml(reqFormatted.text)) : ''))
                             : (escapeHtml('HTTP ' + d.response_status) + '\n\n' + fmtHHtml(d.response_headers) + '\n\n' + (respFormatted.html ? respFormatted.text : escapeHtml(respFormatted.text)));
-                          if (histSearch.searchTerm) {
+                          if (histSearch.debouncedSearchTerm) {
                             const plainText = rawContent.replace(/<[^>]*>/g, '');
-                            const hl = highlightMatches(plainText, histSearch.searchTerm, histSearch.isRegex, histSearch.matchIndex);
+                            const hl = highlightMatches(plainText, histSearch.debouncedSearchTerm, histSearch.isRegex, histSearch.matchIndex);
                             if (hl.count !== histSearch.matchCount) setTimeout(() => histSearch.setMatchCount(hl.count), 0);
                             return React.createElement('div', { dangerouslySetInnerHTML: { __html: hl.html },} );
                           }
@@ -3356,10 +3617,11 @@ function Blackwire() {
                             if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); histSearch.nextMatch(); }
                             if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); histSearch.prevMatch(); }
                             if (e.key === 'Escape') { histSearch.close(); }
-                          },}
+                          },
+                          style: histSearch.isSearching ? { opacity: 0.7 } : {},}
                         )
                         , React.createElement('button', { className: 'srch-btn' + (histSearch.isRegex ? ' act' : ''), onClick: () => { histSearch.toggleRegex(); histSearch.setMatchIndex(0); }, title: "Toggle regex" ,}, ".*")
-                        , React.createElement('span', { className: "search-info",}, histSearch.matchCount > 0 ? (histSearch.matchIndex + 1) + '/' + histSearch.matchCount : '0/0')
+                        , React.createElement('span', { className: "search-info",}, histSearch.isSearching ? '⏳' : (histSearch.matchCount > 0 ? (histSearch.matchIndex + 1) + '/' + histSearch.matchCount : '0/0'))
                         , React.createElement('button', { className: "srch-btn", onClick: histSearch.prevMatch, disabled: histSearch.matchCount === 0,}, "▲")
                         , React.createElement('button', { className: "srch-btn", onClick: histSearch.nextMatch, disabled: histSearch.matchCount === 0,}, "▼")
                         , React.createElement('button', { className: "srch-btn", onClick: histSearch.close,}, "✕")
@@ -3589,8 +3851,13 @@ function Blackwire() {
                           , React.createElement('button', { className: 'btn btn-sm ' + (detTab === 'request' ? (reqFormat === 'raw' ? 'btn-p' : 'btn-s') : (respFormat === 'raw' ? 'btn-p' : 'btn-s')), onClick: () => detTab === 'request' ? setReqFormat('raw') : setRespFormat('raw'),}, "Raw")
                           , React.createElement('button', { className: 'btn btn-sm ' + (detTab === 'request' ? (reqFormat === 'pretty' ? 'btn-p' : 'btn-s') : (respFormat === 'pretty' ? 'btn-p' : 'btn-s')), onClick: () => detTab === 'request' ? setReqFormat('pretty') : setRespFormat('pretty'),}, "Pretty")
                           , detTab === 'response' && (
-                            React.createElement('button', { className: 'btn btn-sm ' + (respFormat === 'render' ? 'btn-p' : 'btn-s'), onClick: () => setRespFormat('render'),}, "Render"
+                            React.createElement(React.Fragment, null
+                              , React.createElement('button', { className: 'btn btn-sm ' + (respFormat === 'deminify' ? 'btn-p' : 'btn-s'), onClick: () => setRespFormat('deminify'), title: "Beautify JavaScript" ,}, "Deminify"
 
+                              )
+                              , React.createElement('button', { className: 'btn btn-sm ' + (respFormat === 'render' ? 'btn-p' : 'btn-s'), onClick: () => setRespFormat('render'),}, "Render"
+
+                              )
                             )
                           )
                         )
@@ -3873,6 +4140,77 @@ function Blackwire() {
                         React.createElement('div', { style: { display: 'flex', gap: '4px' },}
                           , React.createElement('button', { className: 'btn btn-sm ' + (repRespFormat === 'code' ? 'btn-p' : 'btn-s'), onClick: () => setRepRespFormat('code'),}, "Raw")
                           , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: () => { setRepRespBody(prettyPrint(repRespBody)); }, title: "Pretty Print" ,}, "Pretty")
+                          , React.createElement('button', {
+                            className: "btn btn-sm btn-s"  ,
+                            onClick: async () => {
+                              console.clear();
+                              console.log('%c╔════════════════════════════════════════════╗', 'color: #00ff00');
+                              console.log('%c║   JavaScript Deobfuscator - Diagnostics   ║', 'color: #00ff00; font-weight: bold');
+                              console.log('%c╚════════════════════════════════════════════╝', 'color: #00ff00');
+
+                              // Detailed size analysis
+                              const size = repRespBody.length;
+                              const byteSize = new TextEncoder().encode(repRespBody).length;
+                              const sizeMB = (size / 1024 / 1024).toFixed(2);
+                              const byteSizeMB = (byteSize / 1024 / 1024).toFixed(2);
+
+                              console.log(`\n%c📊 Size Analysis:`, 'color: #00aaff; font-weight: bold');
+                              console.log(`  • String length: ${size.toLocaleString()} characters (${sizeMB} MB)`);
+                              console.log(`  • Byte size (UTF-8): ${byteSize.toLocaleString()} bytes (${byteSizeMB} MB)`);
+                              console.log(`  • Encoding ratio: ${(byteSize / size).toFixed(2)}x`);
+
+                              // Content analysis
+                              const hasTruncated = repRespBody.includes('[...TRUNCATED');
+                              console.log(`\n%c📝 Content Analysis:`, 'color: #00aaff; font-weight: bold');
+                              console.log(`  • Contains TRUNCATED marker: ${hasTruncated ? 'YES ⚠️' : 'NO'}`);
+                              console.log(`  • First 200 chars:`);
+                              console.log(`    ${repRespBody.substring(0, 200)}`);
+                              console.log(`  • Last 200 chars:`);
+                              console.log(`    ${repRespBody.substring(repRespBody.length - 200)}`);
+
+                              // Character encoding check
+                              const asciiChars = repRespBody.split('').filter(c => c.charCodeAt(0) < 128).length;
+                              const nonAscii = size - asciiChars;
+                              console.log(`\n%c🔤 Character Encoding:`, 'color: #00aaff; font-weight: bold');
+                              console.log(`  • ASCII chars: ${asciiChars.toLocaleString()} (${(asciiChars/size*100).toFixed(1)}%)`);
+                              console.log(`  • Non-ASCII chars: ${nonAscii.toLocaleString()} (${(nonAscii/size*100).toFixed(1)}%)`);
+
+                              if (size > 10 * 1024 * 1024) {
+                                console.warn(`\n%c⚠ File too large (${sizeMB} MB > 10 MB), only beautifying...`, 'color: #ff6600; font-weight: bold');
+                                console.log(`%c💡 Tip: Files larger than 10MB may cause performance issues`, 'color: #ffaa00');
+                                hookToast(`File too large (${sizeMB} MB), only beautifying...`, 'warning');
+                                try {
+                                  const beautified = await deobfuscator.beautify(repRespBody);
+                                  setRepRespBody(beautified);
+                                  hookToast('Beautification complete!', 'success');
+                                } catch (error) {
+                                  console.error('Beautification error:', error);
+                                  hookToast('Beautification failed: ' + error.message, 'error');
+                                }
+                                return;
+                              }
+
+                              console.log(`\n%c🔍 Starting deobfuscation...`, 'color: #ff00ff; font-weight: bold');
+                              hookToast(`Processing ${sizeMB} MB file...`, 'info');
+
+                              try {
+                                const deobfuscated = await deobfuscator.deobfuscateAndBeautify(repRespBody);
+                                setRepRespBody(deobfuscated);
+                                hookToast('✓ Deobfuscation complete! Check console for details.', 'success');
+
+                                console.log(`\n%c✓ Deobfuscation Complete!`, 'color: #00ff00; font-weight: bold; font-size: 14px');
+                                console.log(`  • Original size: ${sizeMB} MB`);
+                                console.log(`  • Final size: ${(deobfuscated.length / 1024 / 1024).toFixed(2)} MB`);
+                              } catch (error) {
+                                console.error('Deobfuscation error:', error);
+                                hookToast('Deobfuscation failed: ' + error.message, 'error');
+                              }
+                            },
+                            title: "Deobfuscate & Beautify JavaScript (max 10MB)"     ,
+                            disabled: deobfuscator.isProcessing,}
+
+                            , deobfuscator.isProcessing ? '⏳ Processing...' : 'Deminify'
+                          )
                           , React.createElement('button', { className: 'btn btn-sm ' + (repRespFormat === 'render' ? 'btn-p' : 'btn-s'), onClick: () => setRepRespFormat('render'),}, "Render")
                         )
                       )
@@ -3921,8 +4259,8 @@ function Blackwire() {
                             )
                           );
                         }
-                        if (repSearch.searchTerm) {
-                          const hl = highlightMatches(repRespBody, repSearch.searchTerm, repSearch.isRegex, repSearch.matchIndex);
+                        if (repSearch.debouncedSearchTerm) {
+                          const hl = highlightMatches(repRespBody, repSearch.debouncedSearchTerm, repSearch.isRegex, repSearch.matchIndex);
                           if (hl.count !== repSearch.matchCount) setTimeout(() => repSearch.setMatchCount(hl.count), 0);
                           return React.createElement('div', { className: "code", ref: repSearch.contentRef, style: { flex: 1, overflow: 'auto' }, dangerouslySetInnerHTML: { __html: hl.html },} );
                         }
@@ -3946,10 +4284,11 @@ function Blackwire() {
                             if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); repSearch.nextMatch(); }
                             if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); repSearch.prevMatch(); }
                             if (e.key === 'Escape') { repSearch.close(); }
-                          },}
+                          },
+                          style: repSearch.isSearching ? { opacity: 0.7 } : {},}
                         )
                         , React.createElement('button', { className: 'srch-btn' + (repSearch.isRegex ? ' act' : ''), onClick: () => { repSearch.toggleRegex(); repSearch.setMatchIndex(0); }, title: "Toggle regex" ,}, ".*")
-                        , React.createElement('span', { className: "search-info",}, repSearch.matchCount > 0 ? (repSearch.matchIndex + 1) + '/' + repSearch.matchCount : '0/0')
+                        , React.createElement('span', { className: "search-info",}, repSearch.isSearching ? '⏳' : (repSearch.matchCount > 0 ? (repSearch.matchIndex + 1) + '/' + repSearch.matchCount : '0/0'))
                         , React.createElement('button', { className: "srch-btn", onClick: repSearch.prevMatch, disabled: repSearch.matchCount === 0,}, "▲")
                         , React.createElement('button', { className: "srch-btn", onClick: repSearch.nextMatch, disabled: repSearch.matchCount === 0,}, "▼")
                         , React.createElement('button', { className: "srch-btn", onClick: repSearch.close,}, "✕")
@@ -4795,6 +5134,8 @@ function Blackwire() {
             )
           )
         )
+
+        , tab === 'bypass' && curPrj && React.createElement(BypassManagerComponent, { toast: hookToast, bypass: bypass })
 
         , tab === 'intruder' && curPrj && (
           React.createElement('div', { style: { display: 'flex', width: '100%', height: '100%' },}

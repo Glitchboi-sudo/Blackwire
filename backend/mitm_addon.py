@@ -76,7 +76,7 @@ FILTERED_EXTENSIONS = {
     '.mp3', '.mp4', '.avi', '.mov', '.webm'
 }
 
-MAX_BODY_SIZE = 1024 * 1024  # 1MB
+MAX_BODY_SIZE = 10 * 1024 * 1024  # 10MB (increased for large JS files)
 
 
 def load_config() -> dict:
@@ -528,6 +528,42 @@ class BlackwireAddon:
             target=send_to_backend,
             args=("/api/internal/request", data)
         ).start()
+
+    def error(self, flow: http.HTTPFlow):
+        """Handle errors in the proxy flow to prevent 502s"""
+        try:
+            url = flow.request.pretty_url if flow.request else "unknown"
+            error_msg = flow.error.msg if hasattr(flow, 'error') and flow.error else "Unknown error"
+
+            ctx.log.error(f"[blackwire] Flow error for {url}: {error_msg}")
+
+            # Send error to console
+            _threading.Thread(
+                target=_send_console_log,
+                args=("ERROR", f"⚠️  Proxy error: {error_msg} ({url})", "proxy"),
+                daemon=True
+            ).start()
+
+            # Try to send error details to backend
+            if flow.request:
+                data = {
+                    "method": flow.request.method,
+                    "url": url,
+                    "headers": dict(flow.request.headers),
+                    "body": "",
+                    "request_type": "http",
+                    "in_scope": False,
+                    "response_status": 502,
+                    "response_headers": {"X-Blackwire-Error": error_msg},
+                    "response_body": f"[Proxy Error: {error_msg}]"
+                }
+
+                _threading.Thread(
+                    target=send_to_backend,
+                    args=("/api/internal/request", data)
+                ).start()
+        except Exception as e:
+            ctx.log.error(f"[blackwire] Error in error handler: {e}")
 
 
 addons = [BlackwireAddon()]

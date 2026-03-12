@@ -18,7 +18,7 @@ export function useIntercept(toast) {
   const loadStatus = useCallback(async () => {
     try {
       const status = await interceptService.getStatus();
-      setIntOn(status.intercept_on || false);
+      setIntOn(status.enabled || false);
       setPending(status.pending_requests || []);
     } catch (err) {
       console.error('Failed to load intercept status:', err);
@@ -30,8 +30,8 @@ export function useIntercept(toast) {
     setLoading(true);
     try {
       const r = await interceptService.toggle();
-      setIntOn(r.intercept_on);
-      toast(r.intercept_on ? 'Intercept enabled' : 'Intercept disabled', 'success');
+      setIntOn(r.enabled);
+      toast(r.enabled ? 'Intercept enabled' : 'Intercept disabled', 'success');
       return true;
     } catch (err) {
       toast('Failed to toggle intercept', 'error');
