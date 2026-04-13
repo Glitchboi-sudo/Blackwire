@@ -76,6 +76,7 @@ export function useWebSockets(toast) {
     selectedConn,
     setSelectedConn,
     frames,
+    setFrames, // Allow direct state setting
     selectedFrame,
     resendMsg,
     setResendMsg,

@@ -65,7 +65,7 @@ def _send_console_log(level: str, msg: str, name: str = "mitmproxy") -> None:
 
 
 BACKEND_URL = "http://127.0.0.1:5000"
-CONFIG_PATH = Path(__file__).parent / ".proxy_config.json"
+CONFIG_PATH = Path(__file__).parent.parent / ".proxy_config.json"
 EXTENSIONS_DIR = Path(__file__).parent / "extensions"
 _BACKEND_DIR = Path(__file__).parent.resolve()
 _SAFE_ID_RE = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')

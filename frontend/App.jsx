@@ -673,10 +673,10 @@ function Blackwire() {
   const wsConns = websockets.connections || [];
   const wsFrames = websockets.frames || [];
   const setWsFrames = websockets.setFrames;
-  const wsResendMsg = websockets.resendMessage;
-  const wsResendResp = websockets.resendResponse;
-  const wsSending = websockets.isSending;
-  const setWsResendMsg = websockets.setResendMessage;
+  const wsResendMsg = websockets.resendMsg;
+  const wsResendResp = websockets.resendResp;
+  const wsSending = websockets.sending;
+  const setWsResendMsg = websockets.setResendMsg;
   const colls = collections.collections || [];
   const collItems = collections.items || [];
   const collVars = collections.variables || {};
@@ -1195,7 +1195,7 @@ function Blackwire() {
       toast(r?.detail || 'Failed to create project', 'error');
       return;
     }
-    await loadPrjs();
+    await projects.load();
     await selectPrj(name);
     setShowNew(false);
     setNewName('');
@@ -1208,7 +1208,7 @@ function Blackwire() {
     const r = await projectService.delete(n);
     if (r && (r.status === 'deleted' || r.status === 'ok')) {
       if (curPrj?.project === n) await projects.loadCurrent();
-      await loadPrjs();
+      await projects.load();
       toast('Deleted', 'success');
     } else {
       toast(r?.detail || 'Failed to delete project', 'error');
@@ -1273,7 +1273,7 @@ function Blackwire() {
         const r = await projectService.importAsNew(file);
         if (r && r.status === 'imported') {
           toast(`Project "${data.project_name}" created successfully! ${r.stats?.total_requests || 0} requests imported.`, 'success');
-          await loadPrjs();
+          await projects.load();
         } else {
           toast('Import failed', 'error');
         }
