@@ -83,16 +83,7 @@ export const generateAttackCombinations = (intUrl, intHeaders, intBody, intMetho
   const payloadSets = positions.map((_, i) => generatePayloadList(intPayloads[i] || { type: 'list', items: '' }));
   const combos = [];
 
-  if (intAttackType === 'targeted') {
-    // For each position, iterate its payloads while others keep original value
-    for (let pi = 0; pi < positions.length; pi++) {
-      for (const val of payloadSets[pi]) {
-        const payloads = {};
-        positions.forEach((_, i) => { payloads[i] = i === pi ? val : null; }); // null = keep original
-        combos.push({ payloads, label: val });
-      }
-    }
-  } else if (intAttackType === 'broadcast') {
+  if (intAttackType === 'broadcast') {
     // Same payload in all positions
     const list = payloadSets[0] || [];
     for (const val of list) {
@@ -125,6 +116,16 @@ export const generateAttackCombinations = (intUrl, intHeaders, intBody, intMetho
       combos.push({ payloads, label: combo.join(' | ') });
     }
     if (combos.length > 1000000) combos.length = 1000000; // safety cap
+  } else {
+    // targeted (default; también 'sniper'): cada posición se prueba una a la vez
+    // con su payload set mientras las demás conservan su valor original.
+    for (let pi = 0; pi < positions.length; pi++) {
+      for (const val of payloadSets[pi]) {
+        const payloads = {};
+        positions.forEach((_, i) => { payloads[i] = i === pi ? val : null; }); // null = keep original
+        combos.push({ payloads, label: val });
+      }
+    }
   }
   return combos;
 };

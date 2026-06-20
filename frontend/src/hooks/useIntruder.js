@@ -12,7 +12,7 @@ export function useIntruder(toast) {
   const [headers, setHeaders] = useState('');
   const [body, setBody] = useState('');
   const [positions, setPositions] = useState([]);
-  const [attackType, setAttackType] = useState('sniper');
+  const [attackType, setAttackType] = useState('targeted');
   const [payloads, setPayloads] = useState([[]]);
   const [results, setResults] = useState([]);
   const [running, setRunning] = useState(false);
@@ -94,7 +94,7 @@ export function useIntruder(toast) {
     setHeaders(attack.headers || '');
     setBody(attack.body || '');
     setPositions(attack.positions || []);
-    setAttackType(attack.attack_type || 'sniper');
+    setAttackType(attack.attack_type || 'targeted');
     setPayloads(attack.payloads || [[]]);
     setConcurrency(attack.concurrency || 10);
     setDelay(attack.delay || 0);

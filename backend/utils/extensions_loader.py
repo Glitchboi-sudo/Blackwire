@@ -4,7 +4,7 @@ Carga y compilación de extensiones.
 
 - load_extension_metadata(): descubre extensiones en backend/extensions/, lee su
   EXTENSION_META y compila el .ui.jsx asociado si existe.
-- compile_extension_ui(): transpila un .ui.jsx a .ui.js con Sucrase (npx).
+- compile_extension_ui(): transpila un .ui.jsx a .ui.js con Sucrase (vía node).
 - save_extension_config(): persiste la config de una extensión en el proyecto y
   refresca la config del proxy.
 
@@ -14,9 +14,7 @@ y services.proxy_control (update_proxy_config).
 
 import importlib.util
 import logging
-import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import List, Optional
 
@@ -41,44 +39,33 @@ async def save_extension_config(project: str, name: str, config: dict):
 
 
 def compile_extension_ui(ui_jsx_path: Path) -> Optional[Path]:
-    """Compila un archivo .ui.jsx a .ui.js usando Sucrase. Devuelve el path o None."""
+    """Compila un .ui.jsx a .ui.js con Sucrase vía `node` (no requiere `npx`/npm).
+
+    Usa el mismo enfoque que el transpilado de App.jsx: invoca node con require('sucrase'),
+    que resuelve sucrase desde node_modules. Devuelve el path compilado o None.
+    """
     try:
         EXTENSIONS_UI_COMPILED_DIR.mkdir(exist_ok=True)
+        output_path = EXTENSIONS_UI_COMPILED_DIR / ui_jsx_path.name.replace('.jsx', '.js')
 
-        output_filename = ui_jsx_path.name.replace('.jsx', '.js')
-        output_path = EXTENSIONS_UI_COMPILED_DIR / output_filename
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_src = Path(tmpdir) / "src"
-            tmp_build = Path(tmpdir) / "build"
-            tmp_src.mkdir()
-            tmp_build.mkdir()
-
-            shutil.copy(ui_jsx_path, tmp_src / ui_jsx_path.name)
-
-            cmd = [
-                "npx", "sucrase",
-                str(tmp_src),
-                "-d", str(tmp_build),
-                "--transforms", "jsx",
-                "--jsx-pragma", "React.createElement",
-                "--jsx-fragment-pragma", "React.Fragment"
-            ]
-
-            result = subprocess.run(cmd, capture_output=True, text=True, cwd=FRONTEND_DIR)
-
-            if result.returncode != 0:
-                logger.error(f"Failed to compile {ui_jsx_path.name}: {result.stderr}")
-                return None
-
-            compiled_file = tmp_build / ui_jsx_path.name.replace('.jsx', '.js')
-            if compiled_file.exists():
-                shutil.copy(compiled_file, output_path)
-                logger.info(f"Compiled extension UI: {ui_jsx_path.name} -> {output_filename}")
-                return output_path
-            logger.error(f"Compiled file not found: {compiled_file}")
+        node_script = (
+            "const {transform}=require('sucrase'),fs=require('fs');"
+            f"const code=fs.readFileSync({str(ui_jsx_path)!r},'utf8');"
+            "const r=transform(code,{transforms:['jsx'],jsxPragma:'React.createElement',"
+            "jsxFragmentPragma:'React.Fragment',production:true});"
+            f"fs.writeFileSync({str(output_path)!r},r.code,'utf8');"
+        )
+        result = subprocess.run(
+            ["node", "-e", node_script],
+            capture_output=True, text=True, timeout=30, cwd=str(FRONTEND_DIR)
+        )
+        if result.returncode != 0:
+            logger.error(f"Failed to compile {ui_jsx_path.name}: {result.stderr[:500]}")
             return None
-
+        if output_path.exists():
+            logger.info(f"Compiled extension UI: {ui_jsx_path.name} -> {output_path.name}")
+            return output_path
+        return None
     except Exception as e:
         logger.error(f"Error compiling extension UI {ui_jsx_path.name}: {e}")
         return None
