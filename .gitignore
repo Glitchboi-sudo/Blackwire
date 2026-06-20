@@ -24,3 +24,7 @@ backend/.action_*.json
 
 # Runtime del Makefile (pid/logs)
 .run/
+
+# Dependencias y artefactos generados
+node_modules/
+.compiled_ui/
