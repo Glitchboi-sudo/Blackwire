@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, Response
 from starlette.middleware.gzip import GZipMiddleware
 
 from config import (BASE_DIR, PROJECTS_DIR, FRONTEND_DIR, FRONTEND_HTML_PATH,
@@ -24,6 +24,7 @@ from services import state
 from db import get_db, get_db_with_regex, init_db, load_project_settings
 from services.proxy_control import stop_proxy
 from utils.httpql import compile_httpql_ast
+from utils.jsx import resolve_frontend_module, get_module_js
 
 # --- Routers por dominio ---
 from proxy_console import router as console_router, setup_console_handler
@@ -195,6 +196,30 @@ async def serve_services(filename: str):
 @app.get("/src/hooks/{filename}")
 async def serve_hooks(filename: str):
     return _serve_frontend_module("hooks", filename)
+
+
+def _serve_frontend_jsx(subdir: str, path: str):
+    """Sirve un módulo de frontend/src/<subdir>/ (.jsx transpilado o .js crudo).
+
+    Soporta subcarpetas (p. ej. components/tabs/HistoryPanel.jsx).
+    """
+    target = resolve_frontend_module(subdir, path)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"Module {subdir}/{path} not found")
+    code = get_module_js(target)
+    if code is None:
+        raise HTTPException(status_code=500, detail=f"Could not load module {subdir}/{path}")
+    return Response(content=code, media_type="text/javascript", headers=_static_headers())
+
+
+@app.get("/src/components/{path:path}")
+async def serve_components(path: str):
+    return _serve_frontend_jsx("components", path)
+
+
+@app.get("/src/context/{path:path}")
+async def serve_context(path: str):
+    return _serve_frontend_jsx("context", path)
 
 
 @app.websocket("/ws")
