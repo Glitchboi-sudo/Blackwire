@@ -4,13 +4,16 @@ Empaquetado de Blackwire para el **AUR** (Arch User Repository), de modo que se
 instale con `yay -S blackwire` (o `paru -S blackwire`), resolviendo las
 dependencias desde los repos oficiales.
 
-Se empaqueta la **app web (fuente)**: corre el servidor local (FastAPI + React),
-sin Docker. No es la versión de escritorio Tauri (esa vive en la release de GitHub).
+Hay dos sabores: la **app web (fuente)** que corre el servidor local (FastAPI +
+React, sin Docker), y la **app de escritorio (Tauri)** que corre el backend dentro
+de un contenedor Docker. Los tres paquetes son **mutuamente excluyentes**
+(`provides`/`conflicts blackwire`): instala el que prefieras.
 
 | Carpeta | Paquete | Qué hace |
 |---|---|---|
-| `blackwire/` | `blackwire` | Versión estable, desde el tarball del release. |
-| `blackwire-git/` | `blackwire-git` | Compila desde el último commit de `main` (VCS). `provides/conflicts blackwire`. |
+| `blackwire/` | `blackwire` | App web, versión estable desde el tarball del release. Deps por pacman, sin Docker. |
+| `blackwire-git/` | `blackwire-git` | App web, compilada desde el último commit de `main` (VCS). |
+| `blackwire-bin/` | `blackwire-bin` | **App de escritorio Tauri** (binario del release). Ventana nativa + backend en **Docker**. Solo `x86_64`. |
 
 Tras instalar, se ejecuta con el comando **`blackwire`** (o desde el menú de
 aplicaciones). El estado de runtime (proyectos, certificados, config) se guarda en
@@ -45,8 +48,9 @@ git commit -m "Initial release: blackwire 1.0.0"
 git push
 ```
 
-Repite para `blackwire-git` (clona `ssh://aur@aur.archlinux.org/blackwire-git.git`;
-no necesita `updpkgsums` porque usa `git+`).
+Repite para los otros paquetes:
+- `blackwire-git` → `ssh://aur@aur.archlinux.org/blackwire-git.git` (no necesita `updpkgsums`; usa `git+`).
+- `blackwire-bin` → `ssh://aur@aur.archlinux.org/blackwire-bin.git` (`updpkgsums` descarga el `.deb` del release, ~185 MB). Requiere **Docker** en el equipo destino y es solo `x86_64`.
 
 > **Regenera siempre `.SRCINFO`** (`makepkg --printsrcinfo > .SRCINFO`) tras cualquier
 > cambio del PKGBUILD; el AUR lo exige y debe coincidir.
