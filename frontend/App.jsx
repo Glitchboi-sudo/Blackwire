@@ -2495,6 +2495,9 @@ function Blackwire() {
 .flt-preset-name-label{font-weight:600;font-size:11px;color:var(--cyan);white-space:nowrap}
 .flt-preset-q{flex:1;font-size:10px;color:var(--txt3);font-family:var(--font-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .flt-preset-del{padding:1px 5px!important;font-size:10px!important;min-width:auto}
+.pagination-info{font-size:11px;color:var(--txt2);white-space:nowrap}
+.pagination-size{background:var(--bg2);color:var(--txt);border:1px solid var(--brd);border-radius:4px;padding:3px 6px;font-size:11px;outline:none;cursor:pointer}
+.pagination-size:focus{border-color:var(--blue)}.pagination-size option{background:var(--bg2);color:var(--txt)}
 .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--txt3);font-size:13px;gap:6px}.empty-i{font-size:40px;opacity:.3}
 .acts{display:flex;gap:6px}
 .prj-pnl{padding:24px;max-width:800px;margin:0 auto;width:100%;height:100%;overflow-y:auto}.prj-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}.prj-hdr h2{font-size:18px}

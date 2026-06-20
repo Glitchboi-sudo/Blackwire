@@ -99,8 +99,8 @@ export function HistoryPanel(props) {
                   {selReq ? (
                     <React.Fragment>
                       <div className="pnl-hdr">
-                        <span>{selReq.method} {selReq.url.substring(0, 50)}</span>
-                        <div className="acts">
+                        <span title={selReq.url} style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: '10px' }}>{selReq.method} {selReq.url}</span>
+                        <div className="acts" style={{ flexShrink: 0 }}>
                           <button className="btn btn-sm btn-p" onClick={() => selReqFull && toRep(selReqFull)} disabled={!selReqFull}>→ Rep</button>
                           <button className={'btn btn-sm ' + (selReq.saved ? 'btn-g' : 'btn-s')} onClick={() => togSave(selReq.id)}>
                             {selReq.saved ? '★' : '☆'}
