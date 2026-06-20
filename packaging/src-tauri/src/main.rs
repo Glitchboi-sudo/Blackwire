@@ -65,8 +65,8 @@ async fn start_docker_container(state: State<'_, DockerState>) -> Result<DockerS
     // Get app directory
     let app_dir = get_resource_dir();
 
-    // Start container with docker-compose
-    let compose = Command::new("docker-compose")
+    // Start container with docker compose (v2 plugin or v1 standalone)
+    let compose = compose_command()
         .args(&["up", "-d"])
         .current_dir(&app_dir)
         .spawn();
@@ -105,7 +105,7 @@ async fn stop_docker_container(state: State<'_, DockerState>) -> Result<(), Stri
     let app_dir = get_resource_dir();
 
     // Stop container
-    Command::new("docker-compose")
+    compose_command()
         .args(&["down"])
         .current_dir(&app_dir)
         .output()
@@ -174,17 +174,50 @@ async fn get_docker_logs(state: State<'_, DockerState>) -> Result<String, String
 // Helper Functions
 // ============================================
 
-fn check_backend_ready() -> bool {
-    // Try to connect to backend
-    let check = Command::new("curl")
-        .args(&["-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:5000/api/proxy/status"])
-        .output();
-
-    if let Ok(output) = check {
-        let status_code = String::from_utf8_lossy(&output.stdout);
-        return status_code == "200";
+/// Devuelve un `Command` para Docker Compose, prefiriendo el plugin v2
+/// (`docker compose`) y cayendo al binario standalone v1 (`docker-compose`).
+/// En sistemas modernos solo existe el plugin v2, así que invocar
+/// `docker-compose` directamente fallaba con "Failed to start container".
+fn compose_command() -> Command {
+    let v2_ok = Command::new("docker")
+        .args(&["compose", "version"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if v2_ok {
+        let mut c = Command::new("docker");
+        c.arg("compose");
+        c
+    } else {
+        Command::new("docker-compose")
     }
-    false
+}
+
+fn check_backend_ready() -> bool {
+    // Chequeo nativo por TCP/HTTP (sin shell-out a `curl`): dentro de un AppImage,
+    // los procesos hijos heredan LD_LIBRARY_PATH y los binarios dinámicos del sistema
+    // como curl suelen fallar al cargar libs incompatibles, dando falsos negativos.
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpStream};
+    use std::time::Duration;
+
+    let addr: SocketAddr = match "127.0.0.1:5000".parse() {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    let req = "GET /api/proxy/status HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    if stream.write_all(req.as_bytes()).is_err() {
+        return false;
+    }
+    let mut resp = String::new();
+    let _ = stream.read_to_string(&mut resp);
+    resp.lines().next().unwrap_or("").contains(" 200")
 }
 
 fn get_resource_dir() -> std::path::PathBuf {
@@ -335,7 +368,7 @@ fn start_docker_sync(dev_projects: bool) -> Result<(), String> {
     }
 
     println!("[Blackwire] Creating container...");
-    Command::new("docker-compose")
+    compose_command()
         .args(&["up", "-d"])
         .current_dir(&resource_dir)
         .output()
