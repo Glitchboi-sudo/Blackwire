@@ -38,13 +38,19 @@ else:
 PY
 
 # --- 2a. Reemplazar React de CDN por vendor local en frontend.html ------------
-sed -i \
-    's|<script src="https://unpkg.com/react@18/umd/react.development.js"></script>|<script src="/static/vendor/react.js"></script>|' \
-    backend/frontend.html
-sed -i \
-    's|<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>|<script src="/static/vendor/react-dom.js"></script>|' \
-    backend/frontend.html
-echo "[patches] backend/frontend.html: React vendorizado"
+# En Python (no sed): `sed -i` no es portable — BSD/macOS exige sufijo de backup.
+python3 - <<'PY'
+path = 'backend/frontend.html'
+src = open(path, encoding='utf-8').read()
+src = src.replace(
+    '<script src="https://unpkg.com/react@18/umd/react.development.js"></script>',
+    '<script src="/static/vendor/react.js"></script>')
+src = src.replace(
+    '<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>',
+    '<script src="/static/vendor/react-dom.js"></script>')
+open(path, 'w', encoding='utf-8').write(src)
+print('[patches] backend/frontend.html: React vendorizado')
+PY
 
 # --- 2b. Router que sirve los archivos vendorizados ---------------------------
 cat > backend/routes/vendor.py <<'VENDOR_EOF'

@@ -22,9 +22,9 @@ jobs:
   docker-image:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 20
 
@@ -37,7 +37,7 @@ jobs:
       - name: Exportar imagen como tarball
         run: docker save blackwire:latest | gzip -c > blackwire-image.tar.gz
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: blackwire-image
           path: blackwire-image.tar.gz
@@ -57,9 +57,9 @@ jobs:
           - os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 20
 
@@ -82,7 +82,7 @@ jobs:
         run: bash packaging/apply-patches.sh
 
       - name: Descargar la imagen Docker compartida
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           name: blackwire-image
           path: packaging   # tauri.conf la referencia como ../blackwire-image.tar.gz
@@ -102,7 +102,7 @@ jobs:
 
       - name: Subir bundles como artifact (también en runs manuales)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: installers-${{ matrix.os }}
           path: |
