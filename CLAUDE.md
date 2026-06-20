@@ -7,7 +7,7 @@
 Antes de modificar `App.jsx` o `main.py`, evaluar en este orden:
 
 1. **¿Es lógica de proxy/HTTP?** → Extensión en `backend/extensions/`
-2. **¿Es un endpoint nuevo de API?** → Crear `backend/routers/{feature}.py` e importar en main.py con una sola línea (`app.include_router(...)`)
+2. **¿Es un endpoint nuevo de API?** → Crear `backend/routes/{feature}.py` e importar en main.py con una sola línea (`app.include_router(...)`)
 3. **¿Es un componente UI nuevo?** → Crear `frontend/components/{Feature}.jsx`, importar en App.jsx con una sola línea
 4. **¿Es utilidad/helper reutilizable?** → Crear `backend/utils/{util}.py` o `frontend/utils/{util}.js`
 5. **Solo si no hay alternativa** → Modificar App.jsx o main.py directamente, con el mínimo diff posible
@@ -15,7 +15,7 @@ Antes de modificar `App.jsx` o `main.py`, evaluar en este orden:
 ### Estructura objetivo de expansión
 ```
 backend/
-├── routers/          # APIRouters de FastAPI por feature
+├── routes/            # APIRouters de FastAPI por feature
 │   └── {feature}.py  # Router autocontenido
 ├── utils/            # Helpers reutilizables
 └── extensions/       # Ya existe
@@ -40,15 +40,15 @@ frontend/
 def handler(): ...
 ```
 
-**Bien** — crear `backend/routers/nueva_feature.py` y una línea en main.py:
+**Bien** — crear `backend/routes/nueva_feature.py` y una línea en main.py:
 ```python
-# backend/routers/nueva_feature.py — autocontenido
+# backend/routes/nueva_feature.py — autocontenido
 router = APIRouter(prefix="/api/nueva-feature")
 @router.get("/...")
 def handler(): ...
 
 # main.py — solo esto:
-from backend.routers.nueva_feature import router as nueva_feature_router
+from routes.nueva_feature import router as nueva_feature_router
 app.include_router(nueva_feature_router)
 ```
 
@@ -77,18 +77,20 @@ class MyExtension:
 def register(): return MyExtension()
 ```
 
-Tras crear/modificar extensión: `./stop.sh && ./start.sh`
+Tras crear/modificar extensión: `make restart`
 
 ## Versión Desktop
 Para empaquetar Blackwire como aplicación standalone con Tauri + Docker (instaladores .deb/.dmg/.msi), ver: **[Blackwire-compile](https://github.com/yourusername/Blackwire-compile)**
 
 ## Comandos frecuentes
+Los comandos de desarrollo viven en el `Makefile` (ejecuta `make help`):
 ```bash
-./install.sh              # Setup inicial (modo desarrollo local)
-./launch-with-browser.sh  # Start completo + abrir browser
-./stop.sh && ./start.sh   # Reinicio (necesario tras cambios en extensiones/backend)
-./compile-frontend.sh     # Compilar el frontend
-lsof -i :5000 | kill      # Si el puerto queda ocupado
+make install   # Setup inicial: venv + dependencias + certificado mitmproxy
+make run       # Compila el frontend, arranca el backend y abre el browser
+make restart   # Reinicio (necesario tras cambios en extensiones/backend)
+make serve     # Arranca el backend en primer plano (Ctrl-C para parar)
+make compile   # Compilar el frontend (App.jsx -> App.compiled.js)
+make stop      # Detener el backend
 ```
 
 ## Convenciones de código

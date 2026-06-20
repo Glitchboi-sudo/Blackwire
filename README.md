@@ -1,6 +1,6 @@
 # BlackWire
 
-![Preview del proyecto](Blackwire_banner.png)
+![Preview del proyecto](assets/Blackwire_banner.png)
 
 <h3 align="center">Security from México to all</h3>
 
@@ -16,7 +16,7 @@
 ### Por qué BlackWire
 
 - **Para Pentesters**: Interceptor completo, HTTPQL, Collections, Sensitive Discovery
-- **Portable**: Sin instalación compleja - solo `./install.sh` y listo
+- **Portable**: Sin instalación compleja - solo `make install` y listo
 - **Extensible**: Sistema de plugins en Python con UI auto-generada
 - **Moderno**: Frontend React, 15 temas, Import/Export compatible con Burp Suite
 
@@ -27,16 +27,19 @@
 ### Versión Web (Desarrollo)
 
 ```bash
-# 1. Clonar e instalar
+# 1. Clonar e instalar (crea venv, instala deps y genera el certificado mitmproxy)
 git clone https://github.com/Glitchboi-sudo/Blackwire.git
 cd Blackwire
-./install.sh
+make install
 
-# 2. Lanzar aplicación
-./launch-with-browser.sh
+# 2. Lanzar aplicación (compila el frontend, arranca el backend y abre el navegador)
+make run
 ```
 
 **Eso es todo.** Abre en http://localhost:5000
+
+> Todos los comandos de desarrollo viven en el `Makefile`. Ejecuta `make help` para verlos
+> (`make serve` en primer plano, `make start`/`make stop` en segundo plano, `make compile`, `make restart`, `make clean`).
 
 ### Versión Desktop (Producción)
 
@@ -107,7 +110,7 @@ def register():
     return CustomHeaderExtension()
 ```
 
-**¡Y listo!** Reinicia el servidor (`./stop.sh && ./start.sh`) y tu extensión aparece automáticamente en la pestaña Extensions con su formulario configurado.
+**¡Y listo!** Reinicia el servidor (`make restart`) y tu extensión aparece automáticamente en la pestaña Extensions con su formulario configurado.
 
 **3 tipos de extensiones:**
 1. **Schema-Driven** → Formularios simples auto-generados (ejemplos: [rate_limiter.py](backend/extensions/rate_limiter.py))
@@ -153,21 +156,31 @@ def register():
 ## Arquitectura
 
 ```
-BlackWire/
+Blackwire/
 ├── backend/
-│   ├── main.py              # FastAPI server
-│   ├── proxy_addon.py       # mitmproxy addon
-│   ├── extensions/          # Sistema de plugins
-│   └── chepy_compat.py      # Motor Cipher
+│   ├── main.py              # App factory FastAPI (registro de routers + estático)
+│   ├── config.py            # Paths, constantes y validadores
+│   ├── schemas.py           # Modelos Pydantic + catálogo Chepy
+│   ├── db.py                # Acceso SQLite por proyecto
+│   ├── mitm_addon.py        # Addon de mitmproxy (ciclo de vida propio)
+│   ├── chepy_compat.py      # Motor Cipher
+│   ├── routes/              # Un router FastAPI por dominio (repeater, scope, …)
+│   ├── services/            # Estado compartido + control del proxy
+│   ├── utils/               # Helpers (httpql, git, scope, jsx, …)
+│   └── extensions/          # Sistema de plugins
 ├── frontend/
-│   ├── App.jsx              # React app (~5400 líneas)
-│   ├── App.compiled.js      # JSX pre-transpilado
-│   └── themes.js            # 15 temas de color
-├── projects/                # Bases de datos SQLite por proyecto
-│   └── {project_name}/
-│       ├── config.json      # Configuración
-│       └── data.db          # HTTP history, repeater, collections
-└── *.sh                     # Scripts de instalación y lanzamiento
+│   ├── App.jsx              # Shell React + lógica de coordinación
+│   ├── App.compiled.js      # JSX pre-transpilado (generado)
+│   ├── themes.js            # 15 temas de color
+│   └── src/
+│       ├── components/      # Componentes (tabs/ una por pestaña, extensions/)
+│       ├── context/         # Estado transversal
+│       ├── hooks/ services/ utils/   # Lógica de dominio, API y helpers
+├── assets/                  # Banner, icono y entrada .desktop
+├── projects/                # Bases de datos SQLite por proyecto (generado)
+├── Makefile                 # Comandos de desarrollo (make help)
+├── pyproject.toml           # Metadatos del proyecto y config de tooling
+└── requirements.txt         # Dependencias de Python
 ```
 
 ## Contribuir
@@ -194,7 +207,7 @@ Este proyecto es **espacio abierto para aprender y construir juntos**. Contribuc
 
 **Puerto en uso:**
 ```bash
-./stop.sh
+make stop
 # o
 lsof -i :5000 && kill <PID>
 ```
@@ -202,13 +215,12 @@ lsof -i :5000 && kill <PID>
 **Certificado SSL no funciona:**
 ```bash
 rm -rf ~/.mitmproxy
-./install.sh
+make cert
 ```
 
 **Frontend no carga:**
 ```bash
-cd frontend
-npx sucrase App.jsx -d . --transforms jsx
+make compile
 ```
 ---
 
