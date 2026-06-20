@@ -43,11 +43,17 @@ make run
 
 ### Versión Desktop (Producción)
 
-**Aplicación standalone con aislamiento Docker completo.**
+**Aplicación standalone con aislamiento Docker completo.** El empaquetado vive en
+[`packaging/`](packaging/) (Tauri + Docker) y se construye automáticamente con
+**GitHub Actions** ([`.github/workflows/desktop.yml`](.github/workflows/desktop.yml)).
 
-Para compilar instaladores nativos (.deb, .AppImage, .rpm, .dmg, .msi), ver:
+Al publicar un tag `v*` se generan y se adjuntan a un **GitHub Release** los instaladores
+nativos para Linux (`.deb` / `.AppImage` / `.rpm`), macOS (`.dmg`) y Windows (`.msi`).
+También puedes lanzarlo a mano desde la pestaña **Actions** (`workflow_dispatch`).
 
-📦 **[Blackwire-compile](https://github.com/yourusername/Blackwire-compile)**
+```bash
+git tag v1.0.0 && git push origin v1.0.0   # dispara el build de instaladores
+```
 
 **Características:**
 - ✅ Ventana nativa con Tauri (Rust + WebView)

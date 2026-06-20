@@ -1,0 +1,33 @@
+[package]
+name = "blackwire-desktop"
+version = "1.0.0"
+description = "Blackwire - HTTP(S) Intercepting Proxy"
+authors = ["Blackwire Team"]
+license = "MIT"
+repository = "https://github.com/yourusername/blackwire"
+edition = "2021"
+rust-version = "1.70"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+tauri = { version = "2", features = ["tray-icon", "devtools"] }
+tauri-plugin-shell = "2"
+tokio = { version = "1", features = ["full"] }
+
+[features]
+# By default Tauri runs in production mode.
+# When `tauri dev` runs, it is executed with `cargo run --no-default-features` if `devPath` is a URL.
+default = ["custom-protocol"]
+# Enables the custom protocol for production builds.
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "z"
+strip = true

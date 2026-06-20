@@ -1,0 +1,74 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Blackwire",
+  "version": "1.0.0",
+  "identifier": "com.blackwire.app",
+  "build": {
+    "beforeDevCommand": "",
+    "beforeBuildCommand": "",
+    "devUrl": "http://localhost:5000",
+    "frontendDist": "../../backend"
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../docker-compose.runtime.yml": "docker-compose.yml",
+      "../blackwire-image.tar.gz": "blackwire-image.tar.gz"
+    },
+    "shortDescription": "HTTP(S) Intercepting Proxy",
+    "longDescription": "Blackwire is a powerful HTTP(S) intercepting proxy for penetration testing and security research. Built with Python and React, it provides a Burp Suite-like experience with Docker isolation for security.",
+    "category": "DeveloperTool",
+    "copyright": "Copyright © 2026 Blackwire",
+    "linux": {
+      "deb": {
+        "depends": ["docker.io", "docker-compose"]
+      }
+    },
+    "macOS": {
+      "frameworks": [],
+      "minimumSystemVersion": "10.13"
+    },
+    "windows": {
+      "digestAlgorithm": "sha256",
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    }
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Blackwire - HTTP(S) Intercepting Proxy",
+        "width": 1400,
+        "height": 900,
+        "minWidth": 1024,
+        "minHeight": 768,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true,
+        "url": "http://localhost:5000",
+        "decorations": true,
+        "transparent": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' http://localhost:5000; connect-src 'self' http://localhost:5000 ws://localhost:5000 wss://localhost:5000; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:5000; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:;"
+    },
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": true,
+      "menuOnLeftClick": false
+    }
+  },
+  "plugins": {}
+}

@@ -1,0 +1,30 @@
+services:
+  blackwire:
+    image: blackwire:latest
+    container_name: blackwire
+
+    ports:
+      - "5000:5000"
+      - "8080:8080"
+
+    volumes:
+      - ${HOME}/Blackwire/certs:/home/blackwire/.mitmproxy
+      - ${HOME}/Blackwire/data:/data
+      - ${HOME}/Blackwire/extensions:/app/backend/extensions
+
+    environment:
+      - PYTHONUNBUFFERED=1
+      - BLACKWIRE_DATA=/data/projects
+
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/proxy/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

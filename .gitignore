@@ -28,3 +28,9 @@ backend/.action_*.json
 # Dependencias y artefactos generados
 node_modules/
 .compiled_ui/
+
+# Artefactos de empaquetado de escritorio (packaging/)
+packaging/blackwire-image.tar.gz
+packaging/src-tauri/target/
+packaging/backend/
+packaging/frontend/

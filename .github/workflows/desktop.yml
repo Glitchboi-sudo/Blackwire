@@ -1,0 +1,114 @@
+name: Desktop build
+
+# Construye los instaladores de escritorio (Tauri + Docker) para Linux, macOS y
+# Windows. Se dispara al publicar un tag `v*` (crea un release en borrador con
+# todos los bundles) o manualmente desde la pestaña Actions.
+#
+# Arquitectura: la app empaqueta la MISMA imagen Docker de Linux en los 3 SO
+# (el backend corre en Docker Desktop). Por eso la imagen se construye una sola
+# vez en Linux y se comparte como artifact a los jobs de macOS/Windows.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # necesario para crear el release
+
+jobs:
+  # 1) Construye la imagen Docker una vez y la comparte
+  docker-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Aplicar parches de empaquetado
+        run: bash packaging/apply-patches.sh
+
+      - name: Construir imagen Docker
+        run: docker build -f packaging/Dockerfile -t blackwire:latest .
+
+      - name: Exportar imagen como tarball
+        run: docker save blackwire:latest | gzip -c > blackwire-image.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blackwire-image
+          path: blackwire-image.tar.gz
+          retention-days: 1
+
+  # 2) Construye los instaladores en cada SO (bundlean el tarball compartido)
+  bundle:
+    needs: docker-image
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04   # 22.04 = mejor compatibilidad de glibc para el AppImage
+          - os: macos-latest
+          - os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packaging/src-tauri -> target
+
+      - name: Dependencias de sistema (Linux/Tauri)
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libappindicator3-dev \
+            librsvg2-dev patchelf rpm
+
+      - name: Aplicar parches de empaquetado
+        shell: bash
+        run: bash packaging/apply-patches.sh
+
+      - name: Descargar la imagen Docker compartida
+        uses: actions/download-artifact@v4
+        with:
+          name: blackwire-image
+          path: packaging   # tauri.conf la referencia como ../blackwire-image.tar.gz
+
+      - name: Construir app de escritorio (Tauri) + release en tag
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # linuxdeploy trae un strip viejo que rompe con secciones .relr.dyn modernas.
+          NO_STRIP: '1'
+        with:
+          projectPath: packaging
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          releaseName: 'Blackwire ${{ github.ref_name }}'
+          releaseDraft: true
+          prerelease: false
+
+      - name: Subir bundles como artifact (también en runs manuales)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.os }}
+          path: |
+            packaging/src-tauri/target/release/bundle/**/*.deb
+            packaging/src-tauri/target/release/bundle/**/*.AppImage
+            packaging/src-tauri/target/release/bundle/**/*.rpm
+            packaging/src-tauri/target/release/bundle/**/*.dmg
+            packaging/src-tauri/target/**/release/bundle/**/*.msi
+          if-no-files-found: ignore

@@ -1,0 +1,14 @@
+# Contexto de build Docker (build-desktop usa la raíz del repo como contexto).
+.git
+.github
+venv/
+node_modules/
+projects/
+.run/
+**/__pycache__/
+*.pyc
+assets/
+packaging/src-tauri/target/
+packaging/blackwire-image.tar.gz
+*.md
+frontend/App.compiled.js
