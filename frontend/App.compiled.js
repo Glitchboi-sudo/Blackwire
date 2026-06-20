@@ -116,6 +116,9 @@ import { ResizeHandle } from './src/components/ResizeHandle.jsx';
 import { BypassManager } from './src/components/BypassManager.jsx';
 import { buildSiteTree, collectNodeReqs } from './src/utils/sitemap.js';
 import { highlightMatches } from './src/utils/highlight.js';
+import { MatchReplaceUI } from './src/components/extensions/MatchReplaceUI.jsx';
+import { SchemaBasedUI } from './src/components/extensions/SchemaBasedUI.jsx';
+import { DynamicExtensionUI } from './src/components/extensions/DynamicExtensionUI.jsx';
 import { ProjectsPanel } from './src/components/tabs/ProjectsPanel.jsx';
 import { HistoryPanel } from './src/components/tabs/HistoryPanel.jsx';
 import { InterceptPanel } from './src/components/tabs/InterceptPanel.jsx';
@@ -137,6 +140,11 @@ const API = '';
 const WS_URL = 'ws://' + location.host + '/ws';
 
 const THEMES = window.BW_THEMES || {};
+
+// Registry de componentes de extensión custom (UIs complejas).
+const EXTENSION_CUSTOM_COMPONENTS = {
+  'match_replace': MatchReplaceUI,
+};
 
 function Blackwire() {
   // Estado principal
@@ -1877,281 +1885,6 @@ function Blackwire() {
 
   // ===== EXTENSION UI COMPONENTS =====
 
-  function MatchReplaceUI({ ext, updateExtCfg }) {
-    const rules = _optionalChain([ext, 'access', _55 => _55.config, 'optionalAccess', _56 => _56.rules]) || [];
-
-    const updateRule = (idx, field, value) => {
-      const newRules = rules.map((r, i) => i === idx ? { ...r, [field]: value } : r);
-      updateExtCfg(ext.name, { ...ext.config, rules: newRules });
-    };
-
-    const removeRule = idx => {
-      updateExtCfg(ext.name, { ...ext.config, rules: rules.filter((_, i) => i !== idx) });
-    };
-
-    const addRule = () => {
-      updateExtCfg(ext.name, { ...ext.config, rules: [...rules, {
-        enabled: true, when: 'request', target: 'url', pattern: '', replace: '', regex: false, ignore_case: false, header: ''
-      }]});
-    };
-
-    const duplicateRule = idx => {
-      const newRules = [...rules];
-      newRules.splice(idx + 1, 0, { ...rules[idx] });
-      updateExtCfg(ext.name, { ...ext.config, rules: newRules });
-    };
-
-    const whenColors = { request: 'var(--blue)', response: 'var(--green)', both: 'var(--orange)' };
-    const s = {
-      card: { background: 'var(--bg3)', border: '1px solid var(--brd)', borderRadius: '6px', padding: '12px', marginBottom: '8px', opacity: 1 },
-      cardOff: { background: 'var(--bg3)', border: '1px solid var(--brd)', borderRadius: '6px', padding: '12px', marginBottom: '8px', opacity: 0.5 },
-      row: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px' },
-      lastRow: { display: 'flex', gap: '8px', alignItems: 'center' },
-      label: { fontSize: '10px', color: 'var(--txt3)', marginBottom: '3px', display: 'block' },
-      sel: { background: 'var(--bg)', color: 'var(--txt)', border: '1px solid var(--brd)', borderRadius: '4px', padding: '4px 6px', fontSize: '11px', fontFamily: 'var(--font-mono)', outline: 'none' },
-      inp: { background: 'var(--bg)', color: 'var(--txt)', border: '1px solid var(--brd)', borderRadius: '4px', padding: '4px 8px', fontSize: '11px', fontFamily: 'var(--font-mono)', flex: 1, outline: 'none', width: '100%' },
-      badge: (color) => ({ fontSize: '9px', padding: '2px 6px', borderRadius: '3px', background: color, color: '#fff', fontWeight: '600', textTransform: 'uppercase' }),
-    };
-
-    return (
-      React.createElement('div', { style: { marginTop: '12px', paddingTop: '12px', borderTop: '1px solid var(--brd)' },}
-        , React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' },}
-          , React.createElement('div', { style: { fontSize: '12px', fontWeight: '600', color: 'var(--txt2)' },}, "Rules ("
-             , rules.length, ")"
-          )
-          , React.createElement('button', { className: "btn btn-sm btn-p"  , onClick: addRule,}, "+ Add Rule"  )
-        )
-
-        , rules.length === 0 && (
-          React.createElement('div', { style: { padding: '20px', textAlign: 'center', color: 'var(--txt3)', fontSize: '11px', background: 'var(--bg3)', borderRadius: '6px' },}, "No rules yet. Click \"+ Add Rule\" to create one."
-
-          )
-        )
-
-        , rules.map((rule, idx) => (
-          React.createElement('div', { key: idx, style: rule.enabled ? s.card : s.cardOff,}
-            /* Row 1: Enable + When + Target + Actions */
-            , React.createElement('div', { style: s.row,}
-              , React.createElement('input', { type: "checkbox", checked: rule.enabled, onChange: e => updateRule(idx, 'enabled', e.target.checked),
-                title: rule.enabled ? 'Disable rule' : 'Enable rule',} )
-              , React.createElement('span', { style: s.badge(whenColors[rule.when] || 'var(--txt3)'),}, "#", idx + 1)
-              , React.createElement('div', { style: { flex: 0 },}
-                , React.createElement('select', { style: s.sel, value: rule.when, onChange: e => updateRule(idx, 'when', e.target.value),}
-                  , React.createElement('option', { value: "request",}, "Request")
-                  , React.createElement('option', { value: "response",}, "Response")
-                  , React.createElement('option', { value: "both",}, "Both")
-                )
-              )
-              , React.createElement('div', { style: { flex: 0 },}
-                , React.createElement('select', { style: s.sel, value: rule.target, onChange: e => updateRule(idx, 'target', e.target.value),}
-                  , React.createElement('option', { value: "url",}, "URL")
-                  , React.createElement('option', { value: "headers",}, "Header")
-                  , React.createElement('option', { value: "body",}, "Body")
-                )
-              )
-              , rule.target === 'headers' && (
-                React.createElement('input', { style: { ...s.inp, maxWidth: '120px' }, value: rule.header || '', placeholder: "Header name" ,
-                  onChange: e => updateRule(idx, 'header', e.target.value), title: "Leave empty to match all headers"     ,} )
-              )
-              , React.createElement('div', { style: { marginLeft: 'auto', display: 'flex', gap: '4px' },}
-                , React.createElement('button', { className: "btn btn-sm btn-s"  , onClick: () => duplicateRule(idx), title: "Duplicate",}, "⧉")
-                , React.createElement('button', { className: "btn btn-sm btn-d"  , onClick: () => removeRule(idx), title: "Delete",}, "✕")
-              )
-            )
-
-            /* Row 2: Pattern → Replace */
-            , React.createElement('div', { style: s.lastRow,}
-              , React.createElement('div', { style: { flex: 1 },}
-                , React.createElement('label', { style: s.label,}, "Match")
-                , React.createElement('input', { style: s.inp, value: rule.pattern, placeholder: rule.regex ? '(regex)' : 'text to find',
-                  onChange: e => updateRule(idx, 'pattern', e.target.value),} )
-              )
-              , React.createElement('span', { style: { color: 'var(--txt3)', fontSize: '14px', marginTop: '14px' },}, "→")
-              , React.createElement('div', { style: { flex: 1 },}
-                , React.createElement('label', { style: s.label,}, "Replace")
-                , React.createElement('input', { style: s.inp, value: rule.replace, placeholder: "replacement",
-                  onChange: e => updateRule(idx, 'replace', e.target.value),} )
-              )
-              , React.createElement('div', { style: { display: 'flex', gap: '6px', marginTop: '14px' },}
-                , React.createElement('button', { className: 'btn btn-sm ' + (rule.regex ? 'btn-p' : 'btn-s'), onClick: () => updateRule(idx, 'regex', !rule.regex),
-                  title: "Regular expression" , style: { fontFamily: 'var(--font-mono)', fontSize: '10px' },}, ".*")
-                , React.createElement('button', { className: 'btn btn-sm ' + (rule.ignore_case ? 'btn-p' : 'btn-s'), onClick: () => updateRule(idx, 'ignore_case', !rule.ignore_case),
-                  title: "Ignore case" , style: { fontFamily: 'var(--font-mono)', fontSize: '10px' },}, "Aa")
-              )
-            )
-          )
-        ))
-      )
-    );
-  }
-
-  // Registry de componentes de extensión custom (solo para UIs complejas)
-  const EXTENSION_CUSTOM_COMPONENTS = {
-    'match_replace': MatchReplaceUI,
-  };
-
-  // Componente genérico schema-driven para extensiones simples
-  function SchemaBasedUI({ ext, updateExtCfg }) {
-    const schema = ext.ui_schema;
-    const config = ext.config || {};
-
-    if (!schema || !schema.fields) {
-      return (
-        React.createElement('div', { style: { padding: '20px', color: 'var(--txt3)', fontSize: '11px' },}, "No UI schema defined for this extension."
-
-        )
-      );
-    }
-
-    const handleFieldChange = (fieldName, value) => {
-      updateExtCfg(ext.name, { ...config, [fieldName]: value });
-    };
-
-    return (
-      React.createElement('div', { style: { marginTop: '12px', paddingTop: '12px', borderTop: '1px solid var(--brd)' },}
-        , schema.fields.map(field => (
-          React.createElement('div', { key: field.name, style: { marginBottom: '12px' },}
-            , React.createElement('label', { style: { display: 'block', fontSize: '11px', color: 'var(--txt2)', marginBottom: '6px' },}
-              , field.label
-              , field.required && React.createElement('span', { style: { color: 'var(--red)' },}, " *" )
-            )
-
-            , (field.type === 'text' || field.type === 'password') && (
-              React.createElement('input', {
-                className: "inp",
-                type: field.type,
-                placeholder: field.placeholder || '',
-                value: config[field.name] !== undefined ? config[field.name] : (field.default || ''),
-                onChange: e => handleFieldChange(field.name, e.target.value),}
-              )
-            )
-
-            , field.type === 'textarea' && (
-              React.createElement('textarea', {
-                className: "inp",
-                placeholder: field.placeholder || '',
-                value: config[field.name] !== undefined ? config[field.name] : (field.default || ''),
-                onChange: e => handleFieldChange(field.name, e.target.value),
-                rows: field.rows || 4,}
-              )
-            )
-
-            , field.type === 'number' && (
-              React.createElement('input', {
-                className: "inp",
-                type: "number",
-                placeholder: field.placeholder || '',
-                value: config[field.name] !== undefined ? config[field.name] : (field.default || 0),
-                onChange: e => handleFieldChange(field.name, parseInt(e.target.value) || 0),
-                min: field.min,
-                max: field.max,}
-              )
-            )
-
-            , field.type === 'checkbox' && (
-              React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px' },}
-                , React.createElement('input', {
-                  type: "checkbox",
-                  checked: config[field.name] !== undefined ? config[field.name] : (field.default || false),
-                  onChange: e => handleFieldChange(field.name, e.target.checked),}
-                )
-                , field.help && React.createElement('span', { style: { fontSize: '10px', color: 'var(--txt3)' },}, field.help)
-              )
-            )
-
-            , field.type === 'select' && (
-              React.createElement('select', {
-                className: "inp",
-                value: config[field.name] !== undefined ? config[field.name] : (field.default || ''),
-                onChange: e => handleFieldChange(field.name, e.target.value),}
-
-                , field.options && field.options.map(opt => (
-                  React.createElement('option', { key: opt.value, value: opt.value,}, opt.label)
-                ))
-              )
-            )
-
-            , field.help && field.type !== 'checkbox' && (
-              React.createElement('div', { style: { fontSize: '10px', color: 'var(--txt3)', marginTop: '4px' },}
-                , field.help
-              )
-            )
-          )
-        ))
-      )
-    );
-  }
-
-  // Componente para cargar UIs dinámicas desde archivos .ui.jsx
-  function DynamicExtensionUI({ ext, updateExtCfg, toast, ...otherProps }) {
-    const [component, setComponent] = React.useState(null);
-    const [loading, setLoading] = React.useState(true);
-    const [error, setError] = React.useState(null);
-
-    React.useEffect(() => {
-      const loadUI = async () => {
-        try {
-          setLoading(true);
-          setError(null);
-
-          // Fetch del archivo .ui.js compilado
-          const uiCode = await extensionService.getUI(ext.name);
-
-          // Inicializar namespace global si no existe
-          if (!window.BlackwireExtensions) {
-            window.BlackwireExtensions = {};
-          }
-
-          // Ejecutar el código del componente
-          // El código debe registrar una función en window.BlackwireExtensions[ext.name]
-          eval(uiCode);
-
-          // Verificar que se registró correctamente
-          if (typeof window.BlackwireExtensions[ext.name] !== 'function') {
-            throw new Error('Extension UI did not register properly. Must define window.BlackwireExtensions["' + ext.name + '"]');
-          }
-
-          // Obtener el componente
-          const ComponentFunc = window.BlackwireExtensions[ext.name];
-          setComponent(() => ComponentFunc);
-          setLoading(false);
-        } catch (err) {
-          console.error('Error loading dynamic extension UI:', err);
-          setError(err.message);
-          setLoading(false);
-        }
-      };
-
-      loadUI();
-    }, [ext.name]);
-
-    if (loading) {
-      return (
-        React.createElement('div', { style: { padding: '20px', color: 'var(--txt3)', fontSize: '11px' },}, "Loading custom UI..."
-
-        )
-      );
-    }
-
-    if (error) {
-      return (
-        React.createElement('div', { style: { padding: '20px', color: 'var(--red)', fontSize: '11px' },}, "Error loading custom UI: "
-              , error
-        )
-      );
-    }
-
-    if (!component) {
-      return (
-        React.createElement('div', { style: { padding: '20px', color: 'var(--txt3)', fontSize: '11px' },}, "No custom UI available"
-
-        )
-      );
-    }
-
-    // Renderizar el componente dinámico con todas las props
-    return React.createElement(component, { ext, updateExtCfg, toast, ...otherProps });
-  }
 
   // Colorea cualquier body inteligentemente detectando el lenguaje
   const colorizeBody = text => {
@@ -2245,7 +1978,7 @@ function Blackwire() {
   };
 
   const addScopeFromRequest = async ruleType => {
-    const norm = _optionalChain([contextMenu, 'optionalAccess', _57 => _57.normalized]);
+    const norm = _optionalChain([contextMenu, 'optionalAccess', _55 => _55.normalized]);
     if (!norm || !norm.url) {
       toast('No URL', 'error');
       return;
@@ -3046,11 +2779,11 @@ function Blackwire() {
       , contextMenu && (
         React.createElement('div', { ref: ctxMenuRef, className: "context-menu", style: { left: contextMenu.x, top: contextMenu.y }, onClick: e => e.stopPropagation(),}
           , (() => {
-            const hasBody = _optionalChain([contextMenu, 'access', _58 => _58.normalized, 'optionalAccess', _59 => _59.body]) || _optionalChain([contextMenu, 'access', _60 => _60.request, 'optionalAccess', _61 => _61.response_body]) || contextMenu.source === 'selection';
-            const hasUrl = _optionalChain([contextMenu, 'access', _62 => _62.normalized, 'optionalAccess', _63 => _63.url]);
+            const hasBody = _optionalChain([contextMenu, 'access', _56 => _56.normalized, 'optionalAccess', _57 => _57.body]) || _optionalChain([contextMenu, 'access', _58 => _58.request, 'optionalAccess', _59 => _59.response_body]) || contextMenu.source === 'selection';
+            const hasUrl = _optionalChain([contextMenu, 'access', _60 => _60.normalized, 'optionalAccess', _61 => _61.url]);
             const isSelection = contextMenu.source === 'selection';
             const currentTab = contextMenu.currentTab;
-            const hasRequest = _optionalChain([contextMenu, 'access', _64 => _64.normalized, 'optionalAccess', _65 => _65.method]) && _optionalChain([contextMenu, 'access', _66 => _66.normalized, 'optionalAccess', _67 => _67.url]);
+            const hasRequest = _optionalChain([contextMenu, 'access', _62 => _62.normalized, 'optionalAccess', _63 => _63.method]) && _optionalChain([contextMenu, 'access', _64 => _64.normalized, 'optionalAccess', _65 => _65.url]);
 
             return (
               React.createElement(React.Fragment, null
