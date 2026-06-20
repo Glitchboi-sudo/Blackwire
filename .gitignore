@@ -16,3 +16,8 @@ bkp/
 *.BROKEN_*
 
 Blackwire.wiki/
+# Bytecode y artefactos de runtime (añadido en el rework)
+__pycache__/
+*.pyc
+/.proxy_config.json
+backend/.action_*.json
