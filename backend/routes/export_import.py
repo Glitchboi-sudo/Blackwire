@@ -24,191 +24,119 @@ from utils.git_manager import GitManager
 router = APIRouter()
 
 
+# (clave en el export, query, mapeo fila->dict) — el orden define el JSON de salida.
+_EXPORT_TABLES = [
+    ("requests", "SELECT * FROM requests",
+     lambda r: {"method": r[1], "url": r[2], "headers": r[3], "body": r[4],
+                "response_status": r[5], "response_headers": r[6], "response_body": r[7],
+                "timestamp": r[8], "request_type": r[9], "tags": r[10],
+                "notes": r[11], "saved": r[12], "in_scope": r[13]}),
+    ("repeater", "SELECT * FROM repeater",
+     lambda r: {"name": r[1], "method": r[2], "url": r[3], "headers": r[4],
+                "body": r[5], "created_at": r[6], "last_response": r[7]}),
+    ("collections", "SELECT * FROM collections",
+     lambda r: {"id": r[0], "name": r[1], "description": r[2], "created_at": r[3]}),
+    ("collection_items", "SELECT * FROM collection_items",
+     lambda r: {"collection_id": r[1], "position": r[2], "method": r[3], "url": r[4],
+                "headers": r[5], "body": r[6], "var_extracts": r[7], "created_at": r[8]}),
+    ("filter_presets", "SELECT * FROM filter_presets",
+     lambda r: {"name": r[1], "query": r[2], "ast_json": r[3], "created_at": r[4]}),
+    ("session_macros", "SELECT * FROM session_macros",
+     lambda r: {"name": r[1], "description": r[2], "requests": r[3], "created_at": r[4]}),
+    ("session_rules", "SELECT * FROM session_rules",
+     lambda r: {"enabled": r[1], "name": r[2], "when_stage": r[3], "target": r[4],
+                "header_name": r[5], "regex_pattern": r[6], "extract_group": r[7],
+                "variable_name": r[8], "created_at": r[9]}),
+]
+
+
 @router.get("/api/projects/{name}/export")
 async def export_project(name: str):
-    from fastapi.responses import Response
+    """Export streaming: serializa el JSON fila por fila para mantener la memoria
+    plana sin importar el tamaño del historial (antes materializaba todo en RAM)."""
+    from fastapi.responses import StreamingResponse
     if not get_project_path(name).exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # Leer config del proyecto (incluye scope_rules)
     config = await get_project_config(name)
-
-    # Leer todos los datos de la DB
     db_path = get_project_db(name)
-    async with aiosqlite.connect(db_path) as db:
-        # Requests (con TODOS los campos)
-        cursor = await db.execute("SELECT * FROM requests")
-        requests = []
-        for row in await cursor.fetchall():
-            requests.append({
-                "method": row[1], "url": row[2], "headers": row[3], "body": row[4],
-                "response_status": row[5], "response_headers": row[6], "response_body": row[7],
-                "timestamp": row[8], "request_type": row[9], "tags": row[10],
-                "notes": row[11], "saved": row[12], "in_scope": row[13]
-            })
 
-        # Repeater
-        cursor = await db.execute("SELECT * FROM repeater")
-        repeater = []
-        for row in await cursor.fetchall():
-            repeater.append({
-                "name": row[1], "method": row[2], "url": row[3],
-                "headers": row[4], "body": row[5], "created_at": row[6], "last_response": row[7]
-            })
-
-        # Collections (con description)
-        cursor = await db.execute("SELECT * FROM collections")
-        collections = []
-        for row in await cursor.fetchall():
-            collections.append({"id": row[0], "name": row[1], "description": row[2], "created_at": row[3]})
-
-        # Collection items (estructura correcta)
-        cursor = await db.execute("SELECT * FROM collection_items")
-        collection_items = []
-        for row in await cursor.fetchall():
-            collection_items.append({
-                "collection_id": row[1], "position": row[2], "method": row[3], "url": row[4],
-                "headers": row[5], "body": row[6], "var_extracts": row[7], "created_at": row[8]
-            })
-
-        # Filter presets
-        cursor = await db.execute("SELECT * FROM filter_presets")
-        filter_presets = []
-        for row in await cursor.fetchall():
-            filter_presets.append({
-                "name": row[1], "query": row[2], "ast_json": row[3], "created_at": row[4]
-            })
-
-        # Session macros
-        cursor = await db.execute("SELECT * FROM session_macros")
-        session_macros = []
-        for row in await cursor.fetchall():
-            session_macros.append({
-                "name": row[1], "description": row[2], "requests": row[3], "created_at": row[4]
-            })
-
-        # Session rules (nombres de columna correctos)
-        cursor = await db.execute("SELECT * FROM session_rules")
-        session_rules = []
-        for row in await cursor.fetchall():
-            session_rules.append({
-                "enabled": row[1], "name": row[2], "when_stage": row[3],
-                "target": row[4], "header_name": row[5], "regex_pattern": row[6],
-                "extract_group": row[7], "variable_name": row[8], "created_at": row[9]
-            })
-
-    # Crear JSON de export COMPLETO
-    export_data = {
-        "version": "1.1",
-        "blackwire_version": "1.0.0",
-        "project_name": name,
-        "exported_at": datetime.now().isoformat(),
-        "config": config,
-        "data": {
-            "requests": requests,
-            "repeater": repeater,
-            "collections": collections,
-            "collection_items": collection_items,
-            "filter_presets": filter_presets,
-            "session_macros": session_macros,
-            "session_rules": session_rules
-        },
-        "stats": {
-            "total_requests": len(requests),
-            "total_repeater": len(repeater),
-            "total_collections": len(collections),
-            "total_filter_presets": len(filter_presets),
-            "total_session_macros": len(session_macros),
-            "total_session_rules": len(session_rules)
-        }
-    }
+    async def generate():
+        head = {"version": "1.1", "blackwire_version": "1.0.0", "project_name": name,
+                "exported_at": datetime.now().isoformat(), "config": config}
+        yield json.dumps(head)[:-1] + ', "data": {'   # abre el objeto, deja "data" abierto
+        stats = {}
+        async with aiosqlite.connect(db_path) as db:
+            for ti, (key, query, mapper) in enumerate(_EXPORT_TABLES):
+                yield ('' if ti == 0 else ', ') + json.dumps(key) + ': ['
+                count = 0
+                async with db.execute(query) as cur:
+                    async for row in cur:   # una fila a la vez, sin fetchall()
+                        yield ('' if count == 0 else ',') + json.dumps(mapper(row))
+                        count += 1
+                yield ']'
+                stats['total_' + key] = count
+        yield '}, "stats": ' + json.dumps(stats) + '}'
 
     filename = f"blackwire-{name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
-    return Response(
-        content=json.dumps(export_data, indent=2),
+    return StreamingResponse(
+        generate(),
         media_type='application/json',
         headers={'Content-Disposition': f'attachment; filename="{filename}"'}
     )
 
-@router.get("/api/projects/{name}/export-burp")
-async def export_project_burp(name: str):
-    """Exportar proyecto al formato XML de Burp Suite Pro"""
-    from fastapi.responses import Response
+def _burp_item_xml(row) -> str:
+    """Construye un <item> de Burp XML a partir de una fila de requests."""
     import base64
     from urllib.parse import urlparse
+    req_id, method, url, headers, body, resp_status, resp_headers, resp_body, timestamp = row
 
-    if not get_project_path(name).exists():
-        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        parsed = urlparse(url)
+        protocol = parsed.scheme or "http"
+        host = parsed.netloc.split(':')[0] if parsed.netloc else "unknown"
+        port = parsed.port or (443 if protocol == "https" else 80)
+        path = parsed.path + ("?" + parsed.query if parsed.query else "")
+        extension = path.split('.')[-1] if '.' in path.split('/')[-1] else "null"
+    except Exception:
+        protocol, host, port, path, extension = "http", "unknown", 80, "/", "null"
 
-    # Leer requests de la DB
-    db_path = get_project_db(name)
-    items_xml = []
+    request_text = f"{method} {path} HTTP/1.1\r\n"
+    if headers:
+        try:
+            headers_dict = json.loads(headers) if isinstance(headers, str) else headers
+            for k, v in headers_dict.items():
+                request_text += f"{k}: {v}\r\n"
+        except Exception:
+            pass
+    request_text += "\r\n"
+    if body:
+        request_text += body
 
-    async with aiosqlite.connect(db_path) as db:
-        cursor = await db.execute("""
-            SELECT id, method, url, headers, body, response_status, response_headers,
-                   response_body, timestamp
-            FROM requests
-            ORDER BY id ASC
-        """)
-        rows = await cursor.fetchall()
-
-        for row in rows:
-            req_id, method, url, headers, body, resp_status, resp_headers, resp_body, timestamp = row
-
-            # Parse URL
+    response_text = ""
+    resp_length = 0
+    mime_type = "text"
+    if resp_status:
+        response_text = f"HTTP/1.1 {resp_status} OK\r\n"
+        if resp_headers:
             try:
-                parsed = urlparse(url)
-                protocol = parsed.scheme or "http"
-                host = parsed.netloc.split(':')[0] if parsed.netloc else "unknown"
-                port = parsed.port or (443 if protocol == "https" else 80)
-                path = parsed.path + ("?" + parsed.query if parsed.query else "")
-                extension = path.split('.')[-1] if '.' in path.split('/')[-1] else "null"
-            except:
-                protocol, host, port, path, extension = "http", "unknown", 80, "/", "null"
+                resp_headers_dict = json.loads(resp_headers) if isinstance(resp_headers, str) else resp_headers
+                for k, v in resp_headers_dict.items():
+                    response_text += f"{k}: {v}\r\n"
+                    if k.lower() == "content-type":
+                        mime_type = v.split(';')[0].strip().split('/')[-1]
+            except Exception:
+                pass
+        response_text += "\r\n"
+        if resp_body:
+            response_text += resp_body
+            resp_length = len(resp_body)
 
-            # Construir request HTTP completo
-            request_text = f"{method} {path} HTTP/1.1\r\n"
-            if headers:
-                try:
-                    headers_dict = json.loads(headers) if isinstance(headers, str) else headers
-                    for k, v in headers_dict.items():
-                        request_text += f"{k}: {v}\r\n"
-                except:
-                    pass
-            request_text += "\r\n"
-            if body:
-                request_text += body
+    request_b64 = base64.b64encode(request_text.encode('utf-8', errors='replace')).decode('ascii')
+    response_b64 = base64.b64encode(response_text.encode('utf-8', errors='replace')).decode('ascii') if response_text else ""
+    time_str = timestamp if timestamp else datetime.now().isoformat()
 
-            # Construir response HTTP completo
-            response_text = ""
-            resp_length = 0
-            mime_type = "text"
-            if resp_status:
-                response_text = f"HTTP/1.1 {resp_status} OK\r\n"
-                if resp_headers:
-                    try:
-                        resp_headers_dict = json.loads(resp_headers) if isinstance(resp_headers, str) else resp_headers
-                        for k, v in resp_headers_dict.items():
-                            response_text += f"{k}: {v}\r\n"
-                            if k.lower() == "content-type":
-                                mime_type = v.split(';')[0].strip().split('/')[-1]
-                    except:
-                        pass
-                response_text += "\r\n"
-                if resp_body:
-                    response_text += resp_body
-                    resp_length = len(resp_body)
-
-            # Base64 encode para evitar problemas con caracteres especiales
-            request_b64 = base64.b64encode(request_text.encode('utf-8', errors='replace')).decode('ascii')
-            response_b64 = base64.b64encode(response_text.encode('utf-8', errors='replace')).decode('ascii') if response_text else ""
-
-            # Formatear timestamp
-            time_str = timestamp if timestamp else datetime.now().isoformat()
-
-            # Crear item XML
-            item_xml = f"""  <item>
+    return f"""  <item>
     <time>{time_str}</time>
     <url><![CDATA[{url}]]></url>
     <host ip="">{host}</host>
@@ -223,14 +151,11 @@ async def export_project_burp(name: str):
     <mimetype>{mime_type}</mimetype>
     <response base64="true"><![CDATA[{response_b64}]]></response>
     <comment></comment>
-  </item>"""
-            items_xml.append(item_xml)
+  </item>
+"""
 
-    # Construir XML completo con DTD
-    burp_version = "Blackwire-1.0.0"
-    export_time = datetime.now().strftime("%a %b %d %H:%M:%S %Z %Y")
 
-    xml_content = f"""<?xml version="1.0"?>
+_BURP_DTD = """<?xml version="1.0"?>
 <!DOCTYPE items [
 <!ELEMENT items (item*)>
 <!ATTLIST items burpVersion CDATA "">
@@ -254,14 +179,36 @@ async def export_project_burp(name: str):
 <!ATTLIST response base64 (true|false) "false">
 <!ELEMENT comment (#PCDATA)>
 ]>
-<items burpVersion="{burp_version}" exportTime="{export_time}">
-{chr(10).join(items_xml)}
-</items>
 """
 
+
+@router.get("/api/projects/{name}/export-burp")
+async def export_project_burp(name: str):
+    """Export Burp XML en streaming: emite el DTD y luego cada <item> fila por fila,
+    sin acumular toda la lista en memoria (antes hacía fetchall() + join)."""
+    from fastapi.responses import StreamingResponse
+    if not get_project_path(name).exists():
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    db_path = get_project_db(name)
+    burp_version = "Blackwire-1.0.0"
+    export_time = datetime.now().strftime("%a %b %d %H:%M:%S %Z %Y")
+
+    async def generate():
+        yield _BURP_DTD
+        yield f'<items burpVersion="{burp_version}" exportTime="{export_time}">\n'
+        async with aiosqlite.connect(db_path) as db:
+            async with db.execute(
+                "SELECT id, method, url, headers, body, response_status, "
+                "response_headers, response_body, timestamp FROM requests ORDER BY id ASC"
+            ) as cur:
+                async for row in cur:
+                    yield _burp_item_xml(row)
+        yield "</items>\n"
+
     filename = f"burp-{name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.xml"
-    return Response(
-        content=xml_content,
+    return StreamingResponse(
+        generate(),
         media_type='application/xml',
         headers={'Content-Disposition': f'attachment; filename="{filename}"'}
     )

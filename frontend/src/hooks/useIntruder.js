@@ -1,4 +1,4 @@
-const { useState, useCallback } = React;
+const { useState, useCallback, useRef } = React;
 import { intruderService } from '../services/intruderService.js';
 
 /**
@@ -27,6 +27,13 @@ export function useIntruder(toast) {
   const [savedAttacks, setSavedAttacks] = useState([]);
   const [selectedAttack, setSelectedAttack] = useState(null);
   const [loading, setLoading] = useState(false);
+  // Resource-pool / throttling state usado por el runner en App.jsx.
+  const [randomDelay, setRandomDelay] = useState(false);
+  const [delayMin, setDelayMin] = useState(0);
+  const [delayMax, setDelayMax] = useState(1000);
+  const [maxRetries, setMaxRetries] = useState(0);
+  // Flag de cancelación del ataque (no dispara re-render).
+  const stopRef = useRef(false);
 
   // Load saved attacks
   const loadAttacks = useCallback(async () => {
@@ -213,6 +220,16 @@ export function useIntruder(toast) {
     setResults, // Allow direct state setting
     running,
     setRunning, // Allow direct state setting
+    isRunning: running, // alias usado por App.jsx
+    stopRef,
+    randomDelay,
+    setRandomDelay,
+    delayMin,
+    setDelayMin,
+    delayMax,
+    setDelayMax,
+    maxRetries,
+    setMaxRetries,
     progress,
     setProgress, // Allow direct state setting
     done,

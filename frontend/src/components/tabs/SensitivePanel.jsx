@@ -98,24 +98,30 @@ export function SensitivePanel(props) {
                     </div>
                     <div ref={sensDetailRef} style={{ flex: 1, overflow: 'auto', padding: '10px', fontFamily: 'var(--font-mono)', fontSize: '11px', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
                       {sensSelDetail ? (() => {
-                        const secMap = {
-                          reqUrl: sensSelDetail.url || '',
-                          reqHeaders: sensSelDetail.headers || '',
-                          reqBody: sensSelDetail.body || '',
-                          respHeaders: sensSelDetail.response_headers || '',
-                          respBody: sensSelDetail.response_body || '',
-                        };
-                        const text = secMap[sensSelResult.section] || '';
-                        const isHdr = sensSelResult.section === 'reqHeaders' || sensSelResult.section === 'respHeaders';
-                        if (isHdr) {
-                          const base = colorizeHeaders(text);
-                          const mt = escapeHtml(sensSelResult.match.replace(/\.\.\.$/, ''));
-                          const re = mt ? new RegExp('(' + mt.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi') : null;
-                          const html = re ? base.replace(re, '<span class="search-hl">$1</span>') : base;
-                          return React.createElement('div', { dangerouslySetInnerHTML: { __html: html } });
+                        try {
+                          const secMap = {
+                            reqUrl: sensSelDetail.url || '',
+                            reqHeaders: sensSelDetail.headers || '',
+                            reqBody: sensSelDetail.body || '',
+                            respHeaders: sensSelDetail.response_headers || '',
+                            respBody: sensSelDetail.response_body || '',
+                          };
+                          const section = sensSelResult ? sensSelResult.section : null;
+                          const text = (section && secMap[section]) || '';
+                          const matchStr = sensSelResult ? (sensSelResult.match || '').replace(/\.\.\.$/, '') : '';
+                          const isHdr = section === 'reqHeaders' || section === 'respHeaders';
+                          if (isHdr) {
+                            const base = colorizeHeaders(text);
+                            const mt = escapeHtml(matchStr);
+                            const re = mt ? new RegExp('(' + mt.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi') : null;
+                            const html = re ? base.replace(re, '<span class="search-hl">$1</span>') : base;
+                            return React.createElement('div', { dangerouslySetInnerHTML: { __html: html } });
+                          }
+                          const hl = highlightMatches(text, matchStr, false, 0);
+                          return React.createElement('div', { dangerouslySetInnerHTML: { __html: hl.html } });
+                        } catch (e) {
+                          return React.createElement('div', { style: { color: 'var(--txt3)' } }, 'No se pudo resaltar este resultado.');
                         }
-                        const hl = highlightMatches(text, sensSelResult.match.replace(/\.\.\.$/, ''), false, 0);
-                        return React.createElement('div', { dangerouslySetInnerHTML: { __html: hl.html } });
                       })() : <span style={{ color: 'var(--txt3)' }}>Loading...</span>}
                     </div>
                   </div>
@@ -164,6 +170,10 @@ export function SensitivePanel(props) {
                           if (!name) return;
                           const regex = prompt('Regex:');
                           if (!regex) return;
+                          // Validar: rechazar regex inválida o que coincida en vacío (colgaría el escaneo).
+                          try {
+                            if (new RegExp(regex).test('')) { alert('Ese patrón coincide con texto vacío y colgaría el escaneo.'); return; }
+                          } catch (_e) { alert('Expresión regular inválida.'); return; }
                           const category = prompt('Category:', grp.key === 'files' ? 'Files' : 'Custom');
                           setSensPatterns(prev => ({
                             ...prev,

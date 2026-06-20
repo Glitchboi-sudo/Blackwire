@@ -55,7 +55,7 @@ async def init_db(name: str):
         await db.execute("""CREATE TABLE IF NOT EXISTS repeater (
             id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, method TEXT NOT NULL,
             url TEXT NOT NULL, headers TEXT NOT NULL, body TEXT, created_at TEXT NOT NULL,
-            last_response TEXT)""")
+            last_response TEXT, history TEXT)""")
         await db.execute("""CREATE TABLE IF NOT EXISTS webhook_requests (
             id INTEGER PRIMARY KEY AUTOINCREMENT, token_id TEXT NOT NULL, request_id TEXT NOT NULL UNIQUE,
             method TEXT, url TEXT, ip TEXT, user_agent TEXT, content TEXT, headers TEXT,
@@ -96,6 +96,12 @@ async def init_db(name: str):
         await db.execute("CREATE INDEX IF NOT EXISTS idx_req_ts ON requests(timestamp)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_req_status ON requests(response_status)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_req_id_desc ON requests(id DESC)")
+        # Migración idempotente: columna history (timeline de respuestas del repeater)
+        # para DBs creadas antes de añadir la columna.
+        try:
+            await db.execute("ALTER TABLE repeater ADD COLUMN history TEXT")
+        except Exception:
+            pass
         await db.commit()
 
 

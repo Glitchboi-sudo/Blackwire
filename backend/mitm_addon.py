@@ -11,14 +11,17 @@ import importlib.util
 from pathlib import Path
 from urllib.parse import urlparse
 import httpx
-from mitmproxy import http, ctx
+from mitmproxy import http
 import os
+import logging
+
+_alog = logging.getLogger("blackwire.addon")
 
 VERBOSE = os.getenv('BLACKWIRE_VERBOSE', '0') in ('1','true','TRUE','yes','YES')
 
 def vlog(msg: str):
     if VERBOSE:
-        ctx.log.info(f'[blackwire][verbose] {msg}')
+        _alog.info(f'[blackwire][verbose] {msg}')
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +90,7 @@ def load_config() -> dict:
             vlog(f"Loaded config: intercept_enabled={cfg.get('intercept_enabled')} rules={len(cfg.get('scope_rules', []))} project={cfg.get('project')}")
             return cfg
     except:
-        ctx.log.warn('Failed to read config file; using defaults')
+        _alog.warning('Failed to read config file; using defaults')
         pass
     return {
         "intercept_enabled": False,
@@ -181,26 +184,26 @@ def send_to_backend(endpoint: str, data: dict, retries: int = 2):
             with httpx.Client(timeout=15) as client:
                 r = client.post(f"{BACKEND_URL}{endpoint}", json=data)
                 if VERBOSE:
-                    ctx.log.info(f"[blackwire][backend] POST {endpoint} -> {r.status_code}")
+                    _alog.info(f"[blackwire][backend] POST {endpoint} -> {r.status_code}")
                 return
         except Exception as e:
             if attempt < retries:
                 time.sleep(0.1 * (attempt + 1))
                 continue
             if VERBOSE:
-                ctx.log.warn(f"[blackwire][backend] POST {endpoint} failed after {retries + 1} attempts: {e}")
-            ctx.log.warn(f"Backend error: {e}")
+                _alog.warning(f"[blackwire][backend] POST {endpoint} failed after {retries + 1} attempts: {e}")
+            _alog.warning(f"Backend error: {e}")
 
 
 def wait_for_action(request_id: str, timeout: int = 300) -> dict:
     """Wait for user action on intercepted request"""
     if not _SAFE_ID_RE.fullmatch(request_id):
-        ctx.log.warn(f"[blackwire][intercept] unsafe request_id rejected: {request_id!r}")
+        _alog.warning(f"[blackwire][intercept] unsafe request_id rejected: {request_id!r}")
         return {"action": "forward"}
     action_file = _BACKEND_DIR / f".action_{request_id}.json"
     # Defence-in-depth: verify the resolved path stays inside _BACKEND_DIR
     if action_file.resolve().parent != _BACKEND_DIR:
-        ctx.log.warn(f"[blackwire][intercept] path traversal blocked for {request_id!r}")
+        _alog.warning(f"[blackwire][intercept] path traversal blocked for {request_id!r}")
         return {"action": "forward"}
 
     start = time.time()
@@ -208,7 +211,7 @@ def wait_for_action(request_id: str, timeout: int = 300) -> dict:
     while time.time() - start < timeout:
         if VERBOSE and (time.time() - start - last_log) >= 5:
             last_log = time.time() - start
-            ctx.log.info(f"[blackwire][intercept] waiting action for {request_id} ({int(last_log)}s/{timeout}s)")
+            _alog.info(f"[blackwire][intercept] waiting action for {request_id} ({int(last_log)}s/{timeout}s)")
         if action_file.exists():
             try:
                 action = json.loads(action_file.read_text())
@@ -219,7 +222,7 @@ def wait_for_action(request_id: str, timeout: int = 300) -> dict:
         time.sleep(0.1)
 
     # Timeout - forward by default
-    ctx.log.warn(f"[blackwire][intercept] timeout waiting for action; forwarding {request_id}")
+    _alog.warning(f"[blackwire][intercept] timeout waiting for action; forwarding {request_id}")
     return {"action": "forward"}
 
 
@@ -251,7 +254,7 @@ def load_extensions() -> list:
         try:
             spec = importlib.util.spec_from_file_location(module_name, path)
             if not spec or not spec.loader:
-                ctx.log.warn(f"[blackwire][ext] cannot load {path.name}: no spec")
+                _alog.warning(f"[blackwire][ext] cannot load {path.name}: no spec")
                 continue
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
@@ -269,7 +272,7 @@ def load_extensions() -> list:
                     extensions.append(ext)
                     vlog(f"Loaded extension: {getattr(ext, 'name', path.stem)}")
         except Exception as e:
-            ctx.log.warn(f"[blackwire][ext] failed to load {path.name}: {e}")
+            _alog.warning(f"[blackwire][ext] failed to load {path.name}: {e}")
     return extensions
 
 
@@ -283,9 +286,11 @@ class BlackwireAddon:
         ext_cfg = self.config.get("extensions", {})
         for ext in self.extensions:
             try:
-                ext.on_load(ext_cfg.get(getattr(ext, "name", ""), {}), self.config)
+                _on_load = getattr(ext, "on_load", None)
+                if _on_load:
+                    _on_load(ext_cfg.get(getattr(ext, "name", ""), {}), self.config)
             except Exception as e:
-                ctx.log.warn(f"[blackwire][ext] on_load failed ({getattr(ext, 'name', 'unknown')}): {e}")
+                _alog.warning(f"[blackwire][ext] on_load failed ({getattr(ext, 'name', 'unknown')}): {e}")
 
     def reload_config(self):
         """Reload configuration from file"""
@@ -305,7 +310,7 @@ class BlackwireAddon:
             try:
                 fn(flow, cfg, self.config)
             except Exception as e:
-                ctx.log.warn(f"[blackwire][ext] {hook} failed ({ext_name}): {e}")
+                _alog.warning(f"[blackwire][ext] {hook} failed ({ext_name}): {e}")
 
     def log(self, entry) -> None:
         """Capture mitmproxy's own log messages and forward to Blackwire console.
@@ -330,7 +335,7 @@ class BlackwireAddon:
         try:
             self._handle_request(flow)
         except Exception as e:
-            ctx.log.warn(f"[blackwire] error in request hook for {flow.request.pretty_url}: {e}")
+            _alog.warning(f"[blackwire] error in request hook for {flow.request.pretty_url}: {e}")
 
     def _handle_request(self, flow: http.HTTPFlow):
         # Reload config to get latest settings
@@ -358,7 +363,7 @@ class BlackwireAddon:
         try:
             self._apply_extensions("on_request", flow)
         except Exception as e:
-            ctx.log.warn(f"[blackwire] extension error in request hook: {e}")
+            _alog.warning(f"[blackwire] extension error in request hook: {e}")
 
         # Check if interception is enabled and request is in scope
         if self.config.get("intercept_enabled") and in_scope:
@@ -382,12 +387,12 @@ class BlackwireAddon:
             ).start()
 
             # Wait for user action
-            ctx.log.info(f"Intercepted: {flow.request.method} {url}")
+            _alog.info(f"Intercepted: {flow.request.method} {url}")
             action = wait_for_action(request_id)
 
             if action.get("action") == "drop":
-                ctx.log.info(f"Dropped: {url}")
-                ctx.log.warn(f"[blackwire][intercept] user dropped {request_id} {url}")
+                _alog.info(f"Dropped: {url}")
+                _alog.warning(f"[blackwire][intercept] user dropped {request_id} {url}")
                 flow.kill()
                 return
 
@@ -408,7 +413,7 @@ class BlackwireAddon:
 
                 if modified:
                     vlog(f"Applied modifications for {request_id}: keys={list(modified.keys())}")
-                ctx.log.info(f"Forwarded: {url}")
+                _alog.info(f"Forwarded: {url}")
 
     def response(self, flow: http.HTTPFlow):
         """Capture response and send to backend"""
@@ -422,7 +427,7 @@ class BlackwireAddon:
             try:
                 self._apply_extensions("on_response", flow)
             except Exception as e:
-                ctx.log.warn(f"[blackwire] extension error in response hook: {e}")
+                _alog.warning(f"[blackwire] extension error in response hook: {e}")
 
             url = flow.request.pretty_url
             in_scope = match_scope(url, self.config.get("scope_rules", []))
@@ -459,11 +464,11 @@ class BlackwireAddon:
                     args=("/api/internal/intercept_response", intercept_data)
                 ).start()
 
-                ctx.log.info(f"Response intercepted: {flow.request.method} {url} {flow.response.status_code}")
+                _alog.info(f"Response intercepted: {flow.request.method} {url} {flow.response.status_code}")
                 action = wait_for_action(response_id)
 
                 if action.get("action") == "drop":
-                    ctx.log.warn(f"[blackwire][intercept] response dropped {response_id} {url}")
+                    _alog.warning(f"[blackwire][intercept] response dropped {response_id} {url}")
                     flow.kill()
                     return
 
@@ -479,7 +484,7 @@ class BlackwireAddon:
                         if "body" in modified and modified["body"] is not None:
                             flow.response.content = modified["body"].encode()
                         vlog(f"Applied response modifications for {response_id}: keys={list(modified.keys())}")
-                    ctx.log.info(f"Response forwarded: {url}")
+                    _alog.info(f"Response forwarded: {url}")
 
             data = {
                 "method": flow.request.method,
@@ -501,7 +506,7 @@ class BlackwireAddon:
                 args=("/api/internal/request", data)
             ).start()
         except Exception as e:
-            ctx.log.warn(f"[blackwire] error in response hook for {flow.request.pretty_url}: {e}")
+            _alog.warning(f"[blackwire] error in response hook for {flow.request.pretty_url}: {e}")
 
     def websocket_message(self, flow: http.HTTPFlow):
         """Capture WebSocket messages"""
@@ -535,7 +540,7 @@ class BlackwireAddon:
             url = flow.request.pretty_url if flow.request else "unknown"
             error_msg = flow.error.msg if hasattr(flow, 'error') and flow.error else "Unknown error"
 
-            ctx.log.error(f"[blackwire] Flow error for {url}: {error_msg}")
+            _alog.error(f"[blackwire] Flow error for {url}: {error_msg}")
 
             # Send error to console
             _threading.Thread(
@@ -563,7 +568,7 @@ class BlackwireAddon:
                     args=("/api/internal/request", data)
                 ).start()
         except Exception as e:
-            ctx.log.error(f"[blackwire] Error in error handler: {e}")
+            _alog.error(f"[blackwire] Error in error handler: {e}")
 
 
 addons = [BlackwireAddon()]

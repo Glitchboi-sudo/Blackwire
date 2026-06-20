@@ -120,9 +120,6 @@ export function HistoryPanel(props) {
                           </button>
                           {detTab === 'response' && (
                             <>
-                              <button className={'btn btn-sm ' + (respFormat === 'deminify' ? 'btn-p' : 'btn-s')} onClick={() => setRespFormat('deminify')} title="Beautify JavaScript">
-                                Deminify
-                              </button>
                               <button className={'btn btn-sm ' + (respFormat === 'render' ? 'btn-p' : 'btn-s')} onClick={() => setRespFormat('render')}>
                                 Render
                               </button>
@@ -407,9 +404,6 @@ export function HistoryPanel(props) {
                           <button className={'btn btn-sm ' + (detTab === 'request' ? (reqFormat === 'pretty' ? 'btn-p' : 'btn-s') : (respFormat === 'pretty' ? 'btn-p' : 'btn-s'))} onClick={() => detTab === 'request' ? setReqFormat('pretty') : setRespFormat('pretty')}>Pretty</button>
                           {detTab === 'response' && (
                             <>
-                              <button className={'btn btn-sm ' + (respFormat === 'deminify' ? 'btn-p' : 'btn-s')} onClick={() => setRespFormat('deminify')} title="Beautify JavaScript">
-                                Deminify
-                              </button>
                               <button className={'btn btn-sm ' + (respFormat === 'render' ? 'btn-p' : 'btn-s')} onClick={() => setRespFormat('render')}>
                                 Render
                               </button>

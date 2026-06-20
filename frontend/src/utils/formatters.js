@@ -107,11 +107,19 @@ export const prettyPrint = text => {
     } catch (e) {}
   }
 
-  // XML/HTML - formatear
-  if (lang === 'xml' || lang === 'html') {
+  // HTML - el parser XML falla con HTML real (tags sin cerrar, entidades);
+  // se usa el parser HTML (tolerante) y se reindenta el documento.
+  if (lang === 'html') {
     try {
-      const parser = new DOMParser();
-      const xml = parser.parseFromString(text, 'text/xml');
+      const doc = new DOMParser().parseFromString(text, 'text/html');
+      return formatXml(doc.documentElement.outerHTML);
+    } catch (e) {}
+  }
+
+  // XML - formatear con el parser estricto
+  if (lang === 'xml') {
+    try {
+      const xml = new DOMParser().parseFromString(text, 'text/xml');
       if (xml.getElementsByTagName('parsererror').length === 0) {
         return formatXml(new XMLSerializer().serializeToString(xml));
       }

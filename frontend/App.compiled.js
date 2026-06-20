@@ -35,11 +35,6 @@ import {
   beautifyJs
 } from './src/utils/formatters.js';
 import {
-  deobfuscate,
-  deobfuscateAndBeautify,
-  detectObfuscationType
-} from './src/utils/deobfuscator.js';
-import {
   httpqlTokenize,
   httpqlParse,
   diffLines,
@@ -89,7 +84,6 @@ import { usePagination } from './src/hooks/usePagination.js';
 import { useLocalStorage } from './src/hooks/useLocalStorage.js';
 import { useBodySearch } from './src/hooks/useBodySearch.js';
 import { useBypass } from './src/hooks/useBypass.js';
-import { useDeobfuscator } from './src/hooks/useDeobfuscator.js';
 import { useDebounce } from './src/hooks/useDebounce.js';
 
 // Domain Hooks
@@ -145,6 +139,26 @@ const THEMES = window.BW_THEMES || {};
 const EXTENSION_CUSTOM_COMPONENTS = {
   'match_replace': MatchReplaceUI,
 };
+
+// Aísla los fallos de render de una pestaña para que no tumben toda la GUI.
+// Keyed por `tab` en el render: al cambiar de pestaña, el boundary se resetea.
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error, info) { console.error('[Blackwire] tab render error:', error, info); }
+  render() {
+    if (this.state.error) {
+      return React.createElement('div', { className: 'empty', style: { padding: 30, textAlign: 'center' } },
+        React.createElement('div', { className: 'empty-i' }, '⚠'),
+        React.createElement('div', { style: { color: 'var(--red)', fontWeight: 600, marginBottom: 8 } }, 'Algo falló en esta pestaña'),
+        React.createElement('div', { style: { color: 'var(--txt3)', fontSize: 12, maxWidth: 500, wordBreak: 'break-word' } },
+          String((this.state.error && this.state.error.message) || this.state.error)),
+        React.createElement('button', { className: 'btn btn-s', style: { marginTop: 12 }, onClick: () => this.setState({ error: null }) }, 'Reintentar')
+      );
+    }
+    return this.props.children;
+  }
+}
 
 function Blackwire() {
   // Estado principal
@@ -269,16 +283,6 @@ function Blackwire() {
   // Initialize toast first (needed by other hooks)
   const { toasts: hookToasts, toast: hookToast } = useToast();
 
-  // Deobfuscator with progress tracking
-  const deobfuscator = useDeobfuscator((progress) => {
-    if (progress.stage === 'detecting') {
-      hookToast(`Detecting obfuscation type: ${progress.obfuscationType || 'unknown'}...`, 'info');
-    } else if (progress.stage === 'deobfuscating') {
-      hookToast(`Deobfuscating... (${progress.iteration}/${progress.maxIterations})`, 'info');
-    } else if (progress.stage === 'beautifying') {
-      hookToast('Beautifying code...', 'info');
-    }
-  });
 
   // Initialize hooks that don't depend on others
   const git = useGit(hookToast);
@@ -1429,11 +1433,11 @@ function Blackwire() {
       body: request.body,
       response: response
     };
-    setRepHistory(prev => {
-      const newHistory = prev.slice(0, repHistoryIndex + 1);
-      return [...newHistory, historyItem];
-    });
-    setRepHistoryIndex(prev => prev + 1);
+    // Tope de 50 entradas para acotar el crecimiento al persistir en la DB.
+    const newHistory = [...repHistory.slice(0, repHistoryIndex + 1), historyItem].slice(-50);
+    setRepHistory(newHistory);
+    setRepHistoryIndex(newHistory.length - 1);
+    return newHistory;
   };
 
   const navigateHistory = direction => {
@@ -1479,24 +1483,27 @@ function Blackwire() {
     setRepRespBody(r.body || '');
     setLoading(false);
 
-    // Guardar en historial de navegación
-    saveToHistory(requestData, r);
+    // Guardar en historial de navegación (devuelve el array para persistirlo)
+    const newHistory = saveToHistory(requestData, r);
 
     if (selRep) {
-      // Actualizar el tab existente con la request/response más reciente
-      await repeaterService.update(selRep, { method: repM, url: repU, headers: h, body: repB, last_response: r });
+      // Actualizar el tab existente con la request/response más reciente + timeline
+      await repeaterService.update(selRep, { method: repM, url: repU, headers: h, body: repB, last_response: r, history: newHistory });
       const items = await repeaterService.list();
       setRepReqs(items);
     } else {
-      // Sin tab activo: crear uno nuevo
+      // Sin tab activo: crear uno nuevo y persistir el timeline
       let host = repU;
       try { host = new URL(repU).host; } catch (e) {}
       const timestamp = new Date().toLocaleTimeString();
       const autoName = `${repM} ${host} [${timestamp}]`;
       const newItem = await repeaterService.save(autoName, repM, repU, h, repB, r);
+      if (newItem && newItem.id) {
+        await repeaterService.update(newItem.id, { history: newHistory });
+        setSelRep(newItem.id);
+      }
       const items = await repeaterService.list();
       setRepReqs(items);
-      if (newItem && newItem.id) setSelRep(newItem.id);
     }
   };
 
@@ -1583,7 +1590,7 @@ function Blackwire() {
   }, [intUrl, intHeaders, intBody]);
 
   const runIntruderAttack = async () => {
-    const combos = generateAttackCombinations();
+    const combos = generateAttackCombinations(intUrl, intHeaders, intBody, intMethod, intAttackType, intPayloads, parseIntPositions);
     if (combos.length === 0) { toast('No payload combinations to run', 'error'); return; }
     intStopRef.current = false;
     setIntRunning(true);
@@ -1801,8 +1808,10 @@ function Blackwire() {
       setRepResp(null);
       setRepRespBody('');
     }
-    setRepHistory([]);
-    setRepHistoryIndex(-1);
+    // Rehidratar el timeline de respuestas persistido (si lo hay)
+    const hist = r.history || [];
+    setRepHistory(hist);
+    setRepHistoryIndex(hist.length ? hist.length - 1 : -1);
   };
 
   const renameRepItem = async id => {
@@ -1913,19 +1922,10 @@ function Blackwire() {
   const formatBody = (body, format) => {
     if (!body) return { text: body, html: false };
 
-    if (format === 'deminify') {
-      // Only beautify (not deobfuscate) in History view for performance
-      // User can manually deobfuscate in Repeater with the Deminify button
-      const beautified = beautifyJs(body);
-      return { text: syntaxHighlightJS(beautified), html: true };
-    }
-
     if (format === 'pretty') {
-      const lang = detectLanguage(body);
-      if (!lang) return { text: body, html: false };
-
+      // Best-effort: prettyPrint nunca lanza (devuelve el input si no sabe formatear).
       const formatted = prettyPrint(body);
-
+      const lang = detectLanguage(body);
       switch (lang) {
         case 'json': return { text: syntaxHighlightJSON(formatted), html: true };
         case 'xml': return { text: syntaxHighlightXML(formatted), html: true };
@@ -1939,7 +1939,8 @@ function Blackwire() {
         case 'graphql': return { text: syntaxHighlightGraphQL(formatted), html: true };
         case 'shell': return { text: syntaxHighlightShell(formatted), html: true };
         case 'protobuf': return { text: syntaxHighlightProto(formatted), html: true };
-        default: return { text: formatted, html: false };
+        // No reconocido: aun así formatea y colorea en vez de devolver crudo.
+        default: return colorizeBody(formatted);
       }
     }
 
@@ -1953,6 +1954,20 @@ function Blackwire() {
     repBodyCaretRef.current = getCaretOffset(el);
     const text = el.textContent || '';
     setRepB(text);
+  };
+
+  // Pretty/Minify del body del repeater: reescriben el texto, por lo que el offset
+  // de caret guardado queda obsoleto. Se anula (caret=null) para que el efecto NO
+  // restaure una posición vieja y el overlay coloreado quede sincronizado.
+  const prettyRepBody = () => {
+    repBodyCaretRef.current = null;
+    setRepB(prettyPrint(repB));
+    setRepBodyColor(true);
+  };
+  const minifyRepBody = () => {
+    repBodyCaretRef.current = null;
+    setRepB(minify(repB));
+    setRepBodyColor(false);
   };
 
   useEffect(() => {
@@ -2050,61 +2065,51 @@ function Blackwire() {
           toast('Failed to generate SQLMap request', 'error');
         }
         break;
-      case 'copy-body':
-        const bodyToCopy = source === 'repeater-response' ? (req.response_body || '') : (norm.body || '');
+      case 'copy-body': {
+        // Respetar la pestaña activa en History (request vs response).
+        const onResp = source === 'repeater-response' || (source === 'history' && detTab === 'response');
+        const bodyToCopy = onResp ? (req.response_body || '') : (norm.body || '');
         navigator.clipboard.writeText(bodyToCopy);
-        toast('Body copied', 'success');
+        toast(onResp ? 'Response body copied' : 'Request body copied', 'success');
         break;
-      case 'download-body':
-        let bodyToDownload = null;
-        let filename = 'body.txt';
-        let isTruncated = false;
+      }
+      case 'download-body': {
+        // Respetar la pestaña activa en History (request vs response).
+        const onResp = source === 'repeater-response' || (source === 'history' && detTab === 'response');
+        // Descarga vía <a download> (no window.open: evita bloqueo de popups / pestaña en blanco).
+        const triggerDownload = (href, fname, revoke) => {
+          const a = document.createElement('a');
+          a.href = href; a.download = fname;
+          document.body.appendChild(a); a.click(); a.remove();
+          if (revoke) URL.revokeObjectURL(href);
+        };
 
+        // History: si no está truncado en memoria, descargar directo desde el backend.
         if (source === 'history' && req.id) {
-          // For history items with response body, prioritize downloading response body
-          if (req.response_body) {
-            bodyToDownload = req.response_body;
-            filename = 'response-body.txt';
-            isTruncated = bodyToDownload && bodyToDownload.includes('[...TRUNCATED at');
-            if (!isTruncated) {
-              // If not truncated in memory, try to download from backend
-              window.open(API + '/api/requests/' + req.id + '/download-response-body', '_blank');
-              toast('Downloading response body...', 'success');
-              break;
-            }
-          } else {
-            // Otherwise download request body
-            window.open(API + '/api/requests/' + req.id + '/download-body', '_blank');
-            toast('Downloading request body...', 'success');
+          const inMem = onResp ? req.response_body : norm.body;
+          const truncated = !!(inMem && inMem.includes('[...TRUNCATED at'));
+          if (!truncated) {
+            const ep = onResp ? 'download-response-body' : 'download-body';
+            triggerDownload(API + '/api/requests/' + req.id + '/' + ep,
+                            (onResp ? 'response' : 'request') + '-body-' + req.id + '.txt', false);
+            toast('Downloading ' + (onResp ? 'response' : 'request') + ' body...', 'success');
             break;
           }
-        } else if (source === 'repeater-response' && req.response_body) {
-          bodyToDownload = req.response_body;
-          filename = 'response-body.txt';
-          isTruncated = bodyToDownload.includes('[...TRUNCATED at');
-        } else if (norm.body) {
-          bodyToDownload = norm.body;
-          filename = 'body.txt';
-          isTruncated = bodyToDownload.includes('[...TRUNCATED at');
         }
 
+        // Repeater / body en memoria (o history truncado): descargar el blob local.
+        const bodyToDownload = onResp ? (req.response_body || '') : (norm.body || '');
+        const isTruncated = !!(bodyToDownload && bodyToDownload.includes('[...TRUNCATED at'));
         if (bodyToDownload) {
           const blob = new Blob([bodyToDownload], { type: 'application/octet-stream' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = filename;
-          a.click();
-          URL.revokeObjectURL(url);
-          if (isTruncated) {
-            toast('Downloaded truncated body (limited to 1MB)', 'warning');
-          } else {
-            toast('Downloading body...', 'success');
-          }
+          triggerDownload(URL.createObjectURL(blob), (onResp ? 'response' : 'request') + '-body.txt', true);
+          toast(isTruncated ? 'Downloaded truncated body (limited to 1MB)' : 'Downloading body...',
+                isTruncated ? 'warning' : 'success');
         } else {
           toast('No body available to download', 'error');
         }
         break;
+      }
       case 'replay-browser':
         if (source === 'history' && req.id) {
           window.open(API + '/api/requests/' + req.id + '/replay', '_blank');
@@ -2123,8 +2128,9 @@ function Blackwire() {
           toast('Rendering response...', 'success');
         }
         break;
-      case 'send-to-cipher':
-        const bodyToSend = source === 'repeater-response' ? (req.response_body || '') : (norm.body || '');
+      case 'send-to-cipher': {
+        const onResp = source === 'repeater-response' || (source === 'history' && detTab === 'response');
+        const bodyToSend = onResp ? (req.response_body || '') : (norm.body || '');
         if (bodyToSend) {
           setChepyIn(bodyToSend);
           setTab('chepy');
@@ -2133,6 +2139,7 @@ function Blackwire() {
           toast('No text selected', 'error');
         }
         break;
+      }
       case 'add-to-collection':
         setShowCollPick(norm);
         break;
@@ -2235,6 +2242,8 @@ function Blackwire() {
               if (!text) continue;
               let m;
               while ((m = re.exec(text)) !== null) {
+                // Evita bucle infinito si un patrón puede coincidir en vacío (lastIndex no avanza).
+                if (m.index === re.lastIndex) re.lastIndex++;
                 // Apply entropy filter to reduce false positives
                 const matchText = m[0];
                 const entropy = calculateEntropy(matchText);
@@ -2426,7 +2435,7 @@ function Blackwire() {
     : (THEMES.midnight && THEMES.midnight.vars) ? THEMES.midnight.vars : {};
 
   // Estado/handlers expuestos a los paneles de pestaña (src/components/tabs/).
-  const __appCtx = { API, DynamicExtensionUI, EXTENSION_CUSTOM_COMPONENTS, ResizeHandle, SENS_COLORS, SENS_FILES, SENS_GENERAL, SENS_TOKENS, SENS_URLS, SchemaBasedUI, addChepyOp, addRule, addSessionRule, api, applyPreset, bakeChepy, chepy, chepyBaking, chepyCat, chepyCntRef, chepyErr, chepyIn, chepyInW, chepyOps, chepyOut, chepyRecW, chepySelCat, chepySubTab, clearChepyRecipe, clearHist, cmpA, cmpB, cmpDiff, cmpView, cmtMsg, collItems, collResps, collRunning, collSideW, collStep, collStepsW, collSubTab, collVars, collections, colls, colorizeBody, colorizeHeaders, commit, commits, consoleEndRef, createColl, createPrj, createWebhookToken, currentPage, decodeJWT, delPreset, delPrj, delRepItem, delReq, deleteColl, deleteCollItem, deleteIntAttack, deleteSessionRule, deobfuscateAndBeautify, deobfuscator, detTab, dropAll, dropReq, editReq, encodeJWT, escapeHtml, executeCollStep, exportProject, exportProjectBurp, exportSitemap, extensions, filtered, firstPage, fmtH, fmtHHtml, fmtTime, followRedirect, formatBody, fwdAll, fwdReq, git, handleRepBodyInput, highlightMatches, histContentRef, histPanelW, histSearch, histSubTab, hookToast, httpqlError, importAsNewProject, importBurpXML, importProject, intAttackType, intAttacks, intBody, intBodyRef, intComputeTotal, intConcurrency, intDelay, intDelayMax, intDelayMin, intDone, intFilter, intFollowRedirects, intHeaders, intHeadersHighlightRef, intHeadersRef, intMaxRetries, intMethod, intOn, intPayloads, intPct, intPendW, intPositions, intRandomDelay, intResults, intRunning, intSelAttack, intSelPayloadSet, intSelResult, intSortCol, intSortDir, intSorted, intStartTime, intSubTab, intTimeout, intTotal, intUrl, intUrlRef, intercept, interceptHeadersHighlightRef, interceptHeadersRef, jwtHeader, jwtPayload, jwtSignature, jwtToken, lastPage, loadCollItems, loadIntAttack, loadRepItem, loadReqs, loadSensDetail, loadSessionRules, loadWebhookLocal, loadWsConns, loadWsFrames, loading, minify, moveChepyOp, navigateHistory, newDesc, newName, newPat, newRule, newType, nextPage, pageSize, pagination, pending, presetName, presets, prettyPrint, prevPage, prjs, projects, proxyConsole, pxPort, refreshWebhook, removeChepyOp, renameIntAttack, renameRepItem, renderTreeNode, repB, repBodyColor, repBodyEditRef, repCntRef, repFollowRedirects, repH, repHeadersHighlightRef, repHeadersRef, repHistory, repHistoryIndex, repM, repReqs, repResp, repRespBody, repRespFormat, repSearch, repSideW, repSplitPct, repU, repeater, reqFormat, reqs, requests, resendWsFrame, resetCollRun, respFormat, runIntruderAttack, runSensitiveScan, savePreset, saveRep, savedOnly, scope, scopeOnly, scopeRules, search, selColl, selPend, selRep, selReq, selReqFull, selWsConn, selWsFrame, selectPrj, selectWsFrame, sendRep, sensBatch, sensDetailRef, sensEntropyThreshold, sensFilter, sensFiltered, sensMaxSize, sensPatterns, sensPct, sensResults, sensScanning, sensScopeOnly, sensSelDetail, sensSelResult, sensSubTab, sensUnique, sensitive, sessionRulesData, setChepyIn, setChepyInW, setChepyRecW, setChepySelCat, setChepySubTab, setCmpA, setCmpB, setCmpView, setCmtMsg, setCollSideW, setCollStep, setCollStepsW, setCollSubTab, setDetTab, setEditReq, setHistPanelW, setHistSubTab, setIntAttackType, setIntBody, setIntConcurrency, setIntDelay, setIntDelayMax, setIntDelayMin, setIntDone, setIntFilter, setIntFollowRedirects, setIntHeaders, setIntMaxRetries, setIntMethod, setIntPayloads, setIntPct, setIntPendW, setIntRandomDelay, setIntResults, setIntSelAttack, setIntSelPayloadSet, setIntSelResult, setIntSortCol, setIntSortDir, setIntSubTab, setIntTimeout, setIntTotal, setIntUrl, setJwtHeader, setJwtPayload, setJwtSignature, setJwtToken, setNewDesc, setNewName, setNewPat, setNewRule, setNewType, setPageSize, setPresetName, setRepB, setRepBodyColor, setRepFollowRedirects, setRepH, setRepM, setRepRespBody, setRepRespFormat, setRepSideW, setRepU, setReqFormat, setRespFormat, setSavedOnly, setScopeOnly, setSearch, setSelPend, setSelReq, setSensBatch, setSensEntropyThreshold, setSensFilter, setSensMaxSize, setSensPatterns, setSensPct, setSensResults, setSensScopeOnly, setSensSelDetail, setSensSelResult, setSensSubTab, setSensUnique, setShowNew, setShowPresets, setSmExpanded, setSmFilterExt, setSmFilterMethod, setSmFilterStatus, setSmFilterText, setSmSelNode, setSmShowStats, setSmTreeW, setWhkApiKey, setWsConnsW, setWsFramesW, setWsResendMsg, showContextMenu, showNew, showPresets, siteTree, smContentRef, smFilterExt, smFilterMethod, smFilterStatus, smFilterText, smNodeReqs, smSelNode, smShowStats, smStats, smTreeW, stCls, stopIntruderAttack, stopSensitiveScan, tab, toRep, toast, togExtEnabled, togSave, toggleSessionRule, totalPages, totalRequests, updateChepyArg, updateCollItemExtracts, updateExtCfg, whkApiKey, whkLoading, whkReqs, wsConns, wsConnsW, wsFrames, wsFramesW, wsResendMsg, wsResendResp, wsSending };
+  const __appCtx = { API, DynamicExtensionUI, EXTENSION_CUSTOM_COMPONENTS, ResizeHandle, SENS_COLORS, SENS_FILES, SENS_GENERAL, SENS_TOKENS, SENS_URLS, SchemaBasedUI, addChepyOp, addRule, addSessionRule, api, applyPreset, bakeChepy, chepy, chepyBaking, chepyCat, chepyCntRef, chepyErr, chepyIn, chepyInW, chepyOps, chepyOut, chepyRecW, chepySelCat, chepySubTab, clearChepyRecipe, clearHist, cmpA, cmpB, cmpDiff, cmpView, cmtMsg, collItems, collResps, collRunning, collSideW, collStep, collStepsW, collSubTab, collVars, collections, colls, colorizeBody, colorizeHeaders, commit, commits, consoleEndRef, createColl, createPrj, createWebhookToken, currentPage, decodeJWT, delPreset, delPrj, delRepItem, delReq, deleteColl, deleteCollItem, deleteIntAttack, deleteSessionRule, detTab, dropAll, dropReq, editReq, encodeJWT, escapeHtml, executeCollStep, exportProject, exportProjectBurp, exportSitemap, extensions, filtered, firstPage, fmtH, fmtHHtml, fmtTime, followRedirect, formatBody, fwdAll, fwdReq, git, handleRepBodyInput, highlightMatches, histContentRef, histPanelW, histSearch, histSubTab, hookToast, httpqlError, importAsNewProject, importBurpXML, importProject, intAttackType, intAttacks, intBody, intBodyRef, intComputeTotal, intConcurrency, intDelay, intDelayMax, intDelayMin, intDone, intFilter, intFollowRedirects, intHeaders, intHeadersHighlightRef, intHeadersRef, intMaxRetries, intMethod, intOn, intPayloads, intPct, intPendW, intPositions, intRandomDelay, intResults, intRunning, intSelAttack, intSelPayloadSet, intSelResult, intSortCol, intSortDir, intSorted, intStartTime, intSubTab, intTimeout, intTotal, intUrl, intUrlRef, intercept, interceptHeadersHighlightRef, interceptHeadersRef, jwtHeader, jwtPayload, jwtSignature, jwtToken, lastPage, loadCollItems, loadIntAttack, loadRepItem, loadReqs, loadSensDetail, loadSessionRules, loadWebhookLocal, loadWsConns, loadWsFrames, loading, minify, moveChepyOp, navigateHistory, newDesc, newName, newPat, newRule, newType, nextPage, pageSize, pagination, pending, presetName, presets, prettyPrint, prettyRepBody, minifyRepBody, prevPage, prjs, projects, proxyConsole, pxPort, refreshWebhook, removeChepyOp, renameIntAttack, renameRepItem, renderTreeNode, repB, repBodyColor, repBodyEditRef, repCntRef, repFollowRedirects, repH, repHeadersHighlightRef, repHeadersRef, repHistory, repHistoryIndex, repM, repReqs, repResp, repRespBody, repRespFormat, repSearch, repSideW, repSplitPct, repU, repeater, reqFormat, reqs, requests, resendWsFrame, resetCollRun, respFormat, runIntruderAttack, runSensitiveScan, savePreset, saveRep, savedOnly, scope, scopeOnly, scopeRules, search, selColl, selPend, selRep, selReq, selReqFull, selWsConn, selWsFrame, selectPrj, selectWsFrame, sendRep, sensBatch, sensDetailRef, sensEntropyThreshold, sensFilter, sensFiltered, sensMaxSize, sensPatterns, sensPct, sensResults, sensScanning, sensScopeOnly, sensSelDetail, sensSelResult, sensSubTab, sensUnique, sensitive, sessionRulesData, setChepyIn, setChepyInW, setChepyRecW, setChepySelCat, setChepySubTab, setCmpA, setCmpB, setCmpView, setCmtMsg, setCollSideW, setCollStep, setCollStepsW, setCollSubTab, setDetTab, setEditReq, setHistPanelW, setHistSubTab, setIntAttackType, setIntBody, setIntConcurrency, setIntDelay, setIntDelayMax, setIntDelayMin, setIntDone, setIntFilter, setIntFollowRedirects, setIntHeaders, setIntMaxRetries, setIntMethod, setIntPayloads, setIntPct, setIntPendW, setIntRandomDelay, setIntResults, setIntSelAttack, setIntSelPayloadSet, setIntSelResult, setIntSortCol, setIntSortDir, setIntSubTab, setIntTimeout, setIntTotal, setIntUrl, setJwtHeader, setJwtPayload, setJwtSignature, setJwtToken, setNewDesc, setNewName, setNewPat, setNewRule, setNewType, setPageSize, setPresetName, setRepB, setRepBodyColor, setRepFollowRedirects, setRepH, setRepM, setRepRespBody, setRepRespFormat, setRepSideW, setRepU, setReqFormat, setRespFormat, setSavedOnly, setScopeOnly, setSearch, setSelPend, setSelReq, setSensBatch, setSensEntropyThreshold, setSensFilter, setSensMaxSize, setSensPatterns, setSensPct, setSensResults, setSensScopeOnly, setSensSelDetail, setSensSelResult, setSensSubTab, setSensUnique, setShowNew, setShowPresets, setSmExpanded, setSmFilterExt, setSmFilterMethod, setSmFilterStatus, setSmFilterText, setSmSelNode, setSmShowStats, setSmTreeW, setWhkApiKey, setWsConnsW, setWsFramesW, setWsResendMsg, showContextMenu, showNew, showPresets, siteTree, smContentRef, smFilterExt, smFilterMethod, smFilterStatus, smFilterText, smNodeReqs, smSelNode, smShowStats, smStats, smTreeW, stCls, stopIntruderAttack, stopSensitiveScan, tab, toRep, toast, togExtEnabled, togSave, toggleSessionRule, totalPages, totalRequests, updateChepyArg, updateCollItemExtracts, updateExtCfg, whkApiKey, whkLoading, whkReqs, wsConns, wsConnsW, wsFrames, wsFramesW, wsResendMsg, wsResendResp, wsSending };
 
   return (
     React.createElement('div', { className: "app", style: themeVars,}
@@ -2461,6 +2470,7 @@ function Blackwire() {
 .mth-GET{background:rgba(63,185,80,.15);color:var(--green)}.mth-POST{background:rgba(88,166,255,.15);color:var(--blue)}
 .mth-PUT,.mth-PATCH{background:rgba(210,153,34,.15);color:var(--orange)}.mth-DELETE{background:rgba(248,81,73,.15);color:var(--red)}
 .url{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.sts{font-weight:500}
+.req-item.sel{align-items:start}.req-item.sel .url{white-space:normal;word-break:break-all;overflow:visible}
 .st2{color:var(--green)}.st3{color:var(--blue)}.st4{color:var(--orange)}.st5{color:var(--red)}.ts{color:var(--txt3);font-size:10px}
 .det-tabs{display:flex;background:var(--bg2);border-bottom:1px solid var(--brd);padding:0 10px}
 .det-tab{padding:8px 14px;font-size:11px;color:var(--txt2);cursor:pointer;border-bottom:2px solid transparent}
@@ -2487,7 +2497,7 @@ function Blackwire() {
 .flt-preset-del{padding:1px 5px!important;font-size:10px!important;min-width:auto}
 .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--txt3);font-size:13px;gap:6px}.empty-i{font-size:40px;opacity:.3}
 .acts{display:flex;gap:6px}
-.prj-pnl{padding:24px;max-width:800px;margin:0 auto;width:100%}.prj-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}.prj-hdr h2{font-size:18px}
+.prj-pnl{padding:24px;max-width:800px;margin:0 auto;width:100%;height:100%;overflow-y:auto}.prj-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}.prj-hdr h2{font-size:18px}
 .new-prj{background:var(--bg2);padding:16px;border-radius:8px;margin-bottom:16px;display:flex;flex-direction:column;gap:10px}
 .inp{padding:8px 12px;background:var(--bg3);border:1px solid var(--brd);border-radius:5px;color:var(--txt);font-size:12px;outline:none}.inp:focus{border-color:var(--blue)}
 .form-acts{display:flex;gap:10px}.prj-list{display:flex;flex-direction:column;gap:10px}
@@ -2739,6 +2749,7 @@ function Blackwire() {
       )
 
       , React.createElement('main', { className: "main",}
+        , React.createElement(ErrorBoundary, { key: tab,}
         , tab === 'projects' && React.createElement(ProjectsPanel, __appCtx)
 
         , tab === 'history' && curPrj && React.createElement(HistoryPanel, __appCtx)
@@ -2768,6 +2779,7 @@ function Blackwire() {
 
         /* Pestañas de extensiones dinámicas */
         , curPrj && React.createElement(ExtensionTabsPanel, __appCtx)
+        )
       )
 
       , React.createElement('div', { className: "toast-c",}

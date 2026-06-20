@@ -2,7 +2,7 @@
 // Recibe todo el estado/handlers vía props (objeto __appCtx de App.jsx).
 
 export function RepeaterPanel(props) {
-  const { ResizeHandle, colorizeBody, colorizeHeaders, delRepItem, deobfuscateAndBeautify, deobfuscator, fmtHHtml, followRedirect, handleRepBodyInput, highlightMatches, hookToast, loadRepItem, loading, minify, navigateHistory, prettyPrint, renameRepItem, repB, repBodyColor, repBodyEditRef, repCntRef, repFollowRedirects, repH, repHeadersHighlightRef, repHeadersRef, repHistory, repHistoryIndex, repM, repReqs, repResp, repRespBody, repRespFormat, repSearch, repSideW, repSplitPct, repU, repeater, saveRep, search, selRep, sendRep, setRepB, setRepBodyColor, setRepFollowRedirects, setRepH, setRepM, setRepRespBody, setRepRespFormat, setRepSideW, setRepU, showContextMenu, stCls } = props;
+  const { ResizeHandle, colorizeBody, colorizeHeaders, delRepItem, fmtHHtml, followRedirect, handleRepBodyInput, highlightMatches, hookToast, loadRepItem, loading, minify, minifyRepBody, navigateHistory, prettyPrint, prettyRepBody, renameRepItem, repB, repBodyColor, repBodyEditRef, repCntRef, repFollowRedirects, repH, repHeadersHighlightRef, repHeadersRef, repHistory, repHistoryIndex, repM, repReqs, repResp, repRespBody, repRespFormat, repSearch, repSideW, repSplitPct, repU, repeater, saveRep, search, selRep, sendRep, setRepB, setRepBodyColor, setRepFollowRedirects, setRepH, setRepM, setRepRespBody, setRepRespFormat, setRepSideW, setRepU, showContextMenu, stCls } = props;
   return (
           <div className="rep-cnt" ref={repCntRef}>
             <div className="rep-side" style={{ width: repSideW + 'px' }}>
@@ -31,18 +31,14 @@ export function RepeaterPanel(props) {
               <div className="req-bar">
                 <button className="btn btn-s" onClick={() => navigateHistory(-1)} disabled={repHistoryIndex <= 0} title="Previous">◀</button>
                 <button className="btn btn-s" onClick={() => navigateHistory(1)} disabled={repHistoryIndex >= repHistory.length - 1} title="Next">▶</button>
-                <select className="mth-sel" value={repM} onChange={e => setRepM(e.target.value)}>
-                  <option>GET</option>
-                  <option>HEAD</option>
-                  <option>POST</option>
-                  <option>PUT</option>
-                  <option>PATCH</option>
-                  <option>DELETE</option>
-                  <option>CONNECT</option>
-                  <option>OPTIONS</option>
-                  <option>TRACE</option>
-                  <option>PATCH</option>
-                </select>
+                <input className="mth-sel" list="rep-methods" value={repM}
+                  onChange={e => setRepM(e.target.value.toUpperCase())}
+                  title="Método HTTP (editable: admite métodos personalizados)" />
+                <datalist id="rep-methods">
+                  <option value="GET" /><option value="HEAD" /><option value="POST" />
+                  <option value="PUT" /><option value="PATCH" /><option value="DELETE" />
+                  <option value="CONNECT" /><option value="OPTIONS" /><option value="TRACE" />
+                </datalist>
                 <input className="url-in" placeholder="https://..." value={repU} onChange={e => setRepU(e.target.value)} />
                 <button className="btn btn-p" onClick={sendRep} disabled={loading || !repU}>{loading ? '...' : '▶ Send'}</button>
                 <select className="sel" value={repFollowRedirects ? 'follow' : 'manual'} onChange={e => setRepFollowRedirects(e.target.value === 'follow')}
@@ -65,8 +61,8 @@ export function RepeaterPanel(props) {
                   <div className="ed-hdr">
                     <span>Body</span>
                     <div style={{ display: 'flex', gap: '4px' }}>
-                      <button className="btn btn-sm btn-s" onClick={() => { setRepB(prettyPrint(repB)); setRepBodyColor(true); }} title="Pretty Print">Pretty</button>
-                      <button className="btn btn-sm btn-s" onClick={() => { setRepB(minify(repB)); setRepBodyColor(false); }} title="Minify">Minify</button>
+                      <button className="btn btn-sm btn-s" onClick={prettyRepBody} title="Pretty Print">Pretty</button>
+                      <button className="btn btn-sm btn-s" onClick={minifyRepBody} title="Minify">Minify</button>
                     </div>
                   </div>
                   {repBodyColor ? (
@@ -94,77 +90,6 @@ export function RepeaterPanel(props) {
                         <div style={{ display: 'flex', gap: '4px' }}>
                           <button className={'btn btn-sm ' + (repRespFormat === 'code' ? 'btn-p' : 'btn-s')} onClick={() => setRepRespFormat('code')}>Raw</button>
                           <button className="btn btn-sm btn-s" onClick={() => { setRepRespBody(prettyPrint(repRespBody)); }} title="Pretty Print">Pretty</button>
-                          <button
-                            className="btn btn-sm btn-s"
-                            onClick={async () => {
-                              console.clear();
-                              console.log('%c╔════════════════════════════════════════════╗', 'color: #00ff00');
-                              console.log('%c║   JavaScript Deobfuscator - Diagnostics   ║', 'color: #00ff00; font-weight: bold');
-                              console.log('%c╚════════════════════════════════════════════╝', 'color: #00ff00');
-
-                              // Detailed size analysis
-                              const size = repRespBody.length;
-                              const byteSize = new TextEncoder().encode(repRespBody).length;
-                              const sizeMB = (size / 1024 / 1024).toFixed(2);
-                              const byteSizeMB = (byteSize / 1024 / 1024).toFixed(2);
-
-                              console.log(`\n%c📊 Size Analysis:`, 'color: #00aaff; font-weight: bold');
-                              console.log(`  • String length: ${size.toLocaleString()} characters (${sizeMB} MB)`);
-                              console.log(`  • Byte size (UTF-8): ${byteSize.toLocaleString()} bytes (${byteSizeMB} MB)`);
-                              console.log(`  • Encoding ratio: ${(byteSize / size).toFixed(2)}x`);
-
-                              // Content analysis
-                              const hasTruncated = repRespBody.includes('[...TRUNCATED');
-                              console.log(`\n%c📝 Content Analysis:`, 'color: #00aaff; font-weight: bold');
-                              console.log(`  • Contains TRUNCATED marker: ${hasTruncated ? 'YES ⚠️' : 'NO'}`);
-                              console.log(`  • First 200 chars:`);
-                              console.log(`    ${repRespBody.substring(0, 200)}`);
-                              console.log(`  • Last 200 chars:`);
-                              console.log(`    ${repRespBody.substring(repRespBody.length - 200)}`);
-
-                              // Character encoding check
-                              const asciiChars = repRespBody.split('').filter(c => c.charCodeAt(0) < 128).length;
-                              const nonAscii = size - asciiChars;
-                              console.log(`\n%c🔤 Character Encoding:`, 'color: #00aaff; font-weight: bold');
-                              console.log(`  • ASCII chars: ${asciiChars.toLocaleString()} (${(asciiChars/size*100).toFixed(1)}%)`);
-                              console.log(`  • Non-ASCII chars: ${nonAscii.toLocaleString()} (${(nonAscii/size*100).toFixed(1)}%)`);
-
-                              if (size > 10 * 1024 * 1024) {
-                                console.warn(`\n%c⚠ File too large (${sizeMB} MB > 10 MB), only beautifying...`, 'color: #ff6600; font-weight: bold');
-                                console.log(`%c💡 Tip: Files larger than 10MB may cause performance issues`, 'color: #ffaa00');
-                                hookToast(`File too large (${sizeMB} MB), only beautifying...`, 'warning');
-                                try {
-                                  const beautified = await deobfuscator.beautify(repRespBody);
-                                  setRepRespBody(beautified);
-                                  hookToast('Beautification complete!', 'success');
-                                } catch (error) {
-                                  console.error('Beautification error:', error);
-                                  hookToast('Beautification failed: ' + error.message, 'error');
-                                }
-                                return;
-                              }
-
-                              console.log(`\n%c🔍 Starting deobfuscation...`, 'color: #ff00ff; font-weight: bold');
-                              hookToast(`Processing ${sizeMB} MB file...`, 'info');
-
-                              try {
-                                const deobfuscated = await deobfuscator.deobfuscateAndBeautify(repRespBody);
-                                setRepRespBody(deobfuscated);
-                                hookToast('✓ Deobfuscation complete! Check console for details.', 'success');
-
-                                console.log(`\n%c✓ Deobfuscation Complete!`, 'color: #00ff00; font-weight: bold; font-size: 14px');
-                                console.log(`  • Original size: ${sizeMB} MB`);
-                                console.log(`  • Final size: ${(deobfuscated.length / 1024 / 1024).toFixed(2)} MB`);
-                              } catch (error) {
-                                console.error('Deobfuscation error:', error);
-                                hookToast('Deobfuscation failed: ' + error.message, 'error');
-                              }
-                            }}
-                            title="Deobfuscate & Beautify JavaScript (max 10MB)"
-                            disabled={deobfuscator.isProcessing}
-                          >
-                            {deobfuscator.isProcessing ? '⏳ Processing...' : 'Deminify'}
-                          </button>
                           <button className={'btn btn-sm ' + (repRespFormat === 'render' ? 'btn-p' : 'btn-s')} onClick={() => setRepRespFormat('render')}>Render</button>
                         </div>
                       )}

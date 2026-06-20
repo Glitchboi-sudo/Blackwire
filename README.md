@@ -44,26 +44,17 @@ make run
 ### Versión Desktop (Producción)
 
 **Aplicación standalone con aislamiento Docker completo.** El empaquetado vive en
-[`packaging/`](packaging/) (Tauri + Docker) y se construye automáticamente con
-**GitHub Actions** ([`.github/workflows/desktop.yml`](.github/workflows/desktop.yml)).
-
-Al publicar un tag `v*` se generan y se adjuntan a un **GitHub Release** los instaladores
-nativos para Linux (`.deb` / `.AppImage` / `.rpm`), macOS (`.dmg`) y Windows (`.msi`).
-También puedes lanzarlo a mano desde la pestaña **Actions** (`workflow_dispatch`).
-
-```bash
-git tag v1.0.0 && git push origin v1.0.0   # dispara el build de instaladores
-```
+[`Releases`](https://github.com/Glitchboi-sudo/Blackwire/releases) 
 
 **Características:**
-- ✅ Ventana nativa con Tauri (Rust + WebView)
-- ✅ Backend aislado en Docker (seguridad)
-- ✅ System tray integration
-- ✅ Instaladores para Linux, macOS y Windows
+-  Ventana nativa con Tauri (Rust + WebView)
+-  Backend aislado en Docker (seguridad)
+-  System tray integration
+-  Instaladores para Linux, macOS y Windows
 
 ---
 
-## 🔌 Crea tu Primera Extensión (5 minutos)
+##  Crea tu Primera Extensión (5 minutos)
 
 El sistema de extensiones hace que crear plugins sea **increíblemente simple**. Solo necesitas un archivo Python:
 
@@ -123,7 +114,7 @@ def register():
 2. **Dynamic JSX** → UIs complejas sin recompilar frontend (ejemplos: [webhook_site.ui.jsx](backend/extensions/webhook_site.ui.jsx), [headers_injector.ui.jsx](backend/extensions/headers_injector.ui.jsx))
 3. **Custom React** → Componentes hardcoded para casos especiales (legacy)
 
-📚 **Documentación completa**: [Sistema de Extensiones Wiki](https://github.com/Glitchboi-sudo/Blackwire/wiki/07-Sistema-de-Extensiones)
+**Documentación completa**: [Sistema de Extensiones Wiki](https://github.com/Glitchboi-sudo/Blackwire/wiki/07-Sistema-de-Extensiones)
 
 ---
 
@@ -158,36 +149,6 @@ def register():
 - **Git Integration** - Control de versiones integrado
 - **15 Temas** - Midnight, Gruvbox, Solarized, Noir, Synth, etc.
 - **100% Portable** - Sin rutas hardcoded, funciona desde cualquier directorio
-
-## Arquitectura
-
-```
-Blackwire/
-├── backend/
-│   ├── main.py              # App factory FastAPI (registro de routers + estático)
-│   ├── config.py            # Paths, constantes y validadores
-│   ├── schemas.py           # Modelos Pydantic + catálogo Chepy
-│   ├── db.py                # Acceso SQLite por proyecto
-│   ├── mitm_addon.py        # Addon de mitmproxy (ciclo de vida propio)
-│   ├── chepy_compat.py      # Motor Cipher
-│   ├── routes/              # Un router FastAPI por dominio (repeater, scope, …)
-│   ├── services/            # Estado compartido + control del proxy
-│   ├── utils/               # Helpers (httpql, git, scope, jsx, …)
-│   └── extensions/          # Sistema de plugins
-├── frontend/
-│   ├── App.jsx              # Shell React + lógica de coordinación
-│   ├── App.compiled.js      # JSX pre-transpilado (generado)
-│   ├── themes.js            # 15 temas de color
-│   └── src/
-│       ├── components/      # Componentes (tabs/ una por pestaña, extensions/)
-│       ├── context/         # Estado transversal
-│       ├── hooks/ services/ utils/   # Lógica de dominio, API y helpers
-├── assets/                  # Banner, icono y entrada .desktop
-├── projects/                # Bases de datos SQLite por proyecto (generado)
-├── Makefile                 # Comandos de desarrollo (make help)
-├── pyproject.toml           # Metadatos del proyecto y config de tooling
-└── requirements.txt         # Dependencias de Python
-```
 
 ## Contribuir
 

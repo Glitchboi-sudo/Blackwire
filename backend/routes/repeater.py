@@ -29,7 +29,8 @@ async def get_repeater():
         cursor = await db.execute("SELECT * FROM repeater ORDER BY id DESC")
         rows = await cursor.fetchall()
         return [{"id": r[0], "name": r[1], "method": r[2], "url": r[3], "headers": json.loads(r[4]),
-            "body": r[5], "created_at": r[6], "last_response": json.loads(r[7]) if r[7] else None} for r in rows]
+            "body": r[5], "created_at": r[6], "last_response": json.loads(r[7]) if r[7] else None,
+            "history": json.loads(r[8]) if len(r) > 8 and r[8] else []} for r in rows]
 
 
 @router.post("/api/repeater")
@@ -58,6 +59,8 @@ async def update_repeater(item_id: int, data: dict = Body(...)):
             await db.execute("UPDATE repeater SET body = ? WHERE id = ?", (data["body"], item_id))
         if "last_response" in data:
             await db.execute("UPDATE repeater SET last_response = ? WHERE id = ?", (json.dumps(data["last_response"]), item_id))
+        if "history" in data:
+            await db.execute("UPDATE repeater SET history = ? WHERE id = ?", (json.dumps(data["history"]), item_id))
         await db.commit()
         return {"status": "updated"}
 
