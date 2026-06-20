@@ -1,115 +1,138 @@
-# CLAUDE.md — Blackwire
+# CLAUDE.md
 
-### Regla principal
-**Minimizar toques a `App.jsx` y `main.py`.** Ambos tienen >4000 líneas. Cada modificación directa es riesgo de romper algo y conflicto de merge.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-### Estrategia de expansión
-Antes de modificar `App.jsx` o `main.py`, evaluar en este orden:
+# Project Overview
+BlackWire is a self-hosted, portable HTTP/HTTPS proxy interceptor for security testing, traffic analysis, and web-application debugging — a lightweight, extensible alternative to Burp Suite and OWASP ZAP. Stack: **FastAPI + Python**, **mitmproxy** (interception engine), **React with no bundler** (JSX transpiled on the fly via Sucrase), and **SQLite, one database per project**. The frontend is served as static files from FastAPI; there is no Webpack/Vite build pipeline for the main app. UI strings are mostly English; in-code comments are bilingual (ES/EN). A companion repo, **[Blackwire-compile](https://github.com/Glitchboi-sudo/Blackwire)**, packages the desktop build (Tauri + Docker).
 
-1. **¿Es lógica de proxy/HTTP?** → Extensión en `backend/extensions/`
-2. **¿Es un endpoint nuevo de API?** → Crear `backend/routes/{feature}.py` e importar en main.py con una sola línea (`app.include_router(...)`)
-3. **¿Es un componente UI nuevo?** → Crear `frontend/components/{Feature}.jsx`, importar en App.jsx con una sola línea
-4. **¿Es utilidad/helper reutilizable?** → Crear `backend/utils/{util}.py` o `frontend/utils/{util}.js`
-5. **Solo si no hay alternativa** → Modificar App.jsx o main.py directamente, con el mínimo diff posible
+# Current State
+Built and verified: proxy interception, **Repeater**, **HTTPQL** filtering, **Site Map**, **Sensitive Discovery** (50+ patterns + Shannon entropy), **JWT analyzer**, **Cipher** (chainable encode/hash/crypto ops), **WebSocket viewer**, **Collections** with JSONPath variables, **Session rules**, **Compare** (LCS diff), Git integration, Burp-compatible import/export, 15 themes, and the **extension system**.
 
-### Estructura objetivo de expansión
-```
-backend/
-├── routes/            # APIRouters de FastAPI por feature
-│   └── {feature}.py  # Router autocontenido
-├── utils/            # Helpers reutilizables
-└── extensions/       # Ya existe
+The codebase has been **fully de-monolithized**: the backend is an app factory (`backend/main.py`) plus one FastAPI router per domain under `backend/routes/`, shared state/services in `backend/services/`, and helpers in `backend/utils/`. The frontend coordinator (`frontend/App.jsx`) delegates each tab to a component under `frontend/src/components/`. **Not yet built:** multi-user authentication, a CI/CD pipeline, and automated desktop builds — see the wiki roadmap.
 
-frontend/
-├── components/       # Componentes React extraídos
-│   └── {Feature}.jsx # Autocontenido con su lógica
-└── utils/            # Helpers JS reutilizables
-```
-
-### Al crear archivos nuevos
-- El archivo debe ser **reutilizable** — si solo sirve para un uso puntual, no merece archivo propio.
-- **Nada de archivos `_temp`, `_test`, `_draft`, `notas`, `TODO`** — el repo es público.
-- **Nada de archivos `.md` explicativos** sobre qué se hizo o cómo funciona un cambio — eso va en el commit message o en este CLAUDE.md si es convención permanente.
-- Los archivos que se creen deben poder vivir en el repo indefinidamente como parte del proyecto.
-
-### Ejemplo de integración limpia
-**Mal** — modificar 50 líneas en main.py para agregar endpoints de una feature:
-```python
-# main.py — 50 líneas nuevas mezcladas
-@app.get("/api/nueva-feature/...")
-def handler(): ...
-```
-
-**Bien** — crear `backend/routes/nueva_feature.py` y una línea en main.py:
-```python
-# backend/routes/nueva_feature.py — autocontenido
-router = APIRouter(prefix="/api/nueva-feature")
-@router.get("/...")
-def handler(): ...
-
-# main.py — solo esto:
-from routes.nueva_feature import router as nueva_feature_router
-app.include_router(nueva_feature_router)
-```
-
-## Reglas de desarrollo
-
-### Frontend (CRÍTICO)
-- El frontend carga en `http://localhost:5000` servido por FastAPI como static files.
-
-### Backend
-- FastAPI en `main.py` expone la API REST que consume el frontend.
-- `proxy_addon.py` corre dentro del proceso mitmproxy — tiene su propio ciclo de vida.
-- Los proyectos son bases de datos SQLite independientes por nombre de proyecto.
-
-### Sistema de extensiones
-Tres tipos, en orden de preferencia para nuevas extensiones:
-1. **Schema-Driven** (`backend/extensions/*.py`) — solo Python, UI auto-generada desde `EXTENSION_META["ui_schema"]`
-2. **Dynamic JSX** (`backend/extensions/*.ui.jsx`) — UI compleja sin recompilar frontend
-3. **Custom React** — legacy, evitar
-
-Estructura mínima de una extensión:
-```python
-EXTENSION_META = {"name": "...", "title": "...", "description": "...", "ui_schema": {...}, "default_config": {...}}
-class MyExtension:
-    name = "..."
-    def on_request(self, flow, cfg, full_config): ...
-def register(): return MyExtension()
-```
-
-Tras crear/modificar extensión: `make restart`
-
-## Versión Desktop
-Para empaquetar Blackwire como aplicación standalone con Tauri + Docker (instaladores .deb/.dmg/.msi), ver: **[Blackwire-compile](https://github.com/yourusername/Blackwire-compile)**
-
-## Comandos frecuentes
-Los comandos de desarrollo viven en el `Makefile` (ejecuta `make help`):
+# Environment Setup (read this first)
+Requires **Python 3.9+** and **Node** (used only for Sucrase JSX transpilation).
 ```bash
-make install   # Setup inicial: venv + dependencias + certificado mitmproxy
-make run       # Compila el frontend, arranca el backend y abre el browser
-make restart   # Reinicio (necesario tras cambios en extensiones/backend)
-make serve     # Arranca el backend en primer plano (Ctrl-C para parar)
-make compile   # Compilar el frontend (App.jsx -> App.compiled.js)
-make stop      # Detener el backend
+git clone https://github.com/Glitchboi-sudo/Blackwire.git
+cd Blackwire
+make install     # creates the venv, installs deps, generates the mitmproxy cert
+make run         # compiles the frontend, starts the backend, opens the browser
+```
+Two constraints that will otherwise waste your time:
+- **Never edit `frontend/App.compiled.js` by hand.** It is the Sucrase output of `App.jsx` and is regenerated on every compile. Edit `App.jsx`, then `make compile`.
+- **The mitmproxy CA lives at `~/.mitmproxy/`.** If HTTPS interception breaks, delete that directory and run `make cert`.
+
+# Commands
+Development commands live in the `Makefile` (run `make help` for the full list):
+- **Setup:** `make install` — venv + dependencies + mitmproxy certificate
+- **Run + browser:** `make run`
+- **Start (background):** `make start` · **Foreground:** `make serve`
+- **Stop:** `make stop` · **Restart:** `make restart` (required after any backend or extension change)
+- **Compile frontend:** `make compile`
+- **Verify environment:** `make verify`
+- **Clean (venv, caches, build):** `make clean`
+
+# Architecture
+```
+Client traffic → mitmproxy (backend/mitm_addon.py, :8080)
+                     ↕ hooks: on_request / on_response
+FastAPI (backend/main.py, :5000) ↔ SQLite (projects/{name}/blackwire.db)
+                     ↕ REST + WebSocket
+React frontend (served transpiled as static files)
+```
+- **Backend** is a thin app factory (`main.py`) that registers one router per feature domain from `backend/routes/` (history/search, repeater, intercept, scope, proxy, collections, intruder, session, chepy, websocket, git, projects, export/import, webhook, extensions, internal). Shared mutable state and the proxy lifecycle live in `backend/services/` (`state.py`, `proxy_control.py`); data access in `backend/db.py`; pure helpers in `backend/utils/`. `mitm_addon.py` runs inside the mitmproxy process and talks to the API through the `.proxy_config.json` and `.action_*.json` files (its lifecycle is independent).
+- **Frontend** loads as native ES modules. `App.jsx` holds shared state and renders the shell; each tab is a component under `frontend/src/components/tabs/`, extension UIs under `frontend/src/components/extensions/`, with domain logic in `src/hooks/`, API calls in `src/services/`, and helpers in `src/utils/`. `.jsx` modules are transpiled on request by `backend/utils/jsx.py`.
+- **Extensions** (`backend/extensions/`) get full access to `mitmproxy.http.HTTPFlow`. Three types, preferred in order: **Schema-Driven** (pure Python, UI auto-generated from `EXTENSION_META["ui_schema"]`), **Dynamic JSX** (a `.ui.jsx` alongside the `.py`, no frontend recompile), and **Custom React** (legacy). Minimal shape:
+  ```python
+  EXTENSION_META = {"name": "...", "title": "...", "description": "...", "ui_schema": {...}, "default_config": {...}}
+  class MyExtension:
+      name = "..."
+      def on_request(self, flow, cfg, full_config): ...
+  def register(): return MyExtension()
+  ```
+- **Expansion strategy** — before touching `App.jsx` or `main.py`, prefer in order: (1) proxy/HTTP logic → an extension; (2) new endpoints → a `backend/routes/{feature}.py` registered in `main.py`; (3) new UI → a `frontend/src/components/{Feature}.jsx`; (4) shared helper → `backend/utils/` or `frontend/src/utils/`; (5) only if there is no alternative, edit `App.jsx`/`main.py` with the minimum diff.
+
+# Out of Scope
+- Network-facing / multi-user authentication (the tool is designed for local, controlled use)
+- Native mobile app
+- Cloud sync
+
+# Core Development Rules
+1. Code Quality
+   - Type hints required for all code
+   - Public APIs must have docstrings
+   - Functions must be focused and small
+   - Follow existing patterns exactly
+   - Line length: 88 chars maximum
+
+2. Testing Requirements
+   - Coverage: test edge cases and errors
+   - New features require tests
+   - Bug fixes require regression tests
+
+3. Code Style
+    - PEP 8 naming (snake_case for functions/variables)
+    - Class names in PascalCase
+    - Constants in UPPER_SNAKE_CASE
+    - Document with docstrings
+    - Use f-strings for formatting
+
+# Coding Best Practices
+
+- **Early Returns**: Use to avoid nested conditions
+- **Descriptive Names**: Use clear variable/function names (prefix handlers with "handle")
+- **Constants Over Functions**: Use constants where possible
+- **DRY Code**: Don't repeat yourself
+- **Functional Style**: Prefer functional, immutable approaches when not verbose
+- **Minimal Changes**: Only modify code related to the task at hand
+- **Function Ordering**: Define composing functions before their components
+- **TODO Comments**: Mark issues in existing code with "TODO:" prefix
+- **Simplicity**: Prioritize simplicity and readability over clever solutions
+- **Build Iteratively** Start with minimal functionality and verify it works before adding complexity
+- **Run Tests**: Test your code frequently with realistic inputs and validate outputs
+- **Build Test Environments**: Create testing environments for components that are difficult to validate directly
+- **Functional Code**: Use functional and stateless approaches where they improve clarity
+- **Clean logic**: Keep core logic clean and push implementation details to the edges
+- **File Organsiation**: Balance file organization with simplicity - use an appropriate number of files for the project scale
+
+# Project Structure
+```
+Blackwire/
+├── backend/          # FastAPI app factory + routes/ services/ utils/ db.py + extensions/
+├── frontend/         # React shell (App.jsx) + src/{components,context,hooks,services,utils}
+├── assets/           # Banner, icon, and .desktop entry
+├── projects/         # One SQLite database per project (generated)
+├── Makefile          # Development commands (make help)
+├── pyproject.toml    # Project metadata and tooling config
+└── requirements.txt  # Python dependencies
 ```
 
-## Convenciones de código
-- Python: snake_case, sin type hints estrictos en extensiones (compatibilidad mitmproxy)
-- JS/React: componentes funcionales, hooks, sin separar CSS/JS (todo en App.jsx)
-- Commits: `feat:`, `fix:`, `refactor:`, `ext:` (para extensiones)
+# Workflow Guidelines
+When working on a feature, follow these steps sequentially:
+1. **Analyze:** First, read the relevant files and verify that you understand the existing codebase.
+2. **Plan:** Present a brief, plan before making any code modifications.
+3. **Execute & Test:** Implement the changes and verify the app doesn't fail catastrofically.
+4. **Refactor:** Ensure the code adheres to PEP 8 and the 88-char line limit (Black/Ruff conventions; formatters not yet wired into the repo).
 
-## Contexto de seguridad
-- Herramienta de pentesting — los inputs son payloads HTTP arbitrarios, no sanitizar en exceso.
-- Las extensiones tienen acceso completo a `mitmproxy.http.HTTPFlow` — pueden leer/modificar request y response.
-- SQLite almacena historial completo incluyendo credenciales capturadas — no loggear en consola.
+# Git & Commits
+- Use Conventional Commits (e.g., `feat: add JWT analyzer`, `fix: webhook token refresh`, `ext: rate limiter`).
+- Do not commit directly to `main`. Always create a new branch (`feat/name`, `fix/name`).
 
-## Lo que NO hacer
-- No hardcodear puertos o paths absolutos (el proyecto es 100% portable).
-- No editar `App.compiled.js` directamente.
-- No mezclar lógica de proxy en `main.py` — eso va en `proxy_addon.py` o extensiones.
-- No crear extensiones con dependencias externas sin actualizar `requirements.txt`.
+# Known Pitfalls / Avoid
+- **Editing `frontend/App.compiled.js`** — it is generated; changes are overwritten on the next `make compile`. Edit `App.jsx`.
+- **Hardcoding ports or absolute paths** — the project is 100% portable; use relative paths only.
+- **Putting proxy/HTTP logic in `main.py`** — it belongs in `backend/mitm_addon.py` or an extension.
+- **Not restarting after backend/extension changes** — there is no hot-reload; extensions are discovered at startup. Run `make restart`.
+- **Logging intercepted request/response bodies** — they may contain credentials, tokens, and cookies. Never log them to stdout or server logs; use an explicit debug flag if needed.
+- **Sanitizing intercepted payloads** — don't. The tool's value is showing exactly what traverses the wire, including malformed or malicious content.
+- **Creating a router under `backend/routes/` without registering it in `main.py`** — FastAPI won't pick it up automatically.
+- **Adding an extension dependency without updating `requirements.txt`** — the extension fails silently in other environments.
+- **Adding network-facing auth without design discussion** — BlackWire is built for local, controlled use.
 
-## Estado actual del proyecto
-- En desarrollo activo.
-- Frontend monolítico en App.jsx — al agregar features, mantener el patrón existente de tabs/componentes inline.
-- El sistema de extensiones es el punto de extensibilidad principal — preferir plugins sobre modificar el core.
+# Subdirectory Rules: /wiki (GitHub Wiki)
+- All new documentation must be written in Markdown with `.md` extensions.
+- Use H1 titles for main pages and H2 for sections.
+- Ensure the tone is technical, yet accessible to security practitioners who aren't necessarily developers.
+- Each feature should have its own page with: purpose, usage, configuration options, and known limitations.
+- Reference this `CLAUDE.md` for overall project architecture and conventions.
+- Write it as a wiki: indexes plus a deep dive per feature, including rationale and the current state of the project.

@@ -9,143 +9,236 @@
 
 ---
 
-# Project Overview
-BlackWire is a self-hosted, portable HTTP/HTTPS proxy interceptor for security testing, traffic analysis, and web-application debugging — a lightweight, extensible alternative to Burp Suite and OWASP ZAP. Stack: **FastAPI + Python**, **mitmproxy** (interception engine), **React with no bundler** (JSX transpiled on the fly via Sucrase), and **SQLite, one database per project**. The frontend is served as static files from FastAPI; there is no Webpack/Vite build pipeline for the main app. UI strings are mostly English; in-code comments are bilingual (ES/EN).
+## ¿Qué es BlackWire?
 
-A companion repo, **[Blackwire-compile](https://github.com/Glitchboi-sudo/Blackwire)**, packages the desktop build (Tauri + Docker) producing native installers.
+**BlackWire** es un proxy interceptor HTTP/HTTPS de código abierto diseñado para **pruebas de seguridad**, **análisis de tráfico web** y **debugging de aplicaciones**. Ofrece una alternativa ligera, portable y extensible a herramientas como Burp Suite o OWASP ZAP, con un frontend web moderno y un potente backend basado en mitmproxy.
 
-# Current State
-Built and verified: proxy interception, **Repeater**, **HTTPQL** filtering, **Site Map**, **Sensitive Discovery** (50+ patterns + Shannon entropy), **JWT analyzer**, **Cipher** (chainable encode/hash/crypto ops), **WebSocket viewer**, **Collections** with JSONPath variables, **Session rules**, **Compare** (LCS diff), Git integration, Burp-compatible import/export, 15 themes, and the **extension system** (schema-driven, dynamic JSX, and custom React plugins).
+### Por qué BlackWire
 
-The codebase has been **fully de-monolithized**: the backend is an app factory (`backend/main.py`) plus one FastAPI router per domain under `backend/routes/`, shared state/services in `backend/services/`, and helpers in `backend/utils/`. The frontend coordinator (`frontend/App.jsx`) delegates each tab to a component under `frontend/src/components/`. **Not yet built:** multi-user authentication, a CI/CD pipeline, and automated desktop builds — see the wiki roadmap.
-
-# Environment Setup (read this first)
-Requires **Python 3.9+** and **Node** (used only for Sucrase JSX transpilation).
-```bash
-git clone https://github.com/Glitchboi-sudo/Blackwire.git
-cd Blackwire
-make install     # creates the venv, installs deps, generates the mitmproxy cert
-make run         # compiles the frontend, starts the backend, opens the browser
-```
-Two constraints that will otherwise waste your time:
-- **Never edit `frontend/App.compiled.js` by hand.** It is the Sucrase output of `App.jsx` and is regenerated on every compile. Edit `App.jsx`, then `make compile`.
-- **The mitmproxy CA lives at `~/.mitmproxy/`.** If HTTPS interception breaks, delete that directory and run `make cert`.
-
-# Commands
-Development commands live in the `Makefile` (run `make help` for the full list):
-- **Setup:** `make install` — venv + dependencies + mitmproxy certificate
-- **Run + browser:** `make run`
-- **Start (background):** `make start` · **Foreground:** `make serve`
-- **Stop:** `make stop` · **Restart:** `make restart` (required after backend/extension changes)
-- **Compile frontend:** `make compile`
-- **Verify environment:** `make verify`
-- **Clean (venv, caches, build):** `make clean`
-
-# Architecture
-```
-Client traffic → mitmproxy (backend/mitm_addon.py, :8080)
-                     ↕ hooks: on_request / on_response
-FastAPI (backend/main.py, :5000) ↔ SQLite (projects/{name}/blackwire.db)
-                     ↕ REST + WebSocket
-React frontend (served transpiled as static files)
-```
-- **Backend** is a thin app factory (`main.py`) that registers one router per feature domain from `backend/routes/` (history/search, repeater, intercept, scope, proxy, collections, intruder, session, chepy, websocket, git, projects, export/import, webhook, extensions, internal). Shared mutable state and the proxy lifecycle live in `backend/services/` (`state.py`, `proxy_control.py`); data access in `backend/db.py`; pure helpers in `backend/utils/`. `mitm_addon.py` runs inside the mitmproxy process and talks to the API over `.proxy_config.json` and `.action_*.json` files.
-- **Frontend** loads as native ES modules. `App.jsx` holds shared state and renders the shell; each tab is a component under `frontend/src/components/tabs/`, extension UIs under `frontend/src/components/extensions/`, with domain logic in `src/hooks/`, API calls in `src/services/`, and helpers in `src/utils/`. `.jsx` modules are transpiled on request by `backend/utils/jsx.py`.
-- **Extensions** (`backend/extensions/`) get full access to `mitmproxy.http.HTTPFlow`. Three types, preferred in order: **Schema-Driven** (pure Python, UI auto-generated from metadata), **Dynamic JSX** (a `.ui.jsx` alongside the `.py`, no frontend recompile), and **Custom React** (legacy).
-
-# Out of Scope
-- Network-facing / multi-user authentication (the tool is designed for local, controlled use)
-- Native mobile app
-- Cloud sync
-
-# Core Development Rules
-1. Code Quality
-   - Type hints required for all code
-   - Public APIs must have docstrings
-   - Functions must be focused and small
-   - Follow existing patterns exactly
-   - Line length: 88 chars maximum
-
-2. Testing Requirements
-   - Coverage: test edge cases and errors
-   - New features require tests
-   - Bug fixes require regression tests
-
-3. Code Style
-    - PEP 8 naming (snake_case for functions/variables)
-    - Class names in PascalCase
-    - Constants in UPPER_SNAKE_CASE
-    - Document with docstrings
-    - Use f-strings for formatting
-
-# Coding Best Practices
-
-- **Early Returns**: Use to avoid nested conditions
-- **Descriptive Names**: Use clear variable/function names (prefix handlers with "handle")
-- **Constants Over Functions**: Use constants where possible
-- **DRY Code**: Don't repeat yourself
-- **Functional Style**: Prefer functional, immutable approaches when not verbose
-- **Minimal Changes**: Only modify code related to the task at hand
-- **Function Ordering**: Define composing functions before their components
-- **TODO Comments**: Mark issues in existing code with "TODO:" prefix
-- **Simplicity**: Prioritize simplicity and readability over clever solutions
-- **Build Iteratively** Start with minimal functionality and verify it works before adding complexity
-- **Run Tests**: Test your code frequently with realistic inputs and validate outputs
-- **Build Test Environments**: Create testing environments for components that are difficult to validate directly
-- **Functional Code**: Use functional and stateless approaches where they improve clarity
-- **Clean logic**: Keep core logic clean and push implementation details to the edges
-- **File Organsiation**: Balance file organization with simplicity - use an appropriate number of files for the project scale
-
-# Project Structure
-```
-Blackwire/
-├── backend/          # FastAPI app factory + routes/ services/ utils/ db.py + extensions/
-├── frontend/         # React shell (App.jsx) + src/{components,context,hooks,services,utils}
-├── assets/           # Banner, icon, and .desktop entry
-├── projects/         # One SQLite database per project (generated)
-├── Makefile          # Development commands (make help)
-├── pyproject.toml    # Project metadata and tooling config
-└── requirements.txt  # Python dependencies
-```
-
-# Workflow Guidelines
-When working on a feature, follow these steps sequentially:
-1. **Analyze:** First, read the relevant files and verify that you understand the existing codebase.
-2. **Plan:** Present a brief, plan before making any code modifications.
-3. **Execute & Test:** Implement the changes and verify the app doesn't fail catastrofically.
-4. **Refactor:** Ensure the code adheres to PEP 8 and the 88-char line limit (Black/Ruff conventions; formatters not yet wired into the repo).
-
-# Git & Commits
-- Use Conventional Commits (e.g., `feat: add JWT analyzer`, `fix: webhook token refresh`, `ext: rate limiter`).
-- Do not commit directly to `main`. Always create a new branch (`feat/name`, `fix/name`).
-
-# Known Pitfalls / Avoid
-- **Editing `frontend/App.compiled.js`** — it is generated; changes are overwritten on the next `make compile`. Edit `App.jsx`.
-- **Hardcoding ports or absolute paths** — the project is 100% portable; use relative paths only.
-- **Putting proxy/HTTP logic in `main.py`** — it belongs in `backend/mitm_addon.py` or an extension.
-- **Not restarting after backend/extension changes** — there is no hot-reload; extensions are discovered at startup. Run `make restart`.
-- **Logging intercepted request/response bodies** — they may contain credentials, tokens, and cookies. Never log them to stdout or server logs; use an explicit debug flag if needed.
-- **Sanitizing intercepted payloads** — don't. The tool's value is showing exactly what traverses the wire, including malformed or malicious content.
-- **Creating a router under `backend/routes/` without registering it in `main.py`** — FastAPI won't pick it up automatically.
-- **Adding an extension dependency without updating `requirements.txt`** — the extension fails silently in other environments.
-- **Adding network-facing auth without design discussion** — BlackWire is built for local, controlled use.
-
-# Subdirectory Rules: /wiki (GitHub Wiki)
-- All new documentation must be written in Markdown with `.md` extensions.
-- Use H1 titles for main pages and H2 for sections.
-- Ensure the tone is technical, yet accessible to security practitioners who aren't necessarily developers.
-- Each feature should have its own page with: purpose, usage, configuration options, and known limitations.
-- Reference this `README.md` (and the root `CLAUDE.md`) for overall project architecture and conventions.
-- Write it as a wiki: indexes plus a deep dive per feature, including rationale and the current state of the project.
+- **Para Pentesters**: Interceptor completo, HTTPQL, Collections, Sensitive Discovery
+- **Portable**: Sin instalación compleja - solo `make install` y listo
+- **Extensible**: Sistema de plugins en Python con UI auto-generada
+- **Moderno**: Frontend React, 15 temas, Import/Export compatible con Burp Suite
 
 ---
 
-## Credits
+## Quick Start
 
-Created by **[Erik Alcántara](https://www.linkedin.com/in/erik-alc%C3%A1ntara-covarrubias-29a97628a/)**, with support from **[Lychi3](https://www.linkedin.com/in/carlos-polanco-maga%C3%B1a-ab1256318/)**.
+### Versión Web (Desarrollo)
 
-Inspired by [Burp Suite](https://portswigger.net/burp), [OWASP ZAP](https://www.zaproxy.org/), [mitmproxy](https://mitmproxy.org/), and [Caido](https://caido.io/).
-Built with [mitmproxy](https://mitmproxy.org/), [FastAPI](https://fastapi.tiangolo.com/), [React](https://react.dev/), [Sucrase](https://github.com/alangpierce/sucrase), and [SQLite](https://www.sqlite.org/).
+```bash
+# 1. Clonar e instalar (crea venv, instala deps y genera el certificado mitmproxy)
+git clone https://github.com/Glitchboi-sudo/Blackwire.git
+cd Blackwire
+make install
+
+# 2. Lanzar aplicación (compila el frontend, arranca el backend y abre el navegador)
+make run
+```
+
+**Eso es todo.** Abre en http://localhost:5000
+
+> Todos los comandos de desarrollo viven en el `Makefile`. Ejecuta `make help` para verlos
+> (`make serve` en primer plano, `make start`/`make stop` en segundo plano, `make compile`, `make restart`, `make clean`).
+
+### Versión Desktop (Producción)
+
+**Aplicación standalone con aislamiento Docker completo.**
+
+Para compilar instaladores nativos (.deb, .AppImage, .rpm, .dmg, .msi), ver:
+
+📦 **[Blackwire-compile](https://github.com/yourusername/Blackwire-compile)**
+
+**Características:**
+- ✅ Ventana nativa con Tauri (Rust + WebView)
+- ✅ Backend aislado en Docker (seguridad)
+- ✅ System tray integration
+- ✅ Instaladores para Linux, macOS y Windows
+
+---
+
+## 🔌 Crea tu Primera Extensión (5 minutos)
+
+El sistema de extensiones hace que crear plugins sea **increíblemente simple**. Solo necesitas un archivo Python:
+
+```python
+# backend/extensions/custom_header.py
+"""Custom Header Injector - Inyecta headers personalizados"""
+
+EXTENSION_META = {
+    "name": "custom_header",
+    "title": "Custom Header",
+    "description": "Inyecta un header personalizado en todas las requests",
+
+    # UI auto-generada desde schema
+    "ui_schema": {
+        "type": "schema-driven",
+        "fields": [
+            {
+                "name": "header_name",
+                "label": "Header Name",
+                "type": "text",
+                "default": "X-Custom-Header",
+                "help": "Nombre del header a inyectar"
+            },
+            {
+                "name": "header_value",
+                "label": "Header Value",
+                "type": "text",
+                "placeholder": "valor..."
+            }
+        ]
+    },
+
+    "default_config": {
+        "enabled": False,
+        "header_name": "X-Custom-Header",
+        "header_value": ""
+    }
+}
+
+from mitmproxy import http
+
+class CustomHeaderExtension:
+    name = "custom_header"
+
+    def on_request(self, flow: http.HTTPFlow, cfg: dict, full_config: dict):
+        if cfg.get("enabled") and cfg.get("header_value"):
+            flow.request.headers[cfg["header_name"]] = cfg["header_value"]
+
+def register():
+    return CustomHeaderExtension()
+```
+
+**¡Y listo!** Reinicia el servidor (`make restart`) y tu extensión aparece automáticamente en la pestaña Extensions con su formulario configurado.
+
+**3 tipos de extensiones:**
+1. **Schema-Driven** → Formularios simples auto-generados (ejemplos: [rate_limiter.py](backend/extensions/rate_limiter.py))
+2. **Dynamic JSX** → UIs complejas sin recompilar frontend (ejemplos: [webhook_site.ui.jsx](backend/extensions/webhook_site.ui.jsx), [headers_injector.ui.jsx](backend/extensions/headers_injector.ui.jsx))
+3. **Custom React** → Componentes hardcoded para casos especiales (legacy)
+
+📚 **Documentación completa**: [Sistema de Extensiones Wiki](https://github.com/Glitchboi-sudo/Blackwire/wiki/07-Sistema-de-Extensiones)
+
+---
+
+## Features Principales
+
+### Core
+- **Proxy Interceptor** - Captura y modifica HTTP/HTTPS en tiempo real
+- **Repeater** - Reenvía y modifica requests con historial de navegación
+- **HTTPQL** - Filtrado avanzado con lenguaje de consulta tipo SQL
+- **Scope & Filters** - Reglas include/exclude con regex
+
+### Análisis
+- **Site Map** - Vista en árbol de hosts y endpoints
+- **Compare** - Diff visual lado a lado con algoritmo LCS
+- **Sensitive Discovery** - Escaneo de secrets con 50+ patrones + Shannon Entropy
+- **JWT Analyzer** - Decodifica JWTs con doc de ataques comunes
+
+### Herramientas
+- **Cipher** - 100+ operaciones encadenables (Base64, hashing, crypto, etc.)
+- **Collections** - Workflows automatizados con variables JSONPath
+- **Session Rules** - Extracción de tokens con regex
+- **WebSocket Viewer** - Captura y reenvío de frames WS
+
+### Extensibilidad
+- **Sistema de Plugins** - Crea extensiones en Python sin tocar el frontend
+- **UI Schema-Driven** - Formularios auto-generados desde metadata
+- **Dynamic JSX** - UIs complejas con archivos `.ui.jsx` sin recompilar
+- **Auto-Discovery** - Las extensiones se descubren y configuran automáticamente
+
+### Integración
+- **Burp Suite** - Import/Export compatible con formato XML
+- **Git Integration** - Control de versiones integrado
+- **15 Temas** - Midnight, Gruvbox, Solarized, Noir, Synth, etc.
+- **100% Portable** - Sin rutas hardcoded, funciona desde cualquier directorio
+
+## Arquitectura
+
+```
+Blackwire/
+├── backend/
+│   ├── main.py              # App factory FastAPI (registro de routers + estático)
+│   ├── config.py            # Paths, constantes y validadores
+│   ├── schemas.py           # Modelos Pydantic + catálogo Chepy
+│   ├── db.py                # Acceso SQLite por proyecto
+│   ├── mitm_addon.py        # Addon de mitmproxy (ciclo de vida propio)
+│   ├── chepy_compat.py      # Motor Cipher
+│   ├── routes/              # Un router FastAPI por dominio (repeater, scope, …)
+│   ├── services/            # Estado compartido + control del proxy
+│   ├── utils/               # Helpers (httpql, git, scope, jsx, …)
+│   └── extensions/          # Sistema de plugins
+├── frontend/
+│   ├── App.jsx              # Shell React + lógica de coordinación
+│   ├── App.compiled.js      # JSX pre-transpilado (generado)
+│   ├── themes.js            # 15 temas de color
+│   └── src/
+│       ├── components/      # Componentes (tabs/ una por pestaña, extensions/)
+│       ├── context/         # Estado transversal
+│       ├── hooks/ services/ utils/   # Lógica de dominio, API y helpers
+├── assets/                  # Banner, icono y entrada .desktop
+├── projects/                # Bases de datos SQLite por proyecto (generado)
+├── Makefile                 # Comandos de desarrollo (make help)
+├── pyproject.toml           # Metadatos del proyecto y config de tooling
+└── requirements.txt         # Dependencias de Python
+```
+
+## Contribuir
+
+Este proyecto es **espacio abierto para aprender y construir juntos**. Contribuciones bienvenidas:
+
+- **Bugs**: Reporta issues con pasos para reproducir
+- **Features**: Propón nuevas funcionalidades
+- **Extensions**: Crea plugins para automatización/testing
+- **Temas**: Agrega esquemas de color
+- **Docs**: Mejora documentación y ejemplos
+
+**Proceso:**
+1. Fork el repositorio
+2. Crea branch: `git checkout -b feature/mi-feature`
+3. Commit cambios: `git commit -m "feat: descripción"`
+4. Push: `git push origin feature/mi-feature`
+5. Abre Pull Request
+
+---
+
+## Troubleshooting
+### Problemas Comunes
+
+**Puerto en uso:**
+```bash
+make stop
+# o
+lsof -i :5000 && kill <PID>
+```
+
+**Certificado SSL no funciona:**
+```bash
+rm -rf ~/.mitmproxy
+make cert
+```
+
+**Frontend no carga:**
+```bash
+make compile
+```
+---
+
+## Créditos
+
+Proyecto inspirado en [Burp Suite](https://portswigger.net/burp), [OWASP ZAP](https://www.zaproxy.org/), [mitmproxy](https://mitmproxy.org/) y [Caido](https://caido.io/).
+
+Creado por **[Erik Alcantara](https://www.linkedin.com/in/erik-alc%C3%A1ntara-covarrubias-29a97628a/)**.
+Gracias por el apoyo de **[Lychi3](https://www.linkedin.com/in/carlos-polanco-maga%C3%B1a-ab1256318/)**
+
+**Tecnologías:**
+- [mitmproxy](https://mitmproxy.org/) — Motor de proxy
+- [FastAPI](https://fastapi.tiangolo.com/) — Backend API
+- [React](https://react.dev/) — Frontend
+- [Sucrase](https://github.com/alangpierce/sucrase) — Transpilación JSX
+- [SQLite](https://www.sqlite.org/) — Base de datos
+
+---
 
 <div align="center">
 
