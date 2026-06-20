@@ -1,11 +1,13 @@
-# BlackWire
-
-![Preview del proyecto](assets/Blackwire_banner.png)
+<p align="center">
+  <img src="assets/Blackwire_banner.png" alt="BlackWire" width="260" />
+</p>
 
 <h3 align="center">Security from México to all</h3>
 
-![Estado](https://img.shields.io/badge/status-En_desarrollo-green)
-![License](https://img.shields.io/badge/license-GNU_AGPLv3-blue)
+<p align="center">
+  <img src="https://img.shields.io/badge/status-En_desarrollo-green" alt="Estado" />
+  <img src="https://img.shields.io/badge/license-GNU_AGPLv3-blue" alt="License" />
+</p>
 
 ---
 
