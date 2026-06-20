@@ -68,9 +68,15 @@ def _send_console_log(level: str, msg: str, name: str = "mitmproxy") -> None:
 
 
 BACKEND_URL = "http://127.0.0.1:5000"
-CONFIG_PATH = Path(__file__).parent.parent / ".proxy_config.json"
+# Rutas de runtime compartidas con el backend (config.py). Se derivan de
+# BLACKWIRE_DATA, así backend y addon coinciden incluso en un install de
+# solo-lectura. Fallback a rutas relativas si config no es importable.
+try:
+    from config import PROXY_CONFIG_PATH as CONFIG_PATH, RUNTIME_DIR as _RUNTIME_DIR
+except Exception:
+    CONFIG_PATH = Path(__file__).parent.parent / ".proxy_config.json"
+    _RUNTIME_DIR = Path(__file__).parent.resolve()
 EXTENSIONS_DIR = Path(__file__).parent / "extensions"
-_BACKEND_DIR = Path(__file__).parent.resolve()
 _SAFE_ID_RE = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
 
 FILTERED_EXTENSIONS = {
@@ -200,9 +206,9 @@ def wait_for_action(request_id: str, timeout: int = 300) -> dict:
     if not _SAFE_ID_RE.fullmatch(request_id):
         _alog.warning(f"[blackwire][intercept] unsafe request_id rejected: {request_id!r}")
         return {"action": "forward"}
-    action_file = _BACKEND_DIR / f".action_{request_id}.json"
-    # Defence-in-depth: verify the resolved path stays inside _BACKEND_DIR
-    if action_file.resolve().parent != _BACKEND_DIR:
+    action_file = _RUNTIME_DIR / f".action_{request_id}.json"
+    # Defence-in-depth: verify the resolved path stays inside _RUNTIME_DIR
+    if action_file.resolve().parent != _RUNTIME_DIR.resolve():
         _alog.warning(f"[blackwire][intercept] path traversal blocked for {request_id!r}")
         return {"action": "forward"}
 

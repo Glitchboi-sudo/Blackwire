@@ -1,0 +1,90 @@
+# Maintainer: glitchboi <glitchboi_mx@proton.com>
+pkgname=blackwire
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Proxy interceptor HTTP/HTTPS para pruebas de seguridad — alternativa ligera y extensible a Burp Suite/OWASP ZAP"
+arch=('any')
+url="https://github.com/Glitchboi-sudo/Blackwire"
+license=('AGPL-3.0-or-later')
+depends=(
+  'python'
+  'python-fastapi'
+  'python-uvicorn'
+  'python-httpx'
+  'python-pydantic'
+  'python-aiosqlite'
+  'python-websockets'
+  'python-yaml'
+  'python-multipart'
+  'python-anyio'
+  'mitmproxy'
+  'nodejs'
+)
+makedepends=('npm')
+optdepends=(
+  'git: integración de control de versiones por proyecto'
+  'xdg-utils: abrir el navegador automáticamente al iniciar'
+  'python-uvloop: bucle de eventos más rápido para uvicorn'
+)
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+# Reemplaza con el hash real: `updpkgsums` (recomendado para el AUR).
+sha256sums=('SKIP')
+
+build() {
+  cd "$srcdir/Blackwire-$pkgver"
+  # Instala sucrase (devDependency) para vendorizarlo y precompilar el frontend.
+  npm ci
+  # Precompila App.jsx → App.compiled.js para no transpilarlo en runtime sobre /usr/share.
+  node -e "const {transform}=require('sucrase'),fs=require('fs');const c=fs.readFileSync('frontend/App.jsx','utf8');fs.writeFileSync('frontend/App.compiled.js',transform(c,{transforms:['jsx'],production:true}).code,'utf8');"
+}
+
+package() {
+  cd "$srcdir/Blackwire-$pkgver"
+  local dest="$pkgdir/usr/share/blackwire"
+
+  install -d "$dest"
+  cp -r backend frontend "$dest/"
+  # node_modules (sucrase + deps): el backend transpila los componentes .jsx en runtime.
+  cp -r node_modules "$dest/"
+
+  # Limpia cachés de Python que pudieran haberse colado.
+  find "$dest" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
+  # El compilado debe ser ≥ el fuente para que el server no intente recompilar.
+  touch "$dest/frontend/App.compiled.js"
+
+  # Lanzador: el estado de runtime (proyectos, certs, config) va al dir del usuario.
+  install -d "$pkgdir/usr/bin"
+  cat > "$pkgdir/usr/bin/blackwire" <<'LAUNCH'
+#!/bin/sh
+# Blackwire — lanzador del paquete AUR.
+export BLACKWIRE_DATA="${XDG_DATA_HOME:-$HOME/.local/share}/blackwire/projects"
+mkdir -p "$BLACKWIRE_DATA"
+PORT="${BLACKWIRE_PORT:-5000}"
+# Abre el navegador poco después de arrancar (si hay xdg-open).
+if command -v xdg-open >/dev/null 2>&1; then
+  ( sleep 2; xdg-open "http://localhost:$PORT" >/dev/null 2>&1 || true ) &
+fi
+cd /usr/share/blackwire/backend || exit 1
+exec python -m uvicorn main:app --host 127.0.0.1 --port "$PORT"
+LAUNCH
+  chmod 755 "$pkgdir/usr/bin/blackwire"
+
+  # Entrada de escritorio + icono.
+  install -Dm644 assets/icon.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/blackwire.svg"
+  install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/blackwire.desktop" <<'DESKTOP'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Blackwire
+Comment=Proxy interceptor HTTP/HTTPS para pruebas de seguridad
+Exec=blackwire
+Icon=blackwire
+Terminal=false
+Categories=Development;Network;Security;
+Keywords=proxy;burp;http;intercept;pentest;
+StartupNotify=true
+DESKTOP
+
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

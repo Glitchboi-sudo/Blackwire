@@ -22,6 +22,10 @@ CURRENT_PROJECT_FILE = _writable_dir / ".current_project"
 EXTENSIONS_DIR = Path(__file__).parent / "extensions"
 EXTENSIONS_UI_COMPILED_DIR = _writable_dir / ".compiled_ui"
 PROXY_CONFIG_PATH = _writable_dir / ".proxy_config.json"
+# Dir escribible para todo el estado de runtime (config del proxy, archivos
+# .action_*.json, etc.). Derivado de BLACKWIRE_DATA, así un install de solo-lectura
+# (p.ej. AUR en /usr/share) escribe en el dir del usuario y el addon lee lo mismo.
+RUNTIME_DIR = _writable_dir
 
 FRONTEND_DIR = BASE_DIR / "frontend"
 APP_JSX_PATH = FRONTEND_DIR / "App.jsx"
@@ -60,20 +64,22 @@ def validate_id(rid: str) -> bool:
 
 
 def action_file(rid: str) -> Path:
-    """Path del archivo de acción, verificando que queda dentro de BACKEND_DIR."""
+    """Path del archivo de acción, verificando que queda dentro de RUNTIME_DIR."""
     if not validate_id(rid):
         raise ValueError(f"Unsafe request_id: {rid!r}")
-    path = (BACKEND_DIR / f".action_{rid}.json").resolve()
-    if path.parent != BACKEND_DIR:
+    base = RUNTIME_DIR.resolve()
+    path = (base / f".action_{rid}.json").resolve()
+    if path.parent != base:
         raise ValueError(f"Path traversal detected in request_id: {rid!r}")
     return path
 
 
 def action_resp_file(rid: str) -> Path:
-    """Path del archivo de acción de respuesta, verificando que queda dentro de BACKEND_DIR."""
+    """Path del archivo de acción de respuesta, verificando que queda dentro de RUNTIME_DIR."""
     if not validate_id(rid):
         raise ValueError(f"Unsafe response_id: {rid!r}")
-    path = (BACKEND_DIR / f".action_resp_{rid}.json").resolve()
-    if path.parent != BACKEND_DIR:
+    base = RUNTIME_DIR.resolve()
+    path = (base / f".action_resp_{rid}.json").resolve()
+    if path.parent != base:
         raise ValueError(f"Path traversal detected in response_id: {rid!r}")
     return path

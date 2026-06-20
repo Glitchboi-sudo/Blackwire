@@ -21,6 +21,7 @@ __pycache__/
 *.pyc
 /.proxy_config.json
 backend/.action_*.json
+/.action_*.json
 
 # Runtime del Makefile (pid/logs)
 .run/

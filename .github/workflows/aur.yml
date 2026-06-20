@@ -1,0 +1,58 @@
+name: Publish to AUR
+
+# Actualiza el paquete `blackwire` del AUR cuando se publica un release estable,
+# o manualmente. Requiere el secret AUR_SSH_PRIVATE_KEY (clave SSH registrada en
+# tu cuenta del AUR); si no está configurado, el job se omite sin fallar.
+#
+# El paquete VCS `blackwire-git` NO se publica aquí (rastrea git; basta con
+# republicarlo a mano cuando cambie su PKGBUILD).
+
+on:
+  release:
+    types: [released]   # solo releases publicados y NO pre-release
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versión a publicar (sin la 'v', p.ej. 1.0.0)"
+        required: true
+
+jobs:
+  aur-publish:
+    runs-on: ubuntu-latest
+    if: ${{ secrets.AUR_SSH_PRIVATE_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Determinar versión
+        id: ver
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            v="${{ github.event.inputs.version }}"
+          else
+            v="${{ github.event.release.tag_name }}"; v="${v#v}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Versión: $v"
+
+      - name: Actualizar pkgver y sha256 del PKGBUILD
+        run: |
+          v="${{ steps.ver.outputs.version }}"
+          pkg=packaging/aur/blackwire/PKGBUILD
+          url="https://github.com/${{ github.repository }}/archive/refs/tags/v${v}.tar.gz"
+          sum=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
+          sed -i "s/^pkgver=.*/pkgver=${v}/" "$pkg"
+          sed -i "s/^pkgrel=.*/pkgrel=1/" "$pkg"
+          sed -i "s/^sha256sums=.*/sha256sums=('${sum}')/" "$pkg"
+          echo "----- PKGBUILD -----"; cat "$pkg"
+
+      - name: Publicar en el AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v4
+        with:
+          pkgname: blackwire
+          pkgbuild: packaging/aur/blackwire/PKGBUILD
+          commit_username: glitchboi
+          commit_email: glitchboi_mx@proton.com
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to v${{ steps.ver.outputs.version }}"
+          updpkgsums: true
+          test: true

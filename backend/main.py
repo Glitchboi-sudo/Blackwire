@@ -67,8 +67,14 @@ def setup_logging():
 
 
 def transpile_jsx():
-    """Pre-transpila App.jsx → App.compiled.js con sucrase (transform JSX rápido)."""
+    """Pre-transpila App.jsx → App.compiled.js con sucrase (transform JSX rápido).
+
+    Se omite si el compilado ya está al día (su mtime ≥ el de App.jsx): evita un
+    write innecesario en instalaciones de solo-lectura (p.ej. paquete AUR en /usr/share).
+    """
     if not APP_JSX_PATH.exists():
+        return
+    if APP_COMPILED_PATH.exists() and APP_COMPILED_PATH.stat().st_mtime >= APP_JSX_PATH.stat().st_mtime:
         return
     node_script = (
         "const {transform}=require('sucrase'),fs=require('fs');"
