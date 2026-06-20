@@ -43,6 +43,8 @@ from routes.collections import router as collections_router, init_collections_ro
 from routes.git import router as git_router, init_git_routes
 from routes.intruder import router as intruder_router, init_intruder_routes
 from routes.session import router as session_router, init_session_routes
+from routes.search import (router as search_router, init_search_routes,
+                           REQ_LIST_COLS, row_to_list_item)
 
 # Constantes, paths y validadores: ver backend/config.py
 from config import (
@@ -517,8 +519,11 @@ init_collections_routes(get_db=get_db)
 init_git_routes(get_current_project=get_current_project)
 init_intruder_routes(get_db=get_db)
 init_session_routes(get_db=get_db)
+init_search_routes(get_db=get_db, get_db_with_regex=get_db_with_regex,
+                   get_current_project=get_current_project)
 for _domain_router in (rendering_router, repeater_router, chepy_router, websocket_router,
-                       collections_router, git_router, intruder_router, session_router):
+                       collections_router, git_router, intruder_router, session_router,
+                       search_router):
     app.include_router(_domain_router)
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -1660,11 +1665,8 @@ async def shutdown_server():
     return {"status": "shutting_down"}
 
 
-REQ_LIST_COLS = "id, method, url, response_status, timestamp, request_type, saved, in_scope"
-
-def _row_to_list_item(r):
-    return {"id": r[0], "method": r[1], "url": r[2], "response_status": r[3],
-            "timestamp": r[4], "request_type": r[5], "saved": bool(r[6]), "in_scope": bool(r[7])}
+# REQ_LIST_COLS y row_to_list_item se definen en routes/search.py (listado de
+# requests) y los reutiliza tanto el router de search como el router optimizado.
 
 # Initialize optimized routes
 try:
@@ -1673,161 +1675,11 @@ try:
         get_project_db=get_project_db,
         get_current_project=get_current_project,
         req_list_cols=REQ_LIST_COLS,
-        row_to_list_item=_row_to_list_item,
+        row_to_list_item=row_to_list_item,
         compile_httpql_ast=compile_httpql_ast
     )
 except ImportError as e:
     logger.warning(f"Could not initialize optimized routes: {e}")
-
-@app.get("/api/requests")
-async def get_requests(limit: int = 10000, saved_only: bool = False, in_scope_only: bool = False, search: str = ""):
-    async with await get_db() as db:
-        query = f"SELECT {REQ_LIST_COLS} FROM requests WHERE 1=1"
-        params = []
-        if saved_only:
-            query += " AND saved = 1"
-        if in_scope_only:
-            query += " AND in_scope = 1"
-        if search:
-            query += " AND url LIKE ?"
-            params.append(f"%{search}%")
-        query += " ORDER BY id DESC LIMIT ?"
-        params.append(limit)
-        cursor = await db.execute(query, params)
-        rows = await cursor.fetchall()
-        return [_row_to_list_item(r) for r in rows]
-
-@app.get("/api/requests/{rid}/detail")
-async def get_request_detail(rid: int):
-    async with await get_db() as db:
-        cursor = await db.execute("SELECT id, method, url, headers, body, response_status, response_headers, response_body, timestamp, request_type, saved, in_scope FROM requests WHERE id = ?", (rid,))
-        r = await cursor.fetchone()
-        if not r:
-            raise HTTPException(status_code=404, detail="Request not found")
-        return {"id": r[0], "method": r[1], "url": r[2], "headers": json.loads(r[3]), "body": r[4],
-            "response_status": r[5], "response_headers": json.loads(r[6]) if r[6] else None,
-            "response_body": r[7], "timestamp": r[8], "request_type": r[9],
-            "saved": bool(r[10]), "in_scope": bool(r[11])}
-
-@app.post("/api/requests/search")
-async def search_requests(body: dict = Body(...)):
-    ast = body.get("ast")
-    saved_only = body.get("saved_only", False)
-    in_scope_only = body.get("in_scope_only", False)
-    page = body.get("page", 1)
-    page_size = body.get("page_size", 500)
-
-    # Only use regex-capable connection when AST contains regex operators
-    use_regex = ast is not None
-    if use_regex:
-        db = await get_db_with_regex()
-    else:
-        db = await aiosqlite.connect(get_project_db(get_current_project()))
-    try:
-        # Build base query for filtering
-        base_query = "FROM requests WHERE 1=1"
-        params = []
-        if saved_only:
-            base_query += " AND saved = 1"
-        if in_scope_only:
-            base_query += " AND in_scope = 1"
-        if ast:
-            presets_map = {}
-            cursor = await db.execute("SELECT name, ast_json FROM filter_presets")
-            for row in await cursor.fetchall():
-                try:
-                    presets_map[row[0]] = json.loads(row[1])
-                except Exception:
-                    pass
-            try:
-                where_sql, where_params = compile_httpql_ast(ast, presets_map)
-                base_query += f" AND ({where_sql})"
-                params.extend(where_params)
-            except ValueError as e:
-                return {"error": str(e)}
-
-        # Get total count
-        count_query = f"SELECT COUNT(*) {base_query}"
-        cursor = await db.execute(count_query, params)
-        total = (await cursor.fetchone())[0]
-
-        # Calculate pagination
-        total_pages = (total + page_size - 1) // page_size if total > 0 else 1
-        offset = (page - 1) * page_size
-
-        # Get paginated results
-        query = f"SELECT {REQ_LIST_COLS} {base_query} ORDER BY id DESC LIMIT ? OFFSET ?"
-        params.append(page_size)
-        params.append(offset)
-        cursor = await db.execute(query, params)
-        rows = await cursor.fetchall()
-
-        return {
-            "requests": [_row_to_list_item(r) for r in rows],
-            "total": total,
-            "page": page,
-            "page_size": page_size,
-            "total_pages": total_pages
-        }
-    finally:
-        await db.close()
-
-
-# --- Filter Presets ---
-@app.get("/api/filter-presets")
-async def list_filter_presets():
-    async with await get_db() as db:
-        cursor = await db.execute("SELECT id, name, query, created_at FROM filter_presets ORDER BY name ASC")
-        rows = await cursor.fetchall()
-        return [{"id": r[0], "name": r[1], "query": r[2], "created_at": r[3]} for r in rows]
-
-@app.post("/api/filter-presets")
-async def create_filter_preset(body: dict = Body(...)):
-    async with await get_db() as db:
-        try:
-            await db.execute(
-                "INSERT INTO filter_presets (name, query, ast_json, created_at) VALUES (?,?,?,?)",
-                (body["name"], body["query"], json.dumps(body["ast"]), datetime.now().isoformat()))
-            await db.commit()
-            return {"status": "created", "name": body["name"]}
-        except Exception:
-            return {"error": "Preset name already exists"}
-
-@app.delete("/api/filter-presets/{preset_id}")
-async def delete_filter_preset(preset_id: int):
-    async with await get_db() as db:
-        await db.execute("DELETE FROM filter_presets WHERE id = ?", (preset_id,))
-        await db.commit()
-        return {"status": "deleted"}
-
-
-@app.put("/api/requests/{rid}/save")
-async def toggle_save(rid: int):
-    async with await get_db() as db:
-        cursor = await db.execute("SELECT saved FROM requests WHERE id = ?", (rid,))
-        row = await cursor.fetchone()
-        if not row:
-            raise HTTPException(status_code=404)
-        await db.execute("UPDATE requests SET saved = ? WHERE id = ?", (0 if row[0] else 1, rid))
-        await db.commit()
-        return {"saved": not row[0]}
-
-@app.delete("/api/requests/{rid}")
-async def delete_req(rid: int):
-    async with await get_db() as db:
-        await db.execute("DELETE FROM requests WHERE id = ?", (rid,))
-        await db.commit()
-        return {"status": "deleted"}
-
-@app.delete("/api/requests")
-async def clear_history(keep_saved: bool = True):
-    async with await get_db() as db:
-        if keep_saved:
-            await db.execute("DELETE FROM requests WHERE saved = 0")
-        else:
-            await db.execute("DELETE FROM requests")
-        await db.commit()
-        return {"status": "cleared"}
 
 @app.get("/api/export")
 async def export_data():
