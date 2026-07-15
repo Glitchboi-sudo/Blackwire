@@ -2511,6 +2511,11 @@ function Blackwire() {
 .prj-card:hover{background:var(--bg3);border-color:var(--blue)}.prj-card.cur{border-color:var(--cyan)}
 .prj-name{font-weight:600;font-size:14px;margin-bottom:3px}.cur-badge{background:var(--cyan);color:#000;padding:1px 6px;border-radius:3px;font-size:9px;margin-left:6px}
 .prj-desc{color:var(--txt2);font-size:12px}.prj-date{color:var(--txt3);font-size:10px;margin-top:3px}
+.prj-menu-wrap{position:relative;display:inline-block}
+.prj-menu{position:absolute;right:0;top:100%;margin-top:4px;background:var(--bg2);border:1px solid var(--brd);border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,.3);z-index:1000;min-width:240px}
+.prj-menu-item{padding:8px 12px;cursor:pointer;font-size:11px;color:var(--txt);border-bottom:1px solid var(--brd)}
+.prj-menu-item:last-child{border-bottom:none}.prj-menu-item:hover{background:var(--bg3)}
+.prj-menu-sub{font-size:10px;color:var(--txt3);margin-top:2px}
 .icept-pnl{display:flex;flex-direction:column;width:100%;height:100%}
 .icept-bar{display:flex;align-items:center;gap:6px;padding:8px 12px;background:var(--bg2);border-bottom:1px solid var(--brd);flex-shrink:0}
 .icept-toggle{display:inline-flex;align-items:center;gap:7px;padding:5px 13px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid transparent;transition:all 0.15s;font-family:var(--font-sans)}
