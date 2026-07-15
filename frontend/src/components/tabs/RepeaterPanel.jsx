@@ -1,8 +1,12 @@
 // RepeaterPanel — extraído de App.jsx (pestaña 'repeater').
 // Recibe todo el estado/handlers vía props (objeto __appCtx de App.jsx).
 
+const { useRef } = React;
+
 export function RepeaterPanel(props) {
-  const { ResizeHandle, colorizeBody, colorizeHeaders, delRepItem, fmtHHtml, followRedirect, handleRepBodyInput, highlightMatches, hookToast, loadRepItem, loading, minify, minifyRepBody, navigateHistory, prettyPrint, prettyRepBody, renameRepItem, repB, repBodyColor, repBodyEditRef, repCntRef, repFollowRedirects, repH, repHeadersHighlightRef, repHeadersRef, repHistory, repHistoryIndex, repM, repReqs, repResp, repRespBody, repRespFormat, repSearch, repSideW, repSplitPct, repU, repeater, saveRep, search, selRep, sendRep, setRepB, setRepBodyColor, setRepFollowRedirects, setRepH, setRepM, setRepRespBody, setRepRespFormat, setRepSideW, setRepU, showContextMenu, stCls } = props;
+  const { ResizeHandle, colorizeBody, colorizeHeaders, delRepItem, fmtHHtml, followRedirect, handleRepBodyInput, highlightMatches, hookToast, loadRepItem, loading, minify, minifyRepBody, navigateHistory, prettyPrint, prettyRepBody, renameRepItem, repB, repBodyColor, repBodyEditRef, repCntRef, repFollowRedirects, repH, repHdrPct, repHeadersHighlightRef, repHeadersRef, repHistory, repHistoryIndex, repM, repReqs, repResp, repRespBody, repRespFormat, repRespHdrH, repSearch, repSideW, repSplitPct, repU, repeater, saveRep, search, selRep, sendRep, setRepB, setRepBodyColor, setRepFollowRedirects, setRepH, setRepHdrPct, setRepM, setRepRespBody, setRepRespFormat, setRepRespHdrH, setRepSideW, setRepSplitPct, setRepU, showContextMenu, stCls } = props;
+  const editRef = useRef(null);
+  const reqPaneRef = useRef(null);
   return (
           <div className="rep-cnt" ref={repCntRef}>
             <div className="rep-side" style={{ width: repSideW + 'px' }}>
@@ -47,17 +51,23 @@ export function RepeaterPanel(props) {
                   <option value="follow">Auto Follow</option>
                 </select>
               </div>
-              <div className="rep-edit" style={{ gridTemplateColumns: repSplitPct + '% 1fr' }}>
-                <div className="ed-pane">
+              <div className="rep-edit" ref={editRef} style={{ gridTemplateColumns: repSplitPct + '% 6px 1fr' }}>
+                <div className="ed-pane" ref={reqPaneRef}>
                   <div className="ed-hdr">
                     <span>Headers</span>
                   </div>
-                  <div className="hdr-wrap" style={{ height: '40%' }}>
+                  <div className="hdr-wrap" style={{ height: repHdrPct + '%' }}>
                     <pre ref={repHeadersHighlightRef} className="hdr-highlight ed-ta" aria-hidden="true" style={{ pointerEvents: 'none' }} dangerouslySetInnerHTML={{ __html: (repH ? colorizeHeaders(repH) : '') + '\n' }} />
                     <textarea ref={repHeadersRef} className="ed-ta hdr-ta" value={repH} onChange={e => setRepH(e.target.value)}
                       onScroll={e => { if (repHeadersHighlightRef.current) repHeadersHighlightRef.current.scrollTop = e.target.scrollTop; }}
                       spellCheck="false" />
                   </div>
+                  <ResizeHandle vertical onDrag={(dy) => {
+                    const el = reqPaneRef.current;
+                    if (!el) return;
+                    const dpct = (dy / el.offsetHeight) * 100;
+                    setRepHdrPct(prev => Math.max(15, Math.min(80, prev + dpct)));
+                  }} />
                   <div className="ed-hdr">
                     <span>Body</span>
                     <div style={{ display: 'flex', gap: '4px' }}>
@@ -77,6 +87,12 @@ export function RepeaterPanel(props) {
                     <textarea className="ed-ta" style={{ flex: 1 }} value={repB} onChange={e => setRepB(e.target.value)} />
                   )}
                 </div>
+                <ResizeHandle onDrag={(dx) => {
+                  const el = editRef.current;
+                  if (!el) return;
+                  const dpct = (dx / el.offsetWidth) * 100;
+                  setRepSplitPct(prev => Math.max(20, Math.min(80, prev + dpct)));
+                }} />
                 <div className="ed-pane">
                   <div className="ed-hdr">
                     <span>Response</span>
@@ -123,7 +139,8 @@ export function RepeaterPanel(props) {
                           </button>
                         </div>
                       )}
-                      <div className="code" style={{ height: '100px', minHeight: '60px', overflow: 'auto', flexShrink: 0, borderBottom: '1px solid var(--brd)' }} dangerouslySetInnerHTML={{ __html: fmtHHtml(repResp.headers) }} />
+                      <div className="code" style={{ height: repRespHdrH + 'px', minHeight: '40px', overflow: 'auto', flex: 'none', borderBottom: '1px solid var(--brd)' }} dangerouslySetInnerHTML={{ __html: fmtHHtml(repResp.headers) }} />
+                      <ResizeHandle vertical onDrag={(dy) => setRepRespHdrH(h => Math.max(40, Math.min(600, h + dy)))} />
                       {(() => {
                         if (repRespFormat === 'render') {
                           const blob = new Blob([repRespBody], { type: 'text/html' });
