@@ -21,7 +21,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from config import (BASE_DIR, PROJECTS_DIR, FRONTEND_DIR, FRONTEND_HTML_PATH,
                     APP_JSX_PATH, APP_COMPILED_PATH, THEMES_JS_PATH, LOGO_SVG_PATH,
                     get_project_db)
-from services import state
+from services import state, watchdog
 from db import get_db, get_db_with_regex, init_db, load_project_settings
 from services.proxy_control import stop_proxy
 from utils.httpql import compile_httpql_ast
@@ -240,11 +240,14 @@ async def serve_context(path: str):
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     state.connections.append(websocket)
+    watchdog.client_connected()
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
-        state.connections.remove(websocket)
+        if websocket in state.connections:
+            state.connections.remove(websocket)
+        watchdog.client_disconnected()
 
 
 if __name__ == "__main__":

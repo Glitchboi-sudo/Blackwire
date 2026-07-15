@@ -118,7 +118,7 @@ import { HistoryPanel } from './src/components/tabs/HistoryPanel.jsx';
 import { InterceptPanel } from './src/components/tabs/InterceptPanel.jsx';
 import { ScopePanel } from './src/components/tabs/ScopePanel.jsx';
 import { RepeaterPanel } from './src/components/tabs/RepeaterPanel.jsx';
-import { GitPanel } from './src/components/tabs/GitPanel.jsx';
+import { WikiPanel } from './src/components/tabs/WikiPanel.jsx';
 import { ExtensionsPanel } from './src/components/tabs/ExtensionsPanel.jsx';
 import { CollectionsPanel } from './src/components/tabs/CollectionsPanel.jsx';
 import { ChepyPanel } from './src/components/tabs/ChepyPanel.jsx';
@@ -2516,6 +2516,29 @@ function Blackwire() {
 .prj-menu-item{padding:8px 12px;cursor:pointer;font-size:11px;color:var(--txt);border-bottom:1px solid var(--brd)}
 .prj-menu-item:last-child{border-bottom:none}.prj-menu-item:hover{background:var(--bg3)}
 .prj-menu-sub{font-size:10px;color:var(--txt3);margin-top:2px}
+.wiki-wrap{display:flex;width:100%;height:100%;overflow:hidden}
+.wiki-nav{width:220px;flex-shrink:0;background:var(--bg2);border-right:1px solid var(--brd);overflow-y:auto;padding:8px}
+.wiki-nav-title{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--txt3);padding:6px 10px}
+.wiki-nav-item{padding:8px 10px;font-size:12px;color:var(--txt2);cursor:pointer;border-radius:5px;margin-bottom:2px}
+.wiki-nav-item:hover{background:var(--bg3);color:var(--txt)}
+.wiki-nav-item.act{background:var(--bg3);color:var(--cyan);font-weight:600}
+.wiki-body{flex:1;overflow-y:auto}
+.wiki-doc{max-width:820px;margin:0 auto;padding:28px 32px;color:var(--txt);font-size:13px;line-height:1.65}
+.wiki-doc h1{font-size:22px;margin:0 0 16px;padding-bottom:8px;border-bottom:1px solid var(--brd)}
+.wiki-doc h2{font-size:17px;margin:26px 0 10px;color:var(--cyan)}
+.wiki-doc h3{font-size:14px;margin:18px 0 8px;color:var(--txt)}
+.wiki-doc p{margin:0 0 12px}
+.wiki-doc ul,.wiki-doc ol{margin:0 0 12px;padding-left:22px}
+.wiki-doc li{margin:3px 0}
+.wiki-doc a{color:var(--blue);text-decoration:none}.wiki-doc a:hover{text-decoration:underline}
+.wiki-doc code{font-family:var(--font-mono);font-size:11.5px;background:var(--bg3);padding:1px 5px;border-radius:3px;color:var(--orange)}
+.wiki-doc pre{background:var(--bg2);border:1px solid var(--brd);border-radius:6px;padding:12px 14px;overflow-x:auto;margin:0 0 14px}
+.wiki-doc pre code{background:none;padding:0;color:var(--txt);font-size:11.5px;line-height:1.5}
+.wiki-doc blockquote{border-left:3px solid var(--cyan);background:var(--bg2);padding:8px 14px;margin:0 0 14px;color:var(--txt2);border-radius:0 4px 4px 0}
+.wiki-doc hr{border:none;border-top:1px solid var(--brd);margin:20px 0}
+.wiki-doc .wiki-tbl{border-collapse:collapse;width:100%;margin:0 0 14px;font-size:12px}
+.wiki-doc .wiki-tbl th,.wiki-doc .wiki-tbl td{border:1px solid var(--brd);padding:6px 10px;text-align:left}
+.wiki-doc .wiki-tbl th{background:var(--bg3);font-weight:600}
 .icept-pnl{display:flex;flex-direction:column;width:100%;height:100%}
 .icept-bar{display:flex;align-items:center;gap:6px;padding:8px 12px;background:var(--bg2);border-bottom:1px solid var(--brd);flex-shrink:0}
 .icept-toggle{display:inline-flex;align-items:center;gap:7px;padding:5px 13px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid transparent;transition:all 0.15s;font-family:var(--font-sans)}
@@ -2721,7 +2744,6 @@ function Blackwire() {
               ) : (
                 <button className="btn btn-d" onClick={() => proxy.stop()}>■ Stop</button>
               )}
-              <button className="btn btn-s" onClick={() => proxy.launchBrowser()} disabled={!pxRun}>🌐</button>
             </React.Fragment>
           )}
           <button className="btn btn-sm btn-s" title="Shutdown server" onClick={() => { if (confirm('Shut down Blackwire server?')) api.post('/api/shutdown'); }} style={{ marginLeft: '4px', color: 'var(--red)', fontSize: '14px', padding: '4px 8px' }}>⏻</button>
@@ -2730,6 +2752,7 @@ function Blackwire() {
 
       <nav className="tabs">
         <div className={'tab' + (tab === 'projects' ? ' act' : '')} onClick={() => setTab('projects')}>Projects</div>
+        <div className={'tab' + (tab === 'wiki' ? ' act' : '')} onClick={() => setTab('wiki')}>Wiki</div>
         {curPrj && (
           <React.Fragment>
             <div className={'tab' + (tab === 'scope' ? ' act' : '')} onClick={() => setTab('scope')}>Scope</div>
@@ -2738,7 +2761,6 @@ function Blackwire() {
             <div className={'tab' + (tab === 'collections' ? ' act' : '')} onClick={() => { setTab('collections'); loadColls(); }}>Collections</div>
             <div className={'tab' + (tab === 'repeater' ? ' act' : '')} onClick={() => setTab('repeater')}>Repeater</div>
             <div className={'tab' + (tab === 'intruder' ? ' act' : '')} onClick={() => setTab('intruder')}>Intruder</div>
-            <div className={'tab' + (tab === 'git' ? ' act' : '')} onClick={() => setTab('git')}>Git</div>
             <div className={'tab' + (tab === 'chepy' ? ' act' : '')} onClick={() => setTab('chepy')}>Cipher</div>
             <div className={'tab' + (tab === 'compare' ? ' act' : '')} onClick={() => setTab('compare')}>Compare</div>
             <div className={'tab' + (tab === 'sensitive' ? ' act' : '')} onClick={() => setTab('sensitive')}>Sensitive</div>
@@ -2771,7 +2793,7 @@ function Blackwire() {
 
         {tab === 'repeater' && curPrj && React.createElement(RepeaterPanel, __appCtx)}
 
-        {tab === 'git' && curPrj && React.createElement(GitPanel, __appCtx)}
+        {tab === 'wiki' && React.createElement(WikiPanel, __appCtx)}
 
         {tab === 'extensions' && curPrj && React.createElement(ExtensionsPanel, __appCtx)}
 
