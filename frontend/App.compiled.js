@@ -188,7 +188,7 @@ function Blackwire() {
   // Estado general
   const [appReady, setAppReady] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [themeId, setThemeId] = useLocalStorage('bw_theme', 'midnight');
+  const [themeId, setThemeId] = useLocalStorage('bw_theme', 'githubdark');
 
   // Filtros / HTTPQL (initialized after hooks below)
   const [presets, setPresets] = useState([]);
@@ -2432,7 +2432,7 @@ function Blackwire() {
 
   const themeVars = (THEMES[themeId] && THEMES[themeId].vars)
     ? THEMES[themeId].vars
-    : (THEMES.midnight && THEMES.midnight.vars) ? THEMES.midnight.vars : {};
+    : (THEMES.githubdark && THEMES.githubdark.vars) ? THEMES.githubdark.vars : {};
 
   // Estado/handlers expuestos a los paneles de pestaña (src/components/tabs/).
   const __appCtx = { API, DynamicExtensionUI, EXTENSION_CUSTOM_COMPONENTS, ResizeHandle, SENS_COLORS, SENS_FILES, SENS_GENERAL, SENS_TOKENS, SENS_URLS, SchemaBasedUI, addChepyOp, addRule, addSessionRule, api, applyPreset, bakeChepy, chepy, chepyBaking, chepyCat, chepyCntRef, chepyErr, chepyIn, chepyInW, chepyOps, chepyOut, chepyRecW, chepySelCat, chepySubTab, clearChepyRecipe, clearHist, cmpA, cmpB, cmpDiff, cmpView, cmtMsg, collItems, collResps, collRunning, collSideW, collStep, collStepsW, collSubTab, collVars, collections, colls, colorizeBody, colorizeHeaders, commit, commits, consoleEndRef, createColl, createPrj, createWebhookToken, currentPage, decodeJWT, delPreset, delPrj, delRepItem, delReq, deleteColl, deleteCollItem, deleteIntAttack, deleteSessionRule, detTab, dropAll, dropReq, editReq, encodeJWT, escapeHtml, executeCollStep, exportProject, exportProjectBurp, exportSitemap, extensions, filtered, firstPage, fmtH, fmtHHtml, fmtTime, followRedirect, formatBody, fwdAll, fwdReq, git, handleRepBodyInput, highlightMatches, histContentRef, histPanelW, histSearch, histSubTab, hookToast, httpqlError, importAsNewProject, importBurpXML, importProject, intAttackType, intAttacks, intBody, intBodyRef, intComputeTotal, intConcurrency, intDelay, intDelayMax, intDelayMin, intDone, intFilter, intFollowRedirects, intHeaders, intHeadersHighlightRef, intHeadersRef, intMaxRetries, intMethod, intOn, intPayloads, intPct, intPendW, intPositions, intRandomDelay, intResults, intRunning, intSelAttack, intSelPayloadSet, intSelResult, intSortCol, intSortDir, intSorted, intStartTime, intSubTab, intTimeout, intTotal, intUrl, intUrlRef, intercept, interceptHeadersHighlightRef, interceptHeadersRef, jwtHeader, jwtPayload, jwtSignature, jwtToken, lastPage, loadCollItems, loadIntAttack, loadRepItem, loadReqs, loadSensDetail, loadSessionRules, loadWebhookLocal, loadWsConns, loadWsFrames, loading, minify, moveChepyOp, navigateHistory, newDesc, newName, newPat, newRule, newType, nextPage, pageSize, pagination, pending, presetName, presets, prettyPrint, prettyRepBody, minifyRepBody, prevPage, prjs, projects, proxyConsole, pxPort, refreshWebhook, removeChepyOp, renameIntAttack, renameRepItem, renderTreeNode, repB, repBodyColor, repBodyEditRef, repCntRef, repFollowRedirects, repH, repHeadersHighlightRef, repHeadersRef, repHistory, repHistoryIndex, repM, repReqs, repResp, repRespBody, repRespFormat, repSearch, repSideW, repSplitPct, repU, repeater, reqFormat, reqs, requests, resendWsFrame, resetCollRun, respFormat, runIntruderAttack, runSensitiveScan, savePreset, saveRep, savedOnly, scope, scopeOnly, scopeRules, search, selColl, selPend, selRep, selReq, selReqFull, selWsConn, selWsFrame, selectPrj, selectWsFrame, sendRep, sensBatch, sensDetailRef, sensEntropyThreshold, sensFilter, sensFiltered, sensMaxSize, sensPatterns, sensPct, sensResults, sensScanning, sensScopeOnly, sensSelDetail, sensSelResult, sensSubTab, sensUnique, sensitive, sessionRulesData, setChepyIn, setChepyInW, setChepyRecW, setChepySelCat, setChepySubTab, setCmpA, setCmpB, setCmpView, setCmtMsg, setCollSideW, setCollStep, setCollStepsW, setCollSubTab, setDetTab, setEditReq, setHistPanelW, setHistSubTab, setIntAttackType, setIntBody, setIntConcurrency, setIntDelay, setIntDelayMax, setIntDelayMin, setIntDone, setIntFilter, setIntFollowRedirects, setIntHeaders, setIntMaxRetries, setIntMethod, setIntPayloads, setIntPct, setIntPendW, setIntRandomDelay, setIntResults, setIntSelAttack, setIntSelPayloadSet, setIntSelResult, setIntSortCol, setIntSortDir, setIntSubTab, setIntTimeout, setIntTotal, setIntUrl, setJwtHeader, setJwtPayload, setJwtSignature, setJwtToken, setNewDesc, setNewName, setNewPat, setNewRule, setNewType, setPageSize, setPresetName, setRepB, setRepBodyColor, setRepFollowRedirects, setRepH, setRepM, setRepRespBody, setRepRespFormat, setRepSideW, setRepU, setReqFormat, setRespFormat, setSavedOnly, setScopeOnly, setSearch, setSelPend, setSelReq, setSensBatch, setSensEntropyThreshold, setSensFilter, setSensMaxSize, setSensPatterns, setSensPct, setSensResults, setSensScopeOnly, setSensSelDetail, setSensSelResult, setSensSubTab, setSensUnique, setShowNew, setShowPresets, setSmExpanded, setSmFilterExt, setSmFilterMethod, setSmFilterStatus, setSmFilterText, setSmSelNode, setSmShowStats, setSmTreeW, setWhkApiKey, setWsConnsW, setWsFramesW, setWsResendMsg, showContextMenu, showNew, showPresets, siteTree, smContentRef, smFilterExt, smFilterMethod, smFilterStatus, smFilterText, smNodeReqs, smSelNode, smShowStats, smStats, smTreeW, stCls, stopIntruderAttack, stopSensitiveScan, tab, toRep, toast, togExtEnabled, togSave, toggleSessionRule, totalPages, totalRequests, updateChepyArg, updateCollItemExtracts, updateExtCfg, whkApiKey, whkLoading, whkReqs, wsConns, wsConnsW, wsFrames, wsFramesW, wsResendMsg, wsResendResp, wsSending };
@@ -2440,11 +2440,11 @@ function Blackwire() {
   return (
     React.createElement('div', { className: "app", style: themeVars,}
       , React.createElement('style', { dangerouslySetInnerHTML: { __html: `
-:root{--bg:#0a0e14;--bg2:#0d1117;--bg3:#161b22;--bgh:#1f262d;--brd:#30363d;--txt:#e6edf3;--txt2:#8b949e;--txt3:#6e7681;--blue:#58a6ff;--green:#3fb950;--red:#f85149;--orange:#d29922;--purple:#a371f7;--cyan:#39c5cf;--font-main:"Inter",sans-serif;--font-mono:"JetBrains Mono",monospace}
+:root{--bg:#0d1117;--bg2:#010409;--bg3:#161b22;--bgh:#21262d;--brd:#30363d;--txt:#e6edf3;--txt2:#c9d1d9;--txt3:#8b949e;--blue:#58a6ff;--green:#3fb950;--red:#f85149;--orange:#d29922;--purple:#bc8cff;--cyan:#56d4dd;--font-main:"Inter",sans-serif;--font-mono:"JetBrains Mono",monospace}
 *{margin:0;padding:0;box-sizing:border-box}body{font-family:var(--font-main);background:var(--bg);color:var(--txt);overflow:hidden}
 .app{display:flex;flex-direction:column;height:100vh}
 .hdr{display:flex;align-items:center;justify-content:space-between;padding:10px 20px;background:var(--bg2);border-bottom:1px solid var(--brd)}
-.logo{display:flex;align-items:center;gap:10px}.logo-i{width:32px;height:32px;background:linear-gradient(135deg,var(--cyan),var(--purple));border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:700}
+.logo{display:flex;align-items:center;gap:10px}.logo-i{width:32px;height:32px;border-radius:6px;object-fit:contain;display:block}
 .logo-t{font-family:var(--font-mono);font-size:18px;font-weight:600;background:linear-gradient(90deg,var(--cyan),var(--purple));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
 .prj-badge{background:var(--bg3);padding:4px 10px;border-radius:4px;font-size:11px;color:var(--cyan);border:1px solid var(--brd);margin-left:12px}
 .hdr-ctrl{display:flex;align-items:center;gap:10px}
@@ -2687,7 +2687,7 @@ function Blackwire() {
       React.createElement(React.Fragment, null
       , React.createElement('header', { className: "hdr",}
         , React.createElement('div', { className: "logo",}
-          , React.createElement('div', { className: "logo-i",}, "BW")
+          , React.createElement('img', { className: "logo-i", src: "/logo.svg", alt: "Blackwire",} )
           , React.createElement('span', { className: "logo-t",}, "Blackwire")
           , curPrj && React.createElement('span', { className: "prj-badge",}, curPrj.project)
         )

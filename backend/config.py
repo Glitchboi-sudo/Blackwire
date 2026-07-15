@@ -31,6 +31,7 @@ FRONTEND_DIR = BASE_DIR / "frontend"
 APP_JSX_PATH = FRONTEND_DIR / "App.jsx"
 APP_COMPILED_PATH = FRONTEND_DIR / "App.compiled.js"
 THEMES_JS_PATH = FRONTEND_DIR / "themes.js"
+LOGO_SVG_PATH = FRONTEND_DIR / "logo.svg"
 FRONTEND_HTML_PATH = Path(__file__).parent / "frontend.html"
 
 # Directorio del backend (resuelto) — usado para los archivos .action_*.json
