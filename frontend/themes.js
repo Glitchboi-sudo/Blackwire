@@ -1,317 +1,368 @@
+// Blackwire — catálogo de temas.
+// Cada tema define exactamente las mismas 16 CSS custom properties. Se aplican
+// como estilo inline sobre el div raíz `.app` (ver App.jsx). Las paletas son
+// recreaciones de temas reconocidos por la comunidad, más el tema OLED propio
+// "Kervoid". Se expone como global window.BW_THEMES al final del archivo.
+
+const MONO = '"JetBrains Mono", ui-monospace, monospace';
+const SANS = '"Inter", system-ui, sans-serif';
+
 const THEMES = {
-  midnight: {
-    label: 'Midnight',
+  githubdark: {
+    label: 'GitHub Dark',
     vars: {
-      '--bg': '#0a0e14',
-      '--bg2': '#0d1117',
+      '--bg': '#0d1117',
+      '--bg2': '#010409',
       '--bg3': '#161b22',
-      '--bgh': '#1f262d',
+      '--bgh': '#21262d',
       '--brd': '#30363d',
       '--txt': '#e6edf3',
-      '--txt2': '#8b949e',
-      '--txt3': '#6e7681',
+      '--txt2': '#c9d1d9',
+      '--txt3': '#8b949e',
       '--blue': '#58a6ff',
       '--green': '#3fb950',
       '--red': '#f85149',
       '--orange': '#d29922',
-      '--purple': '#a371f7',
-      '--cyan': '#39c5cf',
-      '--font-main': '"Inter", system-ui, sans-serif',
-      '--font-mono': '"JetBrains Mono", ui-monospace, monospace'
+      '--purple': '#bc8cff',
+      '--cyan': '#56d4dd',
+      '--font-main': SANS,
+      '--font-mono': MONO
     }
   },
-  dusk: {
-    label: 'Dusk',
+  dracula: {
+    label: 'Dracula',
     vars: {
-      '--bg': '#11101a',
-      '--bg2': '#161525',
-      '--bg3': '#1d1c2e',
-      '--bgh': '#25233a',
-      '--brd': '#34324a',
-      '--txt': '#f0e9ff',
-      '--txt2': '#b9b2d6',
-      '--txt3': '#8a83a8',
-      '--blue': '#7aa2ff',
-      '--green': '#8bd49c',
-      '--red': '#ff7a7a',
+      '--bg': '#282a36',
+      '--bg2': '#21222c',
+      '--bg3': '#343746',
+      '--bgh': '#44475a',
+      '--brd': '#44475a',
+      '--txt': '#f8f8f2',
+      '--txt2': '#c0c3cf',
+      '--txt3': '#6272a4',
+      '--blue': '#bd93f9',
+      '--green': '#50fa7b',
+      '--red': '#ff5555',
       '--orange': '#ffb86c',
-      '--purple': '#c792ff',
-      '--cyan': '#7fe7ff',
-      '--font-main': '"Space Grotesk", "Inter", system-ui, sans-serif',
-      '--font-mono': '"JetBrains Mono", ui-monospace, monospace'
+      '--purple': '#ff79c6',
+      '--cyan': '#8be9fd',
+      '--font-main': SANS,
+      '--font-mono': MONO
     }
   },
-  paper: {
-    label: 'Paper',
+  nord: {
+    label: 'Nord',
     vars: {
-      '--bg': '#f5f4f0',
-      '--bg2': '#ffffff',
-      '--bg3': '#f0eee9',
-      '--bgh': '#e7e4dd',
-      '--brd': '#d7d3c9',
-      '--txt': '#1f2328',
-      '--txt2': '#5b636e',
-      '--txt3': '#7a828c',
-      '--blue': '#255cbb',
-      '--green': '#1a7f37',
-      '--red': '#c43c3c',
-      '--orange': '#b96b00',
-      '--purple': '#6b4bb6',
-      '--cyan': '#0f7f7a',
-      '--font-main': '"IBM Plex Sans", "Inter", system-ui, sans-serif',
-      '--font-mono': '"IBM Plex Mono", "JetBrains Mono", ui-monospace, monospace'
+      '--bg': '#2e3440',
+      '--bg2': '#272c36',
+      '--bg3': '#3b4252',
+      '--bgh': '#434c5e',
+      '--brd': '#4c566a',
+      '--txt': '#eceff4',
+      '--txt2': '#d8dee9',
+      '--txt3': '#7b8494',
+      '--blue': '#88c0d0',
+      '--green': '#a3be8c',
+      '--red': '#bf616a',
+      '--orange': '#d08770',
+      '--purple': '#b48ead',
+      '--cyan': '#8fbcbb',
+      '--font-main': SANS,
+      '--font-mono': MONO
+    }
+  },
+  tokyonight: {
+    label: 'Tokyo Night',
+    vars: {
+      '--bg': '#1a1b26',
+      '--bg2': '#16161e',
+      '--bg3': '#24283b',
+      '--bgh': '#2f334d',
+      '--brd': '#3b4261',
+      '--txt': '#c0caf5',
+      '--txt2': '#a9b1d6',
+      '--txt3': '#565f89',
+      '--blue': '#7aa2f7',
+      '--green': '#9ece6a',
+      '--red': '#f7768e',
+      '--orange': '#ff9e64',
+      '--purple': '#bb9af7',
+      '--cyan': '#7dcfff',
+      '--font-main': SANS,
+      '--font-mono': MONO
+    }
+  },
+  catppuccin: {
+    label: 'Catppuccin Mocha',
+    vars: {
+      '--bg': '#1e1e2e',
+      '--bg2': '#181825',
+      '--bg3': '#313244',
+      '--bgh': '#45475a',
+      '--brd': '#45475a',
+      '--txt': '#cdd6f4',
+      '--txt2': '#bac2de',
+      '--txt3': '#7f849c',
+      '--blue': '#89b4fa',
+      '--green': '#a6e3a1',
+      '--red': '#f38ba8',
+      '--orange': '#fab387',
+      '--purple': '#cba6f7',
+      '--cyan': '#94e2d5',
+      '--font-main': SANS,
+      '--font-mono': MONO
+    }
+  },
+  onedark: {
+    label: 'One Dark',
+    vars: {
+      '--bg': '#282c34',
+      '--bg2': '#21252b',
+      '--bg3': '#2c313a',
+      '--bgh': '#3b4048',
+      '--brd': '#3e4451',
+      '--txt': '#c8ccd4',
+      '--txt2': '#abb2bf',
+      '--txt3': '#5c6370',
+      '--blue': '#61afef',
+      '--green': '#98c379',
+      '--red': '#e06c75',
+      '--orange': '#d19a66',
+      '--purple': '#c678dd',
+      '--cyan': '#56b6c2',
+      '--font-main': SANS,
+      '--font-mono': MONO
+    }
+  },
+  monokai: {
+    label: 'Monokai',
+    vars: {
+      '--bg': '#272822',
+      '--bg2': '#1f201b',
+      '--bg3': '#32332c',
+      '--bgh': '#3e3d32',
+      '--brd': '#49483e',
+      '--txt': '#f8f8f2',
+      '--txt2': '#cfcfc2',
+      '--txt3': '#75715e',
+      '--blue': '#66d9ef',
+      '--green': '#a6e22e',
+      '--red': '#f92672',
+      '--orange': '#fd971f',
+      '--purple': '#ae81ff',
+      '--cyan': '#66d9ef',
+      '--font-main': SANS,
+      '--font-mono': MONO
     }
   },
   gruvbox: {
-    label: 'Gruvbox',
+    label: 'Gruvbox Dark',
     vars: {
       '--bg': '#282828',
-      '--bg2': '#32302f',
+      '--bg2': '#1d2021',
       '--bg3': '#3c3836',
-      '--bgh': '#45403d',
+      '--bgh': '#504945',
       '--brd': '#504945',
       '--txt': '#ebdbb2',
       '--txt2': '#d5c4a1',
-      '--txt3': '#a89984',
+      '--txt3': '#928374',
       '--blue': '#83a598',
       '--green': '#b8bb26',
       '--red': '#fb4934',
       '--orange': '#fe8019',
       '--purple': '#d3869b',
       '--cyan': '#8ec07c',
-      '--font-main': '"IBM Plex Sans", "Inter", system-ui, sans-serif',
-      '--font-mono': '"IBM Plex Mono", "JetBrains Mono", ui-monospace, monospace'
+      '--font-main': SANS,
+      '--font-mono': MONO
     }
   },
-  solarized: {
-    label: 'Solarized',
+  solarizeddark: {
+    label: 'Solarized Dark',
     vars: {
-      '--bg': '#fdf6e3',
-      '--bg2': '#f5efdc',
-      '--bg3': '#eee8d5',
-      '--bgh': '#e6dfc8',
-      '--brd': '#d5cbb3',
-      '--txt': '#073642',
-      '--txt2': '#586e75',
-      '--txt3': '#657b83',
+      '--bg': '#002b36',
+      '--bg2': '#01242e',
+      '--bg3': '#073642',
+      '--bgh': '#0a4451',
+      '--brd': '#0a4451',
+      '--txt': '#93a1a1',
+      '--txt2': '#839496',
+      '--txt3': '#586e75',
       '--blue': '#268bd2',
       '--green': '#859900',
       '--red': '#dc322f',
-      '--orange': '#b58900',
+      '--orange': '#cb4b16',
       '--purple': '#6c71c4',
       '--cyan': '#2aa198',
-      '--font-main': '"IBM Plex Sans", "Inter", system-ui, sans-serif',
-      '--font-mono': '"IBM Plex Mono", "JetBrains Mono", ui-monospace, monospace'
+      '--font-main': SANS,
+      '--font-mono': MONO
     }
   },
-  aurora: {
-    label: 'Aurora',
+  rosepine: {
+    label: 'Rosé Pine',
     vars: {
-      '--bg': '#0b0f14',
-      '--bg2': '#111822',
-      '--bg3': '#192330',
-      '--bgh': '#223042',
-      '--brd': '#2e3d53',
-      '--txt': '#e4f0ff',
-      '--txt2': '#a9bfd8',
-      '--txt3': '#7b93b0',
-      '--blue': '#4aa8ff',
-      '--green': '#42d392',
-      '--red': '#ff6b7d',
-      '--orange': '#ffb86b',
-      '--purple': '#b48cff',
-      '--cyan': '#4bd2e6',
+      '--bg': '#191724',
+      '--bg2': '#1f1d2e',
+      '--bg3': '#26233a',
+      '--bgh': '#2a273f',
+      '--brd': '#403d52',
+      '--txt': '#e0def4',
+      '--txt2': '#c8c5dd',
+      '--txt3': '#6e6a86',
+      '--blue': '#3e8fb0',
+      '--green': '#5faaa0',
+      '--red': '#eb6f92',
+      '--orange': '#f6c177',
+      '--purple': '#c4a7e7',
+      '--cyan': '#9ccfd8',
+      '--font-main': SANS,
+      '--font-mono': MONO
+    }
+  },
+  everforest: {
+    label: 'Everforest',
+    vars: {
+      '--bg': '#2d353b',
+      '--bg2': '#272e33',
+      '--bg3': '#343f44',
+      '--bgh': '#3d484d',
+      '--brd': '#475258',
+      '--txt': '#d3c6aa',
+      '--txt2': '#beb499',
+      '--txt3': '#859289',
+      '--blue': '#7fbbb3',
+      '--green': '#a7c080',
+      '--red': '#e67e80',
+      '--orange': '#e69875',
+      '--purple': '#d699b6',
+      '--cyan': '#83c092',
+      '--font-main': SANS,
+      '--font-mono': MONO
+    }
+  },
+  nightowl: {
+    label: 'Night Owl',
+    vars: {
+      '--bg': '#011627',
+      '--bg2': '#010e1a',
+      '--bg3': '#0b2942',
+      '--bgh': '#1d3b53',
+      '--brd': '#1d3b53',
+      '--txt': '#d6deeb',
+      '--txt2': '#a5b3c9',
+      '--txt3': '#637777',
+      '--blue': '#82aaff',
+      '--green': '#addb67',
+      '--red': '#ef5350',
+      '--orange': '#f78c6c',
+      '--purple': '#c792ea',
+      '--cyan': '#7fdbca',
+      '--font-main': SANS,
+      '--font-mono': MONO
+    }
+  },
+  ayu: {
+    label: 'Ayu Dark',
+    vars: {
+      '--bg': '#0d1017',
+      '--bg2': '#0b0e14',
+      '--bg3': '#131721',
+      '--bgh': '#1b1f2b',
+      '--brd': '#1f2430',
+      '--txt': '#bfbdb6',
+      '--txt2': '#9a9791',
+      '--txt3': '#565b66',
+      '--blue': '#59c2ff',
+      '--green': '#aad94c',
+      '--red': '#f26d78',
+      '--orange': '#ffb454',
+      '--purple': '#d2a6ff',
+      '--cyan': '#95e6cb',
+      '--font-main': SANS,
+      '--font-mono': MONO
+    }
+  },
+  cobalt: {
+    label: 'Cobalt2',
+    vars: {
+      '--bg': '#193549',
+      '--bg2': '#122738',
+      '--bg3': '#1e415e',
+      '--bgh': '#234e6d',
+      '--brd': '#0d3a58',
+      '--txt': '#ffffff',
+      '--txt2': '#aabfd0',
+      '--txt3': '#627e97',
+      '--blue': '#3b8eea',
+      '--green': '#3ad900',
+      '--red': '#ff628c',
+      '--orange': '#ffc600',
+      '--purple': '#fb94ff',
+      '--cyan': '#80fcff',
+      '--font-main': SANS,
+      '--font-mono': MONO
+    }
+  },
+  githublight: {
+    label: 'GitHub Light',
+    vars: {
+      '--bg': '#ffffff',
+      '--bg2': '#f6f8fa',
+      '--bg3': '#eaeef2',
+      '--bgh': '#eef1f4',
+      '--brd': '#d0d7de',
+      '--txt': '#1f2328',
+      '--txt2': '#57606a',
+      '--txt3': '#8c959f',
+      '--blue': '#0969da',
+      '--green': '#1a7f37',
+      '--red': '#cf222e',
+      '--orange': '#bc4c00',
+      '--purple': '#8250df',
+      '--cyan': '#1b7c83',
+      '--font-main': SANS,
+      '--font-mono': MONO
+    }
+  },
+  solarizedlight: {
+    label: 'Solarized Light',
+    vars: {
+      '--bg': '#fdf6e3',
+      '--bg2': '#eee8d5',
+      '--bg3': '#e7e0cc',
+      '--bgh': '#dcd5c0',
+      '--brd': '#d8d0bb',
+      '--txt': '#586e75',
+      '--txt2': '#657b83',
+      '--txt3': '#93a1a1',
+      '--blue': '#268bd2',
+      '--green': '#859900',
+      '--red': '#dc322f',
+      '--orange': '#cb4b16',
+      '--purple': '#6c71c4',
+      '--cyan': '#2aa198',
+      '--font-main': SANS,
+      '--font-mono': MONO
+    }
+  },
+  kervoid: {
+    label: 'Kervoid',
+    vars: {
+      '--bg': '#000000',
+      '--bg2': '#050505',
+      '--bg3': '#0d0d0d',
+      '--bgh': '#161616',
+      '--brd': '#262626',
+      '--txt': '#ffffff',
+      '--txt2': '#b0b0b0',
+      '--txt3': '#6e6e6e',
+      '--blue': '#ff1744',
+      '--green': '#00e676',
+      '--red': '#ff1744',
+      '--orange': '#ffab00',
+      '--purple': '#ff4081',
+      '--cyan': '#ff5c77',
       '--font-main': '"Space Grotesk", "Inter", system-ui, sans-serif',
-      '--font-mono': '"JetBrains Mono", ui-monospace, monospace'
-    }
-  },
-  noir: {
-    label: 'Noir',
-    vars: {
-      '--bg': '#0b0b0c',
-      '--bg2': '#121214',
-      '--bg3': '#1a1a1f',
-      '--bgh': '#23232a',
-      '--brd': '#2b2b35',
-      '--txt': '#f1f1f4',
-      '--txt2': '#c3c3ca',
-      '--txt3': '#8f8f9b',
-      '--blue': '#7aa2ff',
-      '--green': '#7ed491',
-      '--red': '#ff6f7d',
-      '--orange': '#f6b66a',
-      '--purple': '#c49bff',
-      '--cyan': '#6bd6ff',
-      '--font-main': '"Inter", system-ui, sans-serif',
-      '--font-mono': '"JetBrains Mono", ui-monospace, monospace'
-    }
-  },
-  glacier: {
-    label: 'Glacier',
-    vars: {
-      '--bg': '#0e141b',
-      '--bg2': '#141c24',
-      '--bg3': '#1b2530',
-      '--bgh': '#243140',
-      '--brd': '#2f3f52',
-      '--txt': '#e6f2f8',
-      '--txt2': '#b9d0dd',
-      '--txt3': '#8aa6b8',
-      '--blue': '#63b3ff',
-      '--green': '#5bd6b4',
-      '--red': '#ff7c8b',
-      '--orange': '#ffb36b',
-      '--purple': '#9aa8ff',
-      '--cyan': '#6ee7ff',
-      '--font-main': '"IBM Plex Sans", "Inter", system-ui, sans-serif',
-      '--font-mono': '"IBM Plex Mono", "JetBrains Mono", ui-monospace, monospace'
-    }
-  },
-  ember: {
-    label: 'Ember',
-    vars: {
-      '--bg': '#140b0b',
-      '--bg2': '#1b1111',
-      '--bg3': '#241818',
-      '--bgh': '#2e2020',
-      '--brd': '#3a2828',
-      '--txt': '#ffe9e4',
-      '--txt2': '#f0bdb3',
-      '--txt3': '#c48f84',
-      '--blue': '#6aa7ff',
-      '--green': '#a6e06b',
-      '--red': '#ff6b6b',
-      '--orange': '#ff9f5a',
-      '--purple': '#d39bff',
-      '--cyan': '#6ee7d8',
-      '--font-main': '"Space Grotesk", "Inter", system-ui, sans-serif',
-      '--font-mono': '"JetBrains Mono", ui-monospace, monospace'
-    }
-  },
-  forest: {
-    label: 'Forest',
-    vars: {
-      '--bg': '#0e1410',
-      '--bg2': '#141c16',
-      '--bg3': '#1b261f',
-      '--bgh': '#243226',
-      '--brd': '#2f3f33',
-      '--txt': '#e6f3e7',
-      '--txt2': '#b9d1be',
-      '--txt3': '#8aa493',
-      '--blue': '#6ba7ff',
-      '--green': '#6ad98f',
-      '--red': '#ff7676',
-      '--orange': '#ffb86b',
-      '--purple': '#b28cff',
-      '--cyan': '#5fd8c2',
-      '--font-main': '"IBM Plex Sans", "Inter", system-ui, sans-serif',
-      '--font-mono': '"IBM Plex Mono", "JetBrains Mono", ui-monospace, monospace'
-    }
-  },
-  oceanic: {
-    label: 'Oceanic',
-    vars: {
-      '--bg': '#07141a',
-      '--bg2': '#0c1b23',
-      '--bg3': '#122630',
-      '--bgh': '#193241',
-      '--brd': '#234356',
-      '--txt': '#e3f6ff',
-      '--txt2': '#acd3e3',
-      '--txt3': '#7aa6ba',
-      '--blue': '#3ea8ff',
-      '--green': '#4dd6b8',
-      '--red': '#ff6f80',
-      '--orange': '#ffb36a',
-      '--purple': '#9c8cff',
-      '--cyan': '#3ed6ff',
-      '--font-main': '"Inter", system-ui, sans-serif',
-      '--font-mono': '"JetBrains Mono", ui-monospace, monospace'
-    }
-  },
-  rose: {
-    label: 'Rose',
-    vars: {
-      '--bg': '#1a0f14',
-      '--bg2': '#22141b',
-      '--bg3': '#2c1b25',
-      '--bgh': '#372230',
-      '--brd': '#452a3b',
-      '--txt': '#ffe7f0',
-      '--txt2': '#f2bcd0',
-      '--txt3': '#c78fa8',
-      '--blue': '#7aa2ff',
-      '--green': '#7ed4a6',
-      '--red': '#ff6f8d',
-      '--orange': '#ffb36a',
-      '--purple': '#c08cff',
-      '--cyan': '#6fd6e8',
-      '--font-main': '"Space Grotesk", "Inter", system-ui, sans-serif',
-      '--font-mono': '"JetBrains Mono", ui-monospace, monospace'
-    }
-  },
-  mono: {
-    label: 'Mono',
-    vars: {
-      '--bg': '#0f1115',
-      '--bg2': '#151821',
-      '--bg3': '#1d2230',
-      '--bgh': '#262d3d',
-      '--brd': '#313a4e',
-      '--txt': '#f2f5f9',
-      '--txt2': '#c6ccd7',
-      '--txt3': '#8c95a6',
-      '--blue': '#9bb3ff',
-      '--green': '#9bd6b4',
-      '--red': '#ff8f9c',
-      '--orange': '#ffc38a',
-      '--purple': '#c2b0ff',
-      '--cyan': '#8fdfff',
-      '--font-main': '"IBM Plex Sans", "Inter", system-ui, sans-serif',
-      '--font-mono': '"IBM Plex Mono", "JetBrains Mono", ui-monospace, monospace'
-    }
-  },
-  desert: {
-    label: 'Desert',
-    vars: {
-      '--bg': '#1a140d',
-      '--bg2': '#221a12',
-      '--bg3': '#2c2318',
-      '--bgh': '#372c1f',
-      '--brd': '#453625',
-      '--txt': '#f8efe6',
-      '--txt2': '#e0c6ac',
-      '--txt3': '#b2957a',
-      '--blue': '#7aa2ff',
-      '--green': '#9ed38a',
-      '--red': '#ff7a6b',
-      '--orange': '#ffb05a',
-      '--purple': '#b58cff',
-      '--cyan': '#6fd6c7',
-      '--font-main': '"IBM Plex Sans", "Inter", system-ui, sans-serif',
-      '--font-mono': '"IBM Plex Mono", "JetBrains Mono", ui-monospace, monospace'
-    }
-  },
-  synth: {
-    label: 'Synth',
-    vars: {
-      '--bg': '#0b0714',
-      '--bg2': '#120b1e',
-      '--bg3': '#1b1030',
-      '--bgh': '#24163f',
-      '--brd': '#2f1d54',
-      '--txt': '#f6e8ff',
-      '--txt2': '#cdb2e0',
-      '--txt3': '#9a7bb5',
-      '--blue': '#6aa7ff',
-      '--green': '#4dd6b8',
-      '--red': '#ff5fa2',
-      '--orange': '#ffb86b',
-      '--purple': '#b57bff',
-      '--cyan': '#55d6ff',
-      '--font-main': '"Space Grotesk", "Inter", system-ui, sans-serif',
-      '--font-mono': '"JetBrains Mono", ui-monospace, monospace'
+      '--font-mono': MONO
     }
   }
 };

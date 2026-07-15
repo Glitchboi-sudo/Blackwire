@@ -19,7 +19,8 @@ from fastapi.responses import HTMLResponse, FileResponse, Response
 from starlette.middleware.gzip import GZipMiddleware
 
 from config import (BASE_DIR, PROJECTS_DIR, FRONTEND_DIR, FRONTEND_HTML_PATH,
-                    APP_JSX_PATH, APP_COMPILED_PATH, THEMES_JS_PATH, get_project_db)
+                    APP_JSX_PATH, APP_COMPILED_PATH, THEMES_JS_PATH, LOGO_SVG_PATH,
+                    get_project_db)
 from services import state
 from db import get_db, get_db_with_regex, init_db, load_project_settings
 from services.proxy_control import stop_proxy
@@ -179,6 +180,13 @@ async def themes_js():
     if THEMES_JS_PATH.exists():
         return FileResponse(THEMES_JS_PATH, media_type="text/javascript", headers=_static_headers())
     raise HTTPException(status_code=404, detail="themes.js not found")
+
+
+@app.get("/logo.svg")
+async def logo_svg():
+    if LOGO_SVG_PATH.exists():
+        return FileResponse(LOGO_SVG_PATH, media_type="image/svg+xml", headers=_static_headers())
+    raise HTTPException(status_code=404, detail="logo.svg not found")
 
 
 def _serve_frontend_module(subdir: str, filename: str):
