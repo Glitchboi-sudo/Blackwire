@@ -1,6 +1,8 @@
 // HistoryPanel — extraído de App.jsx (pestaña 'history').
 // Recibe todo el estado/handlers vía props (objeto __appCtx de App.jsx).
 
+import { FilterBuilder } from '../FilterBuilder.jsx';
+
 const BUILTIN_FILTER_PRESETS = [
   { name: 'Errors (4xx/5xx)', query: 'resp.code.gte:400' },
   { name: 'Server errors (5xx)', query: 'resp.code.gte:500' },
@@ -56,6 +58,7 @@ export function HistoryPanel(props) {
                         </div>
                       )}
                     </div>
+                    <FilterBuilder setSearch={setSearch} />
                     <div className={'flt-tog' + (scopeOnly ? ' act' : '')} onClick={() => setScopeOnly(!scopeOnly)}>Scope</div>
                     <div className={'flt-tog' + (savedOnly ? ' act' : '')} onClick={() => setSavedOnly(!savedOnly)}>★</div>
                   </div>
@@ -100,8 +103,18 @@ export function HistoryPanel(props) {
                       ))}
                       {filtered.length === 0 && (
                         <div className="empty">
-                          <div className="empty-i">□</div>
-                          <span>No requests</span>
+                          <div className="empty-i">🌐</div>
+                          {(search || scopeOnly || savedOnly) ? (
+                            <React.Fragment>
+                              <span>Ningún request coincide con el filtro</span>
+                              <span className="empty-hint">Ajusta o limpia el filtro para ver más resultados.</span>
+                            </React.Fragment>
+                          ) : (
+                            <React.Fragment>
+                              <span>Aún no hay tráfico capturado</span>
+                              <span className="empty-hint">Inicia el proxy con <b>▶ Start</b> (arriba a la derecha) y navega en tu navegador configurado para ver las peticiones aquí.</span>
+                            </React.Fragment>
+                          )}
                         </div>
                       )}
                     </div>
@@ -208,7 +221,9 @@ export function HistoryPanel(props) {
                     </React.Fragment>
                   ) : (
                     <div className="empty">
-                      <span>Select request</span>
+                      <div className="empty-i">👈</div>
+                      <span>Selecciona una petición</span>
+                      <span className="empty-hint">Haz clic en cualquier request de la lista para ver su detalle (headers, body, respuesta).</span>
                     </div>
                   )}
                 </div>
@@ -235,7 +250,9 @@ export function HistoryPanel(props) {
                     ))}
                     {wsConns.length === 0 && (
                       <div className="empty" style={{ padding: 30 }}>
-                        <span>No WebSocket connections captured</span>
+                        <div className="empty-i">🔌</div>
+                        <span>Sin conexiones WebSocket</span>
+                        <span className="empty-hint">Con el proxy activo, navega a un sitio que use WebSockets y las conexiones aparecerán aquí.</span>
                       </div>
                     )}
                   </div>
@@ -258,10 +275,10 @@ export function HistoryPanel(props) {
                       </div>
                     ))}
                     {selWsConn && wsFrames.length === 0 && (
-                      <div className="empty" style={{ padding: 30 }}><span>No frames</span></div>
+                      <div className="empty" style={{ padding: 30 }}><span>Esta conexión aún no tiene frames</span></div>
                     )}
                     {!selWsConn && (
-                      <div className="empty" style={{ padding: 30 }}><span>Select a connection</span></div>
+                      <div className="empty" style={{ padding: 30 }}><span>Selecciona una conexión para ver sus frames</span></div>
                     )}
                   </div>
                 </div>
@@ -294,7 +311,7 @@ export function HistoryPanel(props) {
                       )}
                     </React.Fragment>
                   ) : (
-                    <div className="empty"><span>Select a frame</span></div>
+                    <div className="empty"><span>Selecciona un frame para ver su contenido</span></div>
                   )}
                 </div>
               </div>
@@ -343,8 +360,9 @@ export function HistoryPanel(props) {
                   <div className="pnl-cnt">
                     {Object.keys(siteTree).length === 0 ? (
                       <div className="empty">
-                        <div className="empty-i">🌐</div>
-                        <span>No requests captured</span>
+                        <div className="empty-i">🗺️</div>
+                        <span>Aún no hay mapa del sitio</span>
+                        <span className="empty-hint">Navega con el proxy activo: BlackWire irá construyendo aquí el árbol de hosts y rutas visitadas.</span>
                       </div>
                     ) : (
                       Object.entries(siteTree)
@@ -411,7 +429,11 @@ export function HistoryPanel(props) {
                           ))}
                         </div>
                       ) : (
-                        <div className="empty"><span>Click a node in the tree</span></div>
+                        <div className="empty">
+                          <div className="empty-i">👈</div>
+                          <span>Selecciona un nodo del árbol</span>
+                          <span className="empty-hint">Haz clic en un host o ruta a la izquierda para ver sus peticiones.</span>
+                        </div>
                       )}
                     </div>
                   </div>

@@ -17,7 +17,8 @@ export function ComparePanel(props) {
             {!cmpA && !cmpB ? (
               <div className="empty">
                 <div className="empty-i">&#8596;</div>
-                <span>Right-click a request and choose "Send to Compare (A/B)"</span>
+                <span>Compara dos peticiones lado a lado</span>
+                <span className="empty-hint">En History o Site Map, haz clic derecho en una petición y elige <b>Send to Compare (A)</b> y luego otra como <b>(B)</b>. Aquí verás el diff resaltado.</span>
               </div>
             ) : (
               <div className="cmp-wrap" ref={wrapRef}>

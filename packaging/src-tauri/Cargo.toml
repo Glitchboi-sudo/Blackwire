@@ -1,6 +1,6 @@
 [package]
 name = "blackwire-desktop"
-version = "1.0.0"
+version = "1.0.1"
 description = "Blackwire - HTTP(S) Intercepting Proxy"
 authors = ["Blackwire Team"]
 license = "MIT"

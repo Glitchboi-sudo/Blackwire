@@ -28,7 +28,8 @@ export function CollectionsPanel(props) {
                 ))}
                 {colls.length === 0 && (
                   <div className="empty" style={{ padding: 20, fontSize: 11 }}>
-                    <span>No collections yet</span>
+                    <span>Aún no hay colecciones</span>
+                    <span className="empty-hint">Una colección encadena varias peticiones (p. ej. login → acción) y pasa variables entre ellas. Créala con el botón de arriba.</span>
                   </div>
                 )}
               </div>
@@ -57,12 +58,13 @@ export function CollectionsPanel(props) {
                 ))}
                 {selColl && collItems.length === 0 && (
                   <div className="empty" style={{ padding: 20, fontSize: 11 }}>
-                    <span>Add requests via right-click in History</span>
+                    <span>Colección vacía</span>
+                    <span className="empty-hint">Agrega peticiones con clic derecho → "Add to Collection" en History.</span>
                   </div>
                 )}
                 {!selColl && (
                   <div className="empty" style={{ padding: 20, fontSize: 11 }}>
-                    <span>Select a collection</span>
+                    <span>Selecciona una colección para ver sus pasos</span>
                   </div>
                 )}
                 {Object.keys(collVars).length > 0 && (

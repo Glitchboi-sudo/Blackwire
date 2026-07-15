@@ -62,7 +62,7 @@ export function InterceptPanel(props) {
                     <div className="icept-empty" style={{ padding: '40px 16px' }}>
                       <span style={{ fontSize: 28 }}>{intOn ? '⏳' : '🔓'}</span>
                       <span style={{ fontSize: 11, textAlign: 'center', lineHeight: 1.5 }}>
-                        {intOn ? 'Waiting for traffic...' : 'Enable intercept to capture requests'}
+                        {intOn ? 'Esperando tráfico… navega para que las peticiones se pausen aquí y puedas editarlas antes de reenviarlas.' : 'Activa la interceptación para pausar y editar cada petición antes de que salga.'}
                       </span>
                     </div>
                   )}
