@@ -1,8 +1,18 @@
 // HistoryPanel — extraído de App.jsx (pestaña 'history').
 // Recibe todo el estado/handlers vía props (objeto __appCtx de App.jsx).
 
+const BUILTIN_FILTER_PRESETS = [
+  { name: 'Errors (4xx/5xx)', query: 'resp.code.gte:400' },
+  { name: 'Server errors (5xx)', query: 'resp.code.gte:500' },
+  { name: 'GET requests', query: 'req.method.eq:"GET"' },
+  { name: 'POST requests', query: 'req.method.eq:"POST"' },
+  { name: 'Successful (2xx)', query: 'resp.code.gte:200 AND resp.code.lt:300' },
+  { name: 'Redirects (3xx)', query: 'resp.code.gte:300 AND resp.code.lt:400' },
+];
+
 export function HistoryPanel(props) {
-  const { API, ResizeHandle, api, applyPreset, clearHist, currentPage, delPreset, delReq, detTab, escapeHtml, exportSitemap, extensions, filtered, firstPage, fmtHHtml, fmtTime, formatBody, highlightMatches, histContentRef, histPanelW, histSearch, histSubTab, httpqlError, lastPage, loadReqs, loadWsConns, loadWsFrames, nextPage, pageSize, pagination, presetName, presets, prevPage, renderTreeNode, reqFormat, requests, resendWsFrame, respFormat, savePreset, savedOnly, scopeOnly, search, selReq, selReqFull, selWsConn, selWsFrame, selectWsFrame, setDetTab, setHistPanelW, setHistSubTab, setPageSize, setPresetName, setReqFormat, setRespFormat, setSavedOnly, setScopeOnly, setSearch, setSelReq, setShowPresets, setSmExpanded, setSmFilterExt, setSmFilterMethod, setSmFilterStatus, setSmFilterText, setSmSelNode, setSmShowStats, setSmTreeW, setWsConnsW, setWsFramesW, setWsResendMsg, showContextMenu, showPresets, siteTree, smContentRef, smFilterExt, smFilterMethod, smFilterStatus, smFilterText, smNodeReqs, smSelNode, smShowStats, smStats, smTreeW, stCls, tab, toRep, togSave, totalPages, totalRequests, wsConns, wsConnsW, wsFrames, wsFramesW, wsResendMsg, wsResendResp, wsSending } = props;
+  const { API, ResizeHandle, api, applyPreset, clearHist, currentPage, delPreset, delReq, detTab, escapeHtml, exportSitemap, extensions, filtered, firstPage, fmtHHtml, fmtTime, formatBody, highlightMatches, histContentRef, histPanelW, histSearch, histSubTab, httpqlError, lastPage, loadReqs, loadWsConns, loadWsFrames, nextPage, pageSize, pagination, presetName, presets, prevPage, renderTreeNode, reqFormat, requests, resendWsFrame, respFormat, savePreset, savedOnly, scopeOnly, search, selReq, selReqFull, selWsConn, selWsFrame, selectWsFrame, setDetTab, setHistPanelW, setHistSubTab, setPageSize, setPresetName, setReqFormat, setRespFormat, setSavedOnly, setScopeOnly, setSearch, setSelReq, setShowPresets, setSmExpanded, setSmFilterExt, setSmFilterMethod, setSmFilterStatus, setSmFilterText, setSmSelNode, setSmDetPct, setSmShowStats, setSmTreeW, setWsConnsW, setWsFramesW, setWsResendMsg, showContextMenu, showPresets, siteTree, smContentRef, smDetPct, smFilterExt, smFilterMethod, smFilterStatus, smFilterText, smNodeReqs, smSelNode, smShowStats, smStats, smTreeW, stCls, tab, toRep, togSave, totalPages, totalRequests, wsConns, wsConnsW, wsFrames, wsFramesW, wsResendMsg, wsResendResp, wsSending } = props;
+  const smRightRef = React.useRef(null);
   return (
           <div className="hist-wrap">
             <div className="hist-sub-tabs">
@@ -19,7 +29,7 @@ export function HistoryPanel(props) {
                       <input className={'flt-in' + (httpqlError ? ' flt-err' : '')} placeholder='Filter: req.method.eq:"GET" AND resp.code.lt:400' value={search} onChange={e => setSearch(e.target.value)} />
                       {httpqlError && <div className="flt-err-msg">{httpqlError}</div>}
                     </div>
-                    <div className="flt-preset-wrap" style={{position:'relative'}}>
+                    <div className="flt-preset-wrap">
                       <div className="flt-tog" onClick={() => setShowPresets(!showPresets)} title="Filter presets">▼</div>
                       {showPresets && (
                         <div className="flt-preset-dd">
@@ -27,6 +37,14 @@ export function HistoryPanel(props) {
                             <input className="flt-in flt-preset-name" placeholder="Preset name..." value={presetName} onChange={e => setPresetName(e.target.value)} onKeyDown={e => e.key === 'Enter' && savePreset()} />
                             <button className="btn btn-sm btn-p" onClick={savePreset} disabled={!presetName.trim() || !search.trim()}>Save</button>
                           </div>
+                          <div className="flt-preset-group-label">Predefined</div>
+                          {BUILTIN_FILTER_PRESETS.map(p => (
+                            <div key={p.name} className="flt-preset-item">
+                              <span className="flt-preset-name-label" onClick={() => applyPreset(p)} title={p.query}>{p.name}</span>
+                              <span className="flt-preset-q">{p.query}</span>
+                            </div>
+                          ))}
+                          <div className="flt-preset-group-label">Saved</div>
                           {presets.length === 0 && <div className="flt-preset-empty">No presets saved</div>}
                           {presets.map(p => (
                             <div key={p.id} className="flt-preset-item">
@@ -48,21 +66,23 @@ export function HistoryPanel(props) {
                       <button className="btn btn-sm btn-d" onClick={clearHist}>Clear</button>
                     </div>
                   </div>
-                  {totalPages > 1 && (
-                    <div className="pagination-bar">
-                      <button className="btn btn-sm btn-s" onClick={firstPage} disabled={currentPage === 1} title="First page">«</button>
-                      <button className="btn btn-sm btn-s" onClick={prevPage} disabled={currentPage === 1} title="Previous page">‹</button>
-                      <span className="pagination-info">Page {currentPage} of {totalPages}</span>
-                      <button className="btn btn-sm btn-s" onClick={nextPage} disabled={currentPage === totalPages} title="Next page">›</button>
-                      <button className="btn btn-sm btn-s" onClick={lastPage} disabled={currentPage === totalPages} title="Last page">»</button>
-                      <select className="pagination-size" value={pageSize} onChange={e => setPageSize(Number(e.target.value))}>
-                        <option value="100">100</option>
-                        <option value="250">250</option>
-                        <option value="500">500</option>
-                        <option value="1000">1000</option>
-                      </select>
-                    </div>
-                  )}
+                  <div className="pagination-bar">
+                    {totalPages > 1 && (
+                      <React.Fragment>
+                        <button className="btn btn-sm btn-s" onClick={firstPage} disabled={currentPage === 1} title="First page">«</button>
+                        <button className="btn btn-sm btn-s" onClick={prevPage} disabled={currentPage === 1} title="Previous page">‹</button>
+                        <span className="pagination-info">Page {currentPage} of {totalPages}</span>
+                        <button className="btn btn-sm btn-s" onClick={nextPage} disabled={currentPage === totalPages} title="Next page">›</button>
+                        <button className="btn btn-sm btn-s" onClick={lastPage} disabled={currentPage === totalPages} title="Last page">»</button>
+                      </React.Fragment>
+                    )}
+                    <select className="pagination-size" value={pageSize} onChange={e => setPageSize(Number(e.target.value))} title="Requests per page">
+                      <option value="100">100</option>
+                      <option value="250">250</option>
+                      <option value="500">500</option>
+                      <option value="1000">1000</option>
+                    </select>
+                  </div>
                   <div className="pnl-cnt">
                     <div className="req-list">
                       {filtered.map(r => (
@@ -127,6 +147,13 @@ export function HistoryPanel(props) {
                           )}
                         </div>
                       </div>
+                      {selReqFull && (
+                        <div className="det-meta">
+                          <span>{new Date(selReqFull.timestamp).toLocaleString()}</span>
+                          {detTab === 'request' && selReqFull.body && <span>{selReqFull.body.length} B</span>}
+                          {detTab === 'response' && selReqFull.response_body && <span>{selReqFull.response_body.length} B</span>}
+                        </div>
+                      )}
                       {!selReqFull ? (
                         <div className="empty"><div className="splash-spin" style={{margin:'20px auto'}} /></div>
                       ) : (
@@ -332,8 +359,8 @@ export function HistoryPanel(props) {
                   const dpct = (dx / el.offsetWidth) * 100;
                   setSmTreeW(prev => Math.max(15, Math.min(70, prev + dpct)));
                 }} />
-                <div className="sm-right">
-                  <div className="panel" style={{ flex: smSelNode && selReq ? 1 : 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                <div className="sm-right" ref={smRightRef}>
+                  <div className="panel" style={{ flex: selReq && smSelNode ? 'none' : 1, height: selReq && smSelNode ? smDetPct + '%' : 'auto', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
                     <div className="pnl-hdr">
                       <span>{smSelNode ? smNodeReqs.length + ' requests' : 'Select a node'}</span>
                       {smSelNode && (
@@ -389,6 +416,14 @@ export function HistoryPanel(props) {
                     </div>
                   </div>
                   {selReq && smSelNode && (
+                    <ResizeHandle vertical onDrag={(dy) => {
+                      const el = smRightRef.current;
+                      if (!el) return;
+                      const dpct = (dy / el.offsetHeight) * 100;
+                      setSmDetPct(prev => Math.max(20, Math.min(80, prev + dpct)));
+                    }} />
+                  )}
+                  {selReq && smSelNode && (
                     <div className="panel" style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', borderTop: '1px solid var(--brd)' }}>
                       <div className="pnl-hdr">
                         <span>{selReq.method} {selReq.url.substring(0, 60)}</span>
@@ -411,6 +446,13 @@ export function HistoryPanel(props) {
                           )}
                         </div>
                       </div>
+                      {selReqFull && (
+                        <div className="det-meta">
+                          <span>{new Date(selReqFull.timestamp).toLocaleString()}</span>
+                          {detTab === 'request' && selReqFull.body && <span>{selReqFull.body.length} B</span>}
+                          {detTab === 'response' && selReqFull.response_body && <span>{selReqFull.response_body.length} B</span>}
+                        </div>
+                      )}
                       {!selReqFull ? (
                         <div className="empty"><div className="splash-spin" style={{margin:'20px auto'}} /></div>
                       ) : (

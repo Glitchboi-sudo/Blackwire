@@ -19,8 +19,9 @@ from fastapi.responses import HTMLResponse, FileResponse, Response
 from starlette.middleware.gzip import GZipMiddleware
 
 from config import (BASE_DIR, PROJECTS_DIR, FRONTEND_DIR, FRONTEND_HTML_PATH,
-                    APP_JSX_PATH, APP_COMPILED_PATH, THEMES_JS_PATH, get_project_db)
-from services import state
+                    APP_JSX_PATH, APP_COMPILED_PATH, THEMES_JS_PATH, LOGO_SVG_PATH,
+                    get_project_db)
+from services import state, watchdog
 from db import get_db, get_db_with_regex, init_db, load_project_settings
 from services.proxy_control import stop_proxy
 from utils.httpql import compile_httpql_ast
@@ -181,6 +182,13 @@ async def themes_js():
     raise HTTPException(status_code=404, detail="themes.js not found")
 
 
+@app.get("/logo.svg")
+async def logo_svg():
+    if LOGO_SVG_PATH.exists():
+        return FileResponse(LOGO_SVG_PATH, media_type="image/svg+xml", headers=_static_headers())
+    raise HTTPException(status_code=404, detail="logo.svg not found")
+
+
 def _serve_frontend_module(subdir: str, filename: str):
     """Sirve un módulo .js desde frontend/src/<subdir>/."""
     path = FRONTEND_DIR / "src" / subdir / filename
@@ -232,11 +240,14 @@ async def serve_context(path: str):
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     state.connections.append(websocket)
+    watchdog.client_connected()
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
-        state.connections.remove(websocket)
+        if websocket in state.connections:
+            state.connections.remove(websocket)
+        watchdog.client_disconnected()
 
 
 if __name__ == "__main__":

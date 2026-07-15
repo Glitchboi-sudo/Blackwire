@@ -8,23 +8,40 @@ el config del proyecto y se reflejan en la config del proxy.
 import hashlib
 from datetime import datetime
 
+import aiosqlite
 from fastapi import APIRouter
 
+from config import get_project_db
 from services import state
 from services.proxy_control import update_proxy_config
 from db import get_project_config, save_project_config
 from schemas import ScopeRule
+from utils.scope import match_scope
 
 router = APIRouter()
 
 
+async def _reapply_scope_to_history(project: str):
+    """Recalcula in_scope para las requests ya guardadas, para que los cambios
+    de scope sean retroactivos en lugar de aplicar solo a tráfico nuevo."""
+    async with aiosqlite.connect(get_project_db(project)) as db:
+        cursor = await db.execute("SELECT id, url FROM requests")
+        rows = await cursor.fetchall()
+        for rid, url in rows:
+            in_scope = 1 if match_scope(url, state.scope_rules) else 0
+            await db.execute("UPDATE requests SET in_scope = ? WHERE id = ?", (in_scope, rid))
+        await db.commit()
+
+
 async def _persist_scope():
-    """Guarda scope_rules en el config del proyecto y refresca la config del proxy."""
+    """Guarda scope_rules en el config del proyecto, refresca la config del
+    proxy y reaplica las reglas al historial ya capturado."""
     project = state.get_current_project()
     if project:
         config = await get_project_config(project)
         config["scope_rules"] = state.scope_rules
         await save_project_config(project, config)
+        await _reapply_scope_to_history(project)
     await update_proxy_config()
 
 

@@ -20,12 +20,5 @@ export const proxyService = {
    */
   async stop() {
     return await api.post('/api/proxy/stop');
-  },
-
-  /**
-   * Launch browser with proxy
-   */
-  async launchBrowser(proxyPort) {
-    return await api.post(`/api/browser/launch?proxy_port=${proxyPort}`);
   }
 };

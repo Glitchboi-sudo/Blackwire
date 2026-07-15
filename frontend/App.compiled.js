@@ -118,7 +118,7 @@ import { HistoryPanel } from './src/components/tabs/HistoryPanel.jsx';
 import { InterceptPanel } from './src/components/tabs/InterceptPanel.jsx';
 import { ScopePanel } from './src/components/tabs/ScopePanel.jsx';
 import { RepeaterPanel } from './src/components/tabs/RepeaterPanel.jsx';
-import { GitPanel } from './src/components/tabs/GitPanel.jsx';
+import { WikiPanel } from './src/components/tabs/WikiPanel.jsx';
 import { ExtensionsPanel } from './src/components/tabs/ExtensionsPanel.jsx';
 import { CollectionsPanel } from './src/components/tabs/CollectionsPanel.jsx';
 import { ChepyPanel } from './src/components/tabs/ChepyPanel.jsx';
@@ -188,7 +188,7 @@ function Blackwire() {
   // Estado general
   const [appReady, setAppReady] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [themeId, setThemeId] = useLocalStorage('bw_theme', 'midnight');
+  const [themeId, setThemeId] = useLocalStorage('bw_theme', 'githubdark');
 
   // Filtros / HTTPQL (initialized after hooks below)
   const [presets, setPresets] = useState([]);
@@ -262,18 +262,23 @@ function Blackwire() {
   const [cmpB, setCmpB] = useState(null);
   const [cmpView, setCmpView] = useState('request');
 
-  // Resizable panels
-  const [histPanelW, setHistPanelW] = useState(44);
-  const [repSideW, setRepSideW] = useState(200);
-  const [repSplitPct, setRepSplitPct] = useState(50);
-  const [intPendW, setIntPendW] = useState(280);
-  const [wsConnsW, setWsConnsW] = useState(220);
-  const [wsFramesW, setWsFramesW] = useState(300);
-  const [chepyInW, setChepyInW] = useState(30);
-  const [chepyRecW, setChepyRecW] = useState(30);
-  const [collSideW, setCollSideW] = useState(200);
-  const [collStepsW, setCollStepsW] = useState(350);
-  const [smTreeW, setSmTreeW] = useState(38);
+  // Resizable panels — persistidos en localStorage para conservar el layout
+  // "a gusto" entre recargas.
+  const [histPanelW, setHistPanelW] = useLocalStorage('bw_histPanelW', 44);
+  const [repSideW, setRepSideW] = useLocalStorage('bw_repSideW', 200);
+  const [repSplitPct, setRepSplitPct] = useLocalStorage('bw_repSplitPct', 50);
+  const [repHdrPct, setRepHdrPct] = useLocalStorage('bw_repHdrPct', 40);
+  const [repRespHdrH, setRepRespHdrH] = useLocalStorage('bw_repRespHdrH', 100);
+  const [cmpSplitPct, setCmpSplitPct] = useLocalStorage('bw_cmpSplitPct', 50);
+  const [smDetPct, setSmDetPct] = useLocalStorage('bw_smDetPct', 50);
+  const [intPendW, setIntPendW] = useLocalStorage('bw_intPendW', 280);
+  const [wsConnsW, setWsConnsW] = useLocalStorage('bw_wsConnsW', 220);
+  const [wsFramesW, setWsFramesW] = useLocalStorage('bw_wsFramesW', 300);
+  const [chepyInW, setChepyInW] = useLocalStorage('bw_chepyInW', 30);
+  const [chepyRecW, setChepyRecW] = useLocalStorage('bw_chepyRecW', 30);
+  const [collSideW, setCollSideW] = useLocalStorage('bw_collSideW', 200);
+  const [collStepsW, setCollStepsW] = useLocalStorage('bw_collStepsW', 350);
+  const [smTreeW, setSmTreeW] = useLocalStorage('bw_smTreeW', 38);
 
   // Body search
   const histSearch = useBodySearch();
@@ -656,7 +661,7 @@ function Blackwire() {
     }, 5000); // Refresh every 5 seconds as backup to WebSocket
 
     return () => clearInterval(interval);
-  }, [curPrj, tab, currentPage, pageSize]);
+  }, [curPrj, tab, currentPage, pageSize, search, savedOnly, scopeOnly]);
 
   // Sync repeater saved tabs
   useEffect(() => {
@@ -2432,19 +2437,19 @@ function Blackwire() {
 
   const themeVars = (THEMES[themeId] && THEMES[themeId].vars)
     ? THEMES[themeId].vars
-    : (THEMES.midnight && THEMES.midnight.vars) ? THEMES.midnight.vars : {};
+    : (THEMES.githubdark && THEMES.githubdark.vars) ? THEMES.githubdark.vars : {};
 
   // Estado/handlers expuestos a los paneles de pestaña (src/components/tabs/).
-  const __appCtx = { API, DynamicExtensionUI, EXTENSION_CUSTOM_COMPONENTS, ResizeHandle, SENS_COLORS, SENS_FILES, SENS_GENERAL, SENS_TOKENS, SENS_URLS, SchemaBasedUI, addChepyOp, addRule, addSessionRule, api, applyPreset, bakeChepy, chepy, chepyBaking, chepyCat, chepyCntRef, chepyErr, chepyIn, chepyInW, chepyOps, chepyOut, chepyRecW, chepySelCat, chepySubTab, clearChepyRecipe, clearHist, cmpA, cmpB, cmpDiff, cmpView, cmtMsg, collItems, collResps, collRunning, collSideW, collStep, collStepsW, collSubTab, collVars, collections, colls, colorizeBody, colorizeHeaders, commit, commits, consoleEndRef, createColl, createPrj, createWebhookToken, currentPage, decodeJWT, delPreset, delPrj, delRepItem, delReq, deleteColl, deleteCollItem, deleteIntAttack, deleteSessionRule, detTab, dropAll, dropReq, editReq, encodeJWT, escapeHtml, executeCollStep, exportProject, exportProjectBurp, exportSitemap, extensions, filtered, firstPage, fmtH, fmtHHtml, fmtTime, followRedirect, formatBody, fwdAll, fwdReq, git, handleRepBodyInput, highlightMatches, histContentRef, histPanelW, histSearch, histSubTab, hookToast, httpqlError, importAsNewProject, importBurpXML, importProject, intAttackType, intAttacks, intBody, intBodyRef, intComputeTotal, intConcurrency, intDelay, intDelayMax, intDelayMin, intDone, intFilter, intFollowRedirects, intHeaders, intHeadersHighlightRef, intHeadersRef, intMaxRetries, intMethod, intOn, intPayloads, intPct, intPendW, intPositions, intRandomDelay, intResults, intRunning, intSelAttack, intSelPayloadSet, intSelResult, intSortCol, intSortDir, intSorted, intStartTime, intSubTab, intTimeout, intTotal, intUrl, intUrlRef, intercept, interceptHeadersHighlightRef, interceptHeadersRef, jwtHeader, jwtPayload, jwtSignature, jwtToken, lastPage, loadCollItems, loadIntAttack, loadRepItem, loadReqs, loadSensDetail, loadSessionRules, loadWebhookLocal, loadWsConns, loadWsFrames, loading, minify, moveChepyOp, navigateHistory, newDesc, newName, newPat, newRule, newType, nextPage, pageSize, pagination, pending, presetName, presets, prettyPrint, prettyRepBody, minifyRepBody, prevPage, prjs, projects, proxyConsole, pxPort, refreshWebhook, removeChepyOp, renameIntAttack, renameRepItem, renderTreeNode, repB, repBodyColor, repBodyEditRef, repCntRef, repFollowRedirects, repH, repHeadersHighlightRef, repHeadersRef, repHistory, repHistoryIndex, repM, repReqs, repResp, repRespBody, repRespFormat, repSearch, repSideW, repSplitPct, repU, repeater, reqFormat, reqs, requests, resendWsFrame, resetCollRun, respFormat, runIntruderAttack, runSensitiveScan, savePreset, saveRep, savedOnly, scope, scopeOnly, scopeRules, search, selColl, selPend, selRep, selReq, selReqFull, selWsConn, selWsFrame, selectPrj, selectWsFrame, sendRep, sensBatch, sensDetailRef, sensEntropyThreshold, sensFilter, sensFiltered, sensMaxSize, sensPatterns, sensPct, sensResults, sensScanning, sensScopeOnly, sensSelDetail, sensSelResult, sensSubTab, sensUnique, sensitive, sessionRulesData, setChepyIn, setChepyInW, setChepyRecW, setChepySelCat, setChepySubTab, setCmpA, setCmpB, setCmpView, setCmtMsg, setCollSideW, setCollStep, setCollStepsW, setCollSubTab, setDetTab, setEditReq, setHistPanelW, setHistSubTab, setIntAttackType, setIntBody, setIntConcurrency, setIntDelay, setIntDelayMax, setIntDelayMin, setIntDone, setIntFilter, setIntFollowRedirects, setIntHeaders, setIntMaxRetries, setIntMethod, setIntPayloads, setIntPct, setIntPendW, setIntRandomDelay, setIntResults, setIntSelAttack, setIntSelPayloadSet, setIntSelResult, setIntSortCol, setIntSortDir, setIntSubTab, setIntTimeout, setIntTotal, setIntUrl, setJwtHeader, setJwtPayload, setJwtSignature, setJwtToken, setNewDesc, setNewName, setNewPat, setNewRule, setNewType, setPageSize, setPresetName, setRepB, setRepBodyColor, setRepFollowRedirects, setRepH, setRepM, setRepRespBody, setRepRespFormat, setRepSideW, setRepU, setReqFormat, setRespFormat, setSavedOnly, setScopeOnly, setSearch, setSelPend, setSelReq, setSensBatch, setSensEntropyThreshold, setSensFilter, setSensMaxSize, setSensPatterns, setSensPct, setSensResults, setSensScopeOnly, setSensSelDetail, setSensSelResult, setSensSubTab, setSensUnique, setShowNew, setShowPresets, setSmExpanded, setSmFilterExt, setSmFilterMethod, setSmFilterStatus, setSmFilterText, setSmSelNode, setSmShowStats, setSmTreeW, setWhkApiKey, setWsConnsW, setWsFramesW, setWsResendMsg, showContextMenu, showNew, showPresets, siteTree, smContentRef, smFilterExt, smFilterMethod, smFilterStatus, smFilterText, smNodeReqs, smSelNode, smShowStats, smStats, smTreeW, stCls, stopIntruderAttack, stopSensitiveScan, tab, toRep, toast, togExtEnabled, togSave, toggleSessionRule, totalPages, totalRequests, updateChepyArg, updateCollItemExtracts, updateExtCfg, whkApiKey, whkLoading, whkReqs, wsConns, wsConnsW, wsFrames, wsFramesW, wsResendMsg, wsResendResp, wsSending };
+  const __appCtx = { API, DynamicExtensionUI, EXTENSION_CUSTOM_COMPONENTS, ResizeHandle, SENS_COLORS, SENS_FILES, SENS_GENERAL, SENS_TOKENS, SENS_URLS, SchemaBasedUI, addChepyOp, addRule, addSessionRule, api, applyPreset, bakeChepy, chepy, chepyBaking, chepyCat, chepyCntRef, chepyErr, chepyIn, chepyInW, chepyOps, chepyOut, chepyRecW, chepySelCat, chepySubTab, clearChepyRecipe, clearHist, cmpA, cmpB, cmpDiff, cmpSplitPct, cmpView, cmtMsg, collItems, collResps, collRunning, collSideW, collStep, collStepsW, collSubTab, collVars, collections, colls, colorizeBody, colorizeHeaders, commit, commits, consoleEndRef, createColl, createPrj, createWebhookToken, currentPage, decodeJWT, delPreset, delPrj, delRepItem, delReq, deleteColl, deleteCollItem, deleteIntAttack, deleteSessionRule, detTab, dropAll, dropReq, editReq, encodeJWT, escapeHtml, executeCollStep, exportProject, exportProjectBurp, exportSitemap, extensions, filtered, firstPage, fmtH, fmtHHtml, fmtTime, followRedirect, formatBody, fwdAll, fwdReq, git, handleRepBodyInput, highlightMatches, histContentRef, histPanelW, histSearch, histSubTab, hookToast, httpqlError, importAsNewProject, importBurpXML, importProject, intAttackType, intAttacks, intBody, intBodyRef, intComputeTotal, intConcurrency, intDelay, intDelayMax, intDelayMin, intDone, intFilter, intFollowRedirects, intHeaders, intHeadersHighlightRef, intHeadersRef, intMaxRetries, intMethod, intOn, intPayloads, intPct, intPendW, intPositions, intRandomDelay, intResults, intRunning, intSelAttack, intSelPayloadSet, intSelResult, intSortCol, intSortDir, intSorted, intStartTime, intSubTab, intTimeout, intTotal, intUrl, intUrlRef, intercept, interceptHeadersHighlightRef, interceptHeadersRef, jwtHeader, jwtPayload, jwtSignature, jwtToken, lastPage, loadCollItems, loadIntAttack, loadRepItem, loadReqs, loadSensDetail, loadSessionRules, loadWebhookLocal, loadWsConns, loadWsFrames, loading, minify, moveChepyOp, navigateHistory, newDesc, newName, newPat, newRule, newType, nextPage, pageSize, pagination, pending, presetName, presets, prettyPrint, prettyRepBody, minifyRepBody, prevPage, prjs, projects, proxyConsole, pxPort, refreshWebhook, removeChepyOp, renameIntAttack, renameRepItem, renderTreeNode, repB, repBodyColor, repBodyEditRef, repCntRef, repFollowRedirects, repH, repHeadersHighlightRef, repHeadersRef, repHistory, repHistoryIndex, repM, repReqs, repResp, repRespBody, repRespFormat, repSearch, repHdrPct, repRespHdrH, repSideW, repSplitPct, repU, repeater, reqFormat, reqs, requests, resendWsFrame, resetCollRun, respFormat, runIntruderAttack, runSensitiveScan, savePreset, saveRep, savedOnly, scope, scopeOnly, scopeRules, search, selColl, selPend, selRep, selReq, selReqFull, selWsConn, selWsFrame, selectPrj, selectWsFrame, sendRep, sensBatch, sensDetailRef, sensEntropyThreshold, sensFilter, sensFiltered, sensMaxSize, sensPatterns, sensPct, sensResults, sensScanning, sensScopeOnly, sensSelDetail, sensSelResult, sensSubTab, sensUnique, sensitive, sessionRulesData, setChepyIn, setChepyInW, setChepyRecW, setChepySelCat, setChepySubTab, setCmpA, setCmpB, setCmpSplitPct, setCmpView, setCmtMsg, setCollSideW, setCollStep, setCollStepsW, setCollSubTab, setDetTab, setEditReq, setHistPanelW, setHistSubTab, setIntAttackType, setIntBody, setIntConcurrency, setIntDelay, setIntDelayMax, setIntDelayMin, setIntDone, setIntFilter, setIntFollowRedirects, setIntHeaders, setIntMaxRetries, setIntMethod, setIntPayloads, setIntPct, setIntPendW, setIntRandomDelay, setIntResults, setIntSelAttack, setIntSelPayloadSet, setIntSelResult, setIntSortCol, setIntSortDir, setIntSubTab, setIntTimeout, setIntTotal, setIntUrl, setJwtHeader, setJwtPayload, setJwtSignature, setJwtToken, setNewDesc, setNewName, setNewPat, setNewRule, setNewType, setPageSize, setPresetName, setRepB, setRepBodyColor, setRepFollowRedirects, setRepH, setRepM, setRepHdrPct, setRepRespBody, setRepRespFormat, setRepRespHdrH, setRepSideW, setRepSplitPct, setRepU, setReqFormat, setRespFormat, setSavedOnly, setScopeOnly, setSearch, setSelPend, setSelReq, setSensBatch, setSensEntropyThreshold, setSensFilter, setSensMaxSize, setSensPatterns, setSensPct, setSensResults, setSensScopeOnly, setSensSelDetail, setSensSelResult, setSensSubTab, setSensUnique, setShowNew, setShowPresets, setSmDetPct, setSmExpanded, setSmFilterExt, setSmFilterMethod, setSmFilterStatus, setSmFilterText, setSmSelNode, setSmShowStats, setSmTreeW, setWhkApiKey, setWsConnsW, setWsFramesW, setWsResendMsg, showContextMenu, showNew, showPresets, siteTree, smContentRef, smFilterExt, smFilterMethod, smFilterStatus, smFilterText, smDetPct, smNodeReqs, smSelNode, smShowStats, smStats, smTreeW, stCls, stopIntruderAttack, stopSensitiveScan, tab, toRep, toast, togExtEnabled, togSave, toggleSessionRule, totalPages, totalRequests, updateChepyArg, updateCollItemExtracts, updateExtCfg, whkApiKey, whkLoading, whkReqs, wsConns, wsConnsW, wsFrames, wsFramesW, wsResendMsg, wsResendResp, wsSending };
 
   return (
     React.createElement('div', { className: "app", style: themeVars,}
       , React.createElement('style', { dangerouslySetInnerHTML: { __html: `
-:root{--bg:#0a0e14;--bg2:#0d1117;--bg3:#161b22;--bgh:#1f262d;--brd:#30363d;--txt:#e6edf3;--txt2:#8b949e;--txt3:#6e7681;--blue:#58a6ff;--green:#3fb950;--red:#f85149;--orange:#d29922;--purple:#a371f7;--cyan:#39c5cf;--font-main:"Inter",sans-serif;--font-mono:"JetBrains Mono",monospace}
+:root{--bg:#0d1117;--bg2:#010409;--bg3:#161b22;--bgh:#21262d;--brd:#30363d;--txt:#e6edf3;--txt2:#c9d1d9;--txt3:#8b949e;--blue:#58a6ff;--green:#3fb950;--red:#f85149;--orange:#d29922;--purple:#bc8cff;--cyan:#56d4dd;--font-main:"Inter",sans-serif;--font-mono:"JetBrains Mono",monospace}
 *{margin:0;padding:0;box-sizing:border-box}body{font-family:var(--font-main);background:var(--bg);color:var(--txt);overflow:hidden}
 .app{display:flex;flex-direction:column;height:100vh}
 .hdr{display:flex;align-items:center;justify-content:space-between;padding:10px 20px;background:var(--bg2);border-bottom:1px solid var(--brd)}
-.logo{display:flex;align-items:center;gap:10px}.logo-i{width:32px;height:32px;background:linear-gradient(135deg,var(--cyan),var(--purple));border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:700}
+.logo{display:flex;align-items:center;gap:10px}.logo-i{width:32px;height:32px;border-radius:6px;object-fit:contain;display:block}
 .logo-t{font-family:var(--font-mono);font-size:18px;font-weight:600;background:linear-gradient(90deg,var(--cyan),var(--purple));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
 .prj-badge{background:var(--bg3);padding:4px 10px;border-radius:4px;font-size:11px;color:var(--cyan);border:1px solid var(--brd);margin-left:12px}
 .hdr-ctrl{display:flex;align-items:center;gap:10px}
@@ -2475,6 +2480,7 @@ function Blackwire() {
 .det-tabs{display:flex;background:var(--bg2);border-bottom:1px solid var(--brd);padding:0 10px}
 .det-tab{padding:8px 14px;font-size:11px;color:var(--txt2);cursor:pointer;border-bottom:2px solid transparent}
 .det-tab.act{color:var(--cyan);border-bottom-color:var(--cyan)}
+.det-meta{display:flex;gap:14px;padding:6px 14px;background:var(--bg2);border-bottom:1px solid var(--brd);font-size:10px;color:var(--txt3);font-family:var(--font-mono)}
 .hist-wrap{display:flex;flex-direction:column;width:100%;height:100%}
 .hist-content{display:flex;flex:1;overflow:hidden}
 .hist-sub-tabs{display:flex;width:100%;background:var(--bg2);border-bottom:1px solid var(--brd);padding:0 16px;flex-shrink:0}
@@ -2482,21 +2488,24 @@ function Blackwire() {
 .hist-sub-tab:hover{color:var(--txt);background:var(--bg3)}.hist-sub-tab.act{color:var(--cyan);border-bottom-color:var(--cyan)}
 .code{flex:1;padding:14px;font-family:var(--font-mono);font-size:11px;line-height:1.5;background:var(--bg);overflow:auto;white-space:pre-wrap;word-break:break-all}
 .json-key{color:var(--cyan)}.json-string{color:var(--green)}.json-number{color:var(--orange)}.json-bool{color:var(--purple)}.json-null{color:var(--txt3)}
-.flt-bar{display:flex;align-items:center;gap:6px;padding:6px 14px;background:var(--bg3);border-bottom:1px solid var(--brd)}
+.flt-bar{display:flex;align-items:center;gap:6px;padding:6px 14px;background:var(--bg3);border-bottom:1px solid var(--brd);position:relative}
 .flt-in-wrap{flex:1;position:relative}
 .flt-in{width:100%;padding:5px 8px;background:var(--bg2);border:1px solid var(--brd);border-radius:4px;color:var(--txt);font-size:11px;font-family:var(--font-mono);outline:none}
 .flt-in:focus{border-color:var(--blue)}.flt-in.flt-err{border-color:var(--red);background:rgba(248,81,73,.08)}
 .flt-err-msg{position:absolute;top:100%;left:0;margin-top:4px;padding:4px 8px;background:var(--bg2);border:1px solid var(--red);border-radius:4px;font-size:10px;color:var(--red);white-space:nowrap;z-index:100}
 .flt-tog{padding:3px 8px;background:var(--bg2);border:1px solid var(--brd);border-radius:4px;font-size:10px;cursor:pointer;user-select:none}.flt-tog.act{background:var(--blue);border-color:var(--blue)}
-.flt-preset-dd{position:absolute;top:100%;right:0;margin-top:4px;min-width:300px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;z-index:200;box-shadow:0 8px 24px rgba(0,0,0,.4);max-height:300px;overflow-y:auto}
+.flt-preset-wrap{position:static}
+.flt-preset-dd{position:absolute;top:100%;left:8px;right:8px;margin-top:4px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;z-index:200;box-shadow:0 8px 24px rgba(0,0,0,.4);max-height:320px;overflow-y:auto}
 .flt-preset-save{display:flex;gap:4px;padding:8px;border-bottom:1px solid var(--brd)}.flt-preset-save .flt-in{flex:1}
 .flt-preset-empty{padding:12px;text-align:center;color:var(--txt3);font-size:11px}
+.flt-preset-group-label{padding:6px 8px 2px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--txt3)}
 .flt-preset-item{display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid var(--brd);cursor:pointer}.flt-preset-item:hover{background:var(--bg3)}
 .flt-preset-name-label{font-weight:600;font-size:11px;color:var(--cyan);white-space:nowrap}
 .flt-preset-q{flex:1;font-size:10px;color:var(--txt3);font-family:var(--font-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .flt-preset-del{padding:1px 5px!important;font-size:10px!important;min-width:auto}
+.pagination-bar{display:flex;align-items:center;gap:8px;padding:6px 14px;background:var(--bg2);border-bottom:1px solid var(--brd)}
 .pagination-info{font-size:11px;color:var(--txt2);white-space:nowrap}
-.pagination-size{background:var(--bg2);color:var(--txt);border:1px solid var(--brd);border-radius:4px;padding:3px 6px;font-size:11px;outline:none;cursor:pointer}
+.pagination-size{background:var(--bg3);color:var(--txt);border:1px solid var(--brd);border-radius:4px;padding:3px 6px;font-size:11px;outline:none;cursor:pointer;margin-left:auto}
 .pagination-size:focus{border-color:var(--blue)}.pagination-size option{background:var(--bg2);color:var(--txt)}
 .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--txt3);font-size:13px;gap:6px}.empty-i{font-size:40px;opacity:.3}
 .acts{display:flex;gap:6px}
@@ -2508,6 +2517,34 @@ function Blackwire() {
 .prj-card:hover{background:var(--bg3);border-color:var(--blue)}.prj-card.cur{border-color:var(--cyan)}
 .prj-name{font-weight:600;font-size:14px;margin-bottom:3px}.cur-badge{background:var(--cyan);color:#000;padding:1px 6px;border-radius:3px;font-size:9px;margin-left:6px}
 .prj-desc{color:var(--txt2);font-size:12px}.prj-date{color:var(--txt3);font-size:10px;margin-top:3px}
+.prj-menu-wrap{position:relative;display:inline-block}
+.prj-menu{position:absolute;right:0;top:100%;margin-top:4px;background:var(--bg2);border:1px solid var(--brd);border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,.3);z-index:1000;min-width:240px}
+.prj-menu-item{padding:8px 12px;cursor:pointer;font-size:11px;color:var(--txt);border-bottom:1px solid var(--brd)}
+.prj-menu-item:last-child{border-bottom:none}.prj-menu-item:hover{background:var(--bg3)}
+.prj-menu-sub{font-size:10px;color:var(--txt3);margin-top:2px}
+.wiki-wrap{display:flex;width:100%;height:100%;overflow:hidden}
+.wiki-nav{width:220px;flex-shrink:0;background:var(--bg2);border-right:1px solid var(--brd);overflow-y:auto;padding:8px}
+.wiki-nav-title{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--txt3);padding:6px 10px}
+.wiki-nav-item{padding:8px 10px;font-size:12px;color:var(--txt2);cursor:pointer;border-radius:5px;margin-bottom:2px}
+.wiki-nav-item:hover{background:var(--bg3);color:var(--txt)}
+.wiki-nav-item.act{background:var(--bg3);color:var(--cyan);font-weight:600}
+.wiki-body{flex:1;overflow-y:auto}
+.wiki-doc{max-width:820px;margin:0 auto;padding:28px 32px;color:var(--txt);font-size:13px;line-height:1.65}
+.wiki-doc h1{font-size:22px;margin:0 0 16px;padding-bottom:8px;border-bottom:1px solid var(--brd)}
+.wiki-doc h2{font-size:17px;margin:26px 0 10px;color:var(--cyan)}
+.wiki-doc h3{font-size:14px;margin:18px 0 8px;color:var(--txt)}
+.wiki-doc p{margin:0 0 12px}
+.wiki-doc ul,.wiki-doc ol{margin:0 0 12px;padding-left:22px}
+.wiki-doc li{margin:3px 0}
+.wiki-doc a{color:var(--blue);text-decoration:none}.wiki-doc a:hover{text-decoration:underline}
+.wiki-doc code{font-family:var(--font-mono);font-size:11.5px;background:var(--bg3);padding:1px 5px;border-radius:3px;color:var(--orange)}
+.wiki-doc pre{background:var(--bg2);border:1px solid var(--brd);border-radius:6px;padding:12px 14px;overflow-x:auto;margin:0 0 14px}
+.wiki-doc pre code{background:none;padding:0;color:var(--txt);font-size:11.5px;line-height:1.5}
+.wiki-doc blockquote{border-left:3px solid var(--cyan);background:var(--bg2);padding:8px 14px;margin:0 0 14px;color:var(--txt2);border-radius:0 4px 4px 0}
+.wiki-doc hr{border:none;border-top:1px solid var(--brd);margin:20px 0}
+.wiki-doc .wiki-tbl{border-collapse:collapse;width:100%;margin:0 0 14px;font-size:12px}
+.wiki-doc .wiki-tbl th,.wiki-doc .wiki-tbl td{border:1px solid var(--brd);padding:6px 10px;text-align:left}
+.wiki-doc .wiki-tbl th{background:var(--bg3);font-weight:600}
 .icept-pnl{display:flex;flex-direction:column;width:100%;height:100%}
 .icept-bar{display:flex;align-items:center;gap:6px;padding:8px 12px;background:var(--bg2);border-bottom:1px solid var(--brd);flex-shrink:0}
 .icept-toggle{display:inline-flex;align-items:center;gap:7px;padding:5px 13px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid transparent;transition:all 0.15s;font-family:var(--font-sans)}
@@ -2560,8 +2597,12 @@ function Blackwire() {
 .context-menu-divider{height:1px;background:var(--brd);margin:4px 0}
 .chepy-cnt{display:flex;flex-direction:column;width:100%;height:100%}.chepy-col{display:flex;flex-direction:column;overflow:hidden}
 .chepy-in-col{flex-shrink:0;border-right:1px solid var(--brd)}.chepy-recipe-col{flex-shrink:0;border-right:1px solid var(--brd)}.chepy-out-col{flex:1;min-width:0}
-.chepy-add{display:flex;flex-direction:column;border-bottom:1px solid var(--brd);max-height:40%}.chepy-ops-list{flex:1;overflow:auto;padding:0 8px 8px}
-.chepy-avail-op{padding:5px 10px;font-size:11px;cursor:pointer;border-radius:4px;color:var(--txt2);font-family:var(--font-mono)}.chepy-avail-op:hover{background:var(--bg3);color:var(--cyan)}
+.chepy-add{display:flex;flex-direction:column;border-bottom:1px solid var(--brd);max-height:48%}.chepy-ops-list{flex:1;overflow:auto;padding:0 8px 8px}
+.chepy-op-search{display:flex;align-items:center;gap:6px;padding:8px}.chepy-op-search .sel{flex-shrink:0;max-width:45%}.chepy-op-filter{flex:1;font-size:11px;padding:5px 8px}
+.chepy-ops-empty{padding:12px;text-align:center;color:var(--txt3);font-size:11px}
+.chepy-avail-op{display:flex;align-items:center;gap:8px;padding:5px 10px;font-size:11px;cursor:pointer;border-radius:4px;color:var(--txt2);font-family:var(--font-mono)}.chepy-avail-op:hover{background:var(--bg3);color:var(--cyan)}
+.chepy-avail-plus{width:16px;height:16px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border-radius:3px;background:var(--bg3);color:var(--txt3);font-weight:700;font-size:12px}.chepy-avail-op:hover .chepy-avail-plus{background:var(--cyan);color:var(--bg)}
+.chepy-avail-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.chepy-avail-cat{font-size:9px;color:var(--txt3);background:var(--bg3);padding:1px 5px;border-radius:3px;flex-shrink:0}
 .chepy-steps{flex:1;overflow:auto;padding:8px}
 .chepy-step{background:var(--bg2);border:1px solid var(--brd);border-radius:6px;margin-bottom:6px}
 .chepy-step-hdr{display:flex;align-items:center;gap:8px;padding:8px 10px}
@@ -2569,6 +2610,26 @@ function Blackwire() {
 .chepy-step-name{flex:1;font-size:12px;font-weight:500}.chepy-step-acts{display:flex;gap:3px}
 .chepy-step-params{padding:6px 10px 10px;border-top:1px solid var(--brd);display:flex;flex-direction:column;gap:6px}
 .chepy-param{display:flex;align-items:center;gap:8px}.chepy-param-lbl{font-size:10px;color:var(--txt2);min-width:60px}
+.chepy-param-field{flex:1;font-size:11px;padding:5px 8px}
+.jwt-analyzer{display:flex;flex-direction:column;flex:1;padding:20px;gap:16px;overflow:auto}
+.jwt-field{display:flex;flex-direction:column;gap:8px}
+.jwt-label{font-size:12px;font-weight:600;color:var(--txt)}
+.jwt-label-h{color:var(--red)}.jwt-label-p{color:var(--purple)}.jwt-label-s{color:var(--cyan)}
+.jwt-token-ta{min-height:80px;font-family:var(--font-mono);font-size:11px}
+.jwt-json-ta{min-height:120px;font-family:var(--font-mono);font-size:11px}
+.jwt-sig-in{font-family:var(--font-mono);font-size:11px}
+.jwt-token-view{font-family:var(--font-mono);font-size:11px;word-break:break-all;background:var(--bg2);border:1px solid var(--brd);border-radius:4px;padding:8px 10px;line-height:1.5}
+.jwt-seg-h{color:var(--red)}.jwt-seg-p{color:var(--purple)}.jwt-seg-s{color:var(--cyan)}.jwt-dot{color:var(--txt3)}
+.jwt-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.jwt-claims{display:flex;flex-wrap:wrap;gap:8px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;padding:10px 12px}
+.jwt-claim{display:flex;flex-direction:column;gap:2px;min-width:120px}
+.jwt-claim-k{font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:var(--txt3)}
+.jwt-claim-v{font-size:12px;font-family:var(--font-mono);color:var(--txt)}.jwt-claim-v.warn{color:var(--red);font-weight:600}
+.jwt-attacks{padding:16px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;display:flex;flex-direction:column;gap:12px}
+.jwt-attacks-title{font-size:13px;font-weight:600;color:var(--cyan)}
+.jwt-attack-title{font-size:11px;font-weight:600;color:var(--txt);margin-bottom:3px}
+.jwt-attack-body{font-size:11px;color:var(--txt2);line-height:1.55}
+.jwt-attack-code{display:block;margin-top:5px;padding:6px 8px;background:var(--bg3);border-radius:3px;font-size:10px;font-family:var(--font-mono);color:var(--orange)}
 .ws-cnt{display:flex;width:100%;height:100%}
 .ws-conns{flex-shrink:0;border-right:1px solid var(--brd)}.ws-frames{flex-shrink:0;border-right:1px solid var(--brd)}.ws-detail{flex:1;display:flex;flex-direction:column}
 .ws-conn-item{padding:10px 14px;border-bottom:1px solid var(--brd);cursor:pointer;font-size:11px}
@@ -2624,6 +2685,10 @@ function Blackwire() {
 .resize-h:hover,.resize-h.dragging{background:var(--blue)}
 .resize-h::after{content:'';position:absolute;top:0;bottom:0;left:2px;width:2px;background:var(--brd);transition:background .15s}
 .resize-h:hover::after,.resize-h.dragging::after{background:var(--blue)}
+.resize-v{height:6px;cursor:row-resize;background:transparent;flex-shrink:0;position:relative;z-index:5;transition:background .15s}
+.resize-v:hover,.resize-v.dragging{background:var(--blue)}
+.resize-v::after{content:'';position:absolute;left:0;right:0;top:2px;height:2px;background:var(--brd);transition:background .15s}
+.resize-v:hover::after,.resize-v.dragging::after{background:var(--blue)}
 .search-bar{display:flex;align-items:center;gap:6px;padding:4px 10px;background:var(--bg2);border-top:1px solid var(--brd);flex-shrink:0}
 .search-bar input{flex:1;padding:4px 8px;background:var(--bg3);border:1px solid var(--brd);border-radius:4px;color:var(--txt);font-size:11px;font-family:var(--font-mono);outline:none;min-width:0}
 .search-bar input:focus{border-color:var(--blue)}
@@ -2687,7 +2752,7 @@ function Blackwire() {
       React.createElement(React.Fragment, null
       , React.createElement('header', { className: "hdr",}
         , React.createElement('div', { className: "logo",}
-          , React.createElement('div', { className: "logo-i",}, "BW")
+          , React.createElement('img', { className: "logo-i", src: "/logo.svg", alt: "Blackwire",} )
           , React.createElement('span', { className: "logo-t",}, "Blackwire")
           , curPrj && React.createElement('span', { className: "prj-badge",}, curPrj.project)
         )
@@ -2713,7 +2778,6 @@ function Blackwire() {
               ) : (
                 React.createElement('button', { className: "btn btn-d" , onClick: () => proxy.stop(),}, "■ Stop" )
               )
-              , React.createElement('button', { className: "btn btn-s" , onClick: () => proxy.launchBrowser(), disabled: !pxRun,}, "🌐")
             )
           )
           , React.createElement('button', { className: "btn btn-sm btn-s"  , title: "Shutdown server" , onClick: () => { if (confirm('Shut down Blackwire server?')) api.post('/api/shutdown'); }, style: { marginLeft: '4px', color: 'var(--red)', fontSize: '14px', padding: '4px 8px' },}, "⏻")
@@ -2722,6 +2786,7 @@ function Blackwire() {
 
       , React.createElement('nav', { className: "tabs",}
         , React.createElement('div', { className: 'tab' + (tab === 'projects' ? ' act' : ''), onClick: () => setTab('projects'),}, "Projects")
+        , React.createElement('div', { className: 'tab' + (tab === 'wiki' ? ' act' : ''), onClick: () => setTab('wiki'),}, "Wiki")
         , curPrj && (
           React.createElement(React.Fragment, null
             , React.createElement('div', { className: 'tab' + (tab === 'scope' ? ' act' : ''), onClick: () => setTab('scope'),}, "Scope")
@@ -2730,7 +2795,6 @@ function Blackwire() {
             , React.createElement('div', { className: 'tab' + (tab === 'collections' ? ' act' : ''), onClick: () => { setTab('collections'); loadColls(); },}, "Collections")
             , React.createElement('div', { className: 'tab' + (tab === 'repeater' ? ' act' : ''), onClick: () => setTab('repeater'),}, "Repeater")
             , React.createElement('div', { className: 'tab' + (tab === 'intruder' ? ' act' : ''), onClick: () => setTab('intruder'),}, "Intruder")
-            , React.createElement('div', { className: 'tab' + (tab === 'git' ? ' act' : ''), onClick: () => setTab('git'),}, "Git")
             , React.createElement('div', { className: 'tab' + (tab === 'chepy' ? ' act' : ''), onClick: () => setTab('chepy'),}, "Cipher")
             , React.createElement('div', { className: 'tab' + (tab === 'compare' ? ' act' : ''), onClick: () => setTab('compare'),}, "Compare")
             , React.createElement('div', { className: 'tab' + (tab === 'sensitive' ? ' act' : ''), onClick: () => setTab('sensitive'),}, "Sensitive")
@@ -2763,7 +2827,7 @@ function Blackwire() {
 
         , tab === 'repeater' && curPrj && React.createElement(RepeaterPanel, __appCtx)
 
-        , tab === 'git' && curPrj && React.createElement(GitPanel, __appCtx)
+        , tab === 'wiki' && React.createElement(WikiPanel, __appCtx)
 
         , tab === 'extensions' && curPrj && React.createElement(ExtensionsPanel, __appCtx)
 
