@@ -163,6 +163,7 @@ class ErrorBoundary extends React.Component {
 function Blackwire() {
   // Estado principal
   const [tab, setTab] = useState('projects');
+  const [scopeSubTab, setScopeSubTab] = useState('scope');
 
   // Request UI state (requests list in hook)
   const [selReq, setSelReq] = useState(null);
@@ -2496,6 +2497,19 @@ function Blackwire() {
 .flt-tog{padding:3px 8px;background:var(--bg2);border:1px solid var(--brd);border-radius:4px;font-size:10px;cursor:pointer;user-select:none}.flt-tog.act{background:var(--blue);border-color:var(--blue)}
 .flt-preset-wrap{position:static}
 .flt-preset-dd{position:absolute;top:100%;left:8px;right:8px;margin-top:4px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;z-index:200;box-shadow:0 8px 24px rgba(0,0,0,.4);max-height:320px;overflow-y:auto}
+.flt-builder-wrap{position:static}
+.flt-builder-dd{position:absolute;top:100%;left:8px;right:8px;margin-top:4px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;z-index:200;box-shadow:0 8px 24px rgba(0,0,0,.4);max-height:70vh;overflow-y:auto;padding:10px}
+.flt-builder-hd{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;font-size:11px;font-weight:600;color:var(--txt2)}
+.flt-builder-hd .sel{font-size:11px;padding:3px 6px}
+.flt-builder-row{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.flt-builder-row .sel{font-size:11px;padding:4px 6px;flex:1;min-width:0}
+.flt-builder-row .inp{font-size:11px;padding:4px 6px;flex:1;min-width:0}
+.flt-builder-del{padding:2px 8px!important;flex-shrink:0}
+.flt-builder-add{margin:2px 0 10px}
+.flt-builder-preview{background:var(--bg);border:1px solid var(--brd);border-radius:4px;padding:8px;margin-bottom:10px}
+.flt-builder-preview-lbl{display:block;font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:var(--txt3);margin-bottom:4px}
+.flt-builder-preview code{font-family:var(--font-mono);font-size:11px;color:var(--cyan);word-break:break-all}
+.flt-builder-acts{display:flex;justify-content:flex-end;gap:8px}
 .flt-preset-save{display:flex;gap:4px;padding:8px;border-bottom:1px solid var(--brd)}.flt-preset-save .flt-in{flex:1}
 .flt-preset-empty{padding:12px;text-align:center;color:var(--txt3);font-size:11px}
 .flt-preset-group-label{padding:6px 8px 2px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--txt3)}
@@ -2507,7 +2521,10 @@ function Blackwire() {
 .pagination-info{font-size:11px;color:var(--txt2);white-space:nowrap}
 .pagination-size{background:var(--bg3);color:var(--txt);border:1px solid var(--brd);border-radius:4px;padding:3px 6px;font-size:11px;outline:none;cursor:pointer;margin-left:auto}
 .pagination-size:focus{border-color:var(--blue)}.pagination-size option{background:var(--bg2);color:var(--txt)}
-.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--txt3);font-size:13px;gap:6px}.empty-i{font-size:40px;opacity:.3}
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--txt3);font-size:13px;gap:6px;text-align:center;padding:20px}.empty-i{font-size:40px;opacity:.3}
+.empty span{color:var(--txt2);font-weight:500}
+.empty .empty-hint{max-width:340px;font-size:11px;font-weight:400;color:var(--txt3);line-height:1.5}
+.empty .empty-hint b{color:var(--txt2)}.empty .empty-hint code{font-family:var(--font-mono);font-size:10px;background:var(--bg3);padding:1px 4px;border-radius:3px;color:var(--cyan)}
 .acts{display:flex;gap:6px}
 .prj-pnl{padding:24px;max-width:800px;margin:0 auto;width:100%;height:100%;overflow-y:auto}.prj-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}.prj-hdr h2{font-size:18px}
 .new-prj{background:var(--bg2);padding:16px;border-radius:8px;margin-bottom:16px;display:flex;flex-direction:column;gap:10px}
@@ -2798,7 +2815,6 @@ function Blackwire() {
             <div className={'tab' + (tab === 'chepy' ? ' act' : '')} onClick={() => setTab('chepy')}>Cipher</div>
             <div className={'tab' + (tab === 'compare' ? ' act' : '')} onClick={() => setTab('compare')}>Compare</div>
             <div className={'tab' + (tab === 'sensitive' ? ' act' : '')} onClick={() => setTab('sensitive')}>Sensitive</div>
-            <div className={'tab' + (tab === 'bypass' ? ' act' : '')} onClick={() => { setTab('bypass'); bypass.loadRules(); bypass.loadPresets(); bypass.loadStatus(); }}>Bypass</div>
             <div className={'tab' + (tab === 'extensions' ? ' act' : '')} onClick={() => setTab('extensions')}>Extensions</div>
             <div className={'tab' + (tab === 'console' ? ' act' : '')} onClick={() => setTab('console')}>
               Console
@@ -2823,7 +2839,19 @@ function Blackwire() {
 
         {tab === 'intercept' && curPrj && React.createElement(InterceptPanel, __appCtx)}
 
-        {tab === 'scope' && curPrj && React.createElement(ScopePanel, __appCtx)}
+        {tab === 'scope' && curPrj && (
+          <div className="hist-wrap">
+            <div className="hist-sub-tabs">
+              <div className={'hist-sub-tab' + (scopeSubTab === 'scope' ? ' act' : '')} onClick={() => setScopeSubTab('scope')}>Scope</div>
+              <div className={'hist-sub-tab' + (scopeSubTab === 'bypass' ? ' act' : '')} onClick={() => { setScopeSubTab('bypass'); bypass.loadRules(); bypass.loadPresets(); bypass.loadStatus(); }}>Proxy Bypass</div>
+            </div>
+            <div style={{ flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
+              {scopeSubTab === 'scope'
+                ? React.createElement(ScopePanel, __appCtx)
+                : React.createElement(BypassManager, { toast: hookToast, bypass: bypass })}
+            </div>
+          </div>
+        )}
 
         {tab === 'repeater' && curPrj && React.createElement(RepeaterPanel, __appCtx)}
 
@@ -2837,8 +2865,6 @@ function Blackwire() {
         {tab === 'chepy' && curPrj && React.createElement(ChepyPanel, __appCtx)}
 
         {tab === 'sensitive' && curPrj && React.createElement(SensitivePanel, __appCtx)}
-
-        {tab === 'bypass' && curPrj && React.createElement(BypassManager, { toast: hookToast, bypass: bypass })}
 
         {tab === 'intruder' && curPrj && React.createElement(IntruderPanel, __appCtx)}
 

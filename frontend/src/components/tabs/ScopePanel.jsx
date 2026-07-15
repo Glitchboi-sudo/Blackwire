@@ -30,7 +30,9 @@ export function ScopePanel(props) {
               ))}
               {scopeRules.length === 0 && (
                 <div className="empty" style={{ padding: 30 }}>
-                  <span>No rules - all in scope</span>
+                  <div className="empty-i">🎯</div>
+                  <span>Sin reglas — todo el tráfico está en scope</span>
+                  <span className="empty-hint">El "scope" define qué sitios te interesan. Agrega una regla <b>Include</b> (p. ej. <code>*.example.com</code>) para enfocarte solo en ese objetivo, o <b>Exclude</b> para ignorar ruido. Sin reglas, se captura todo.</span>
                 </div>
               )}
             </div>

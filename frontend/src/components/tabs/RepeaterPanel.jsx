@@ -191,7 +191,11 @@ export function RepeaterPanel(props) {
                       </div>
                     </div>
                   ) : (
-                    <div className="code">Send a request</div>
+                    <div className="empty">
+                      <div className="empty-i">📤</div>
+                      <span>Aún no hay respuesta</span>
+                      <span className="empty-hint">Edita método, URL, headers o body a la izquierda y pulsa <b>▶ Send</b> (o Ctrl+Enter) para enviar la petición y ver la respuesta aquí.</span>
+                    </div>
                   )}
                 </div>
               </div>

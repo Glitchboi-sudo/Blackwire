@@ -68,7 +68,17 @@ export function SensitivePanel(props) {
                   {sensFiltered.length === 0 && !sensScanning && (
                     <div className="empty" style={{ padding: '40px 0' }}>
                       <div className="empty-i">{sensResults.length === 0 ? '\uD83D\uDD0D' : '\uD83D\uDD0E'}</div>
-                      <span>{sensResults.length === 0 ? 'Click Scan to analyze captured traffic' : 'No results match your filter'}</span>
+                      {sensResults.length === 0 ? (
+                        <React.Fragment>
+                          <span>Busca datos sensibles en el tráfico capturado</span>
+                          <span className="empty-hint">Escanea el historial en busca de tokens, claves de API, credenciales y datos personales. Todo el análisis es local.</span>
+                          <button className="btn btn-sm btn-g" style={{ marginTop: '10px' }} onClick={runSensitiveScan} disabled={reqs.length === 0}>
+                            {reqs.length === 0 ? 'Captura tráfico primero' : 'Escanear ahora'}
+                          </button>
+                        </React.Fragment>
+                      ) : (
+                        <span>Ningún resultado coincide con el filtro</span>
+                      )}
                     </div>
                   )}
                   {sensFiltered.map((r, i) => (
