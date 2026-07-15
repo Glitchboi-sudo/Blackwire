@@ -1,5 +1,6 @@
 const { useState, useCallback } = React;
 import { requestService } from '../services/requestService.js';
+import { httpqlParse } from '../utils/parsing.js';
 
 /**
  * Custom hook for HTTP history with filters
@@ -22,6 +23,18 @@ export function useRequests(toast) {
   const loadRequests = useCallback(async (page = 1, pageSize = 50) => {
     setLoading(true);
     setHttpqlError('');
+    // Compilar la query HTTPQL a AST — el backend filtra por AST, no por el
+    // string crudo. Sin esto la barra de filtros no hace nada.
+    let ast = null;
+    if (search && search.trim()) {
+      const parsed = httpqlParse(search);
+      if (parsed.error) {
+        setHttpqlError(parsed.error);
+        setLoading(false);
+        return { requests: [], total: 0 };
+      }
+      ast = parsed.ast;
+    }
     try {
       const data = await requestService.search(
         search,
@@ -29,8 +42,14 @@ export function useRequests(toast) {
         pageSize,
         savedOnly,
         scopeOnly,
-        null // ast parameter
+        ast
       );
+      if (data && data.error) {
+        setHttpqlError(data.error);
+        setRequests([]);
+        setTotalRequests(0);
+        return { requests: [], total: 0 };
+      }
       setRequests(Array.isArray(data.requests) ? data.requests : []);
       setTotalRequests(data.total || 0);
       return data;
