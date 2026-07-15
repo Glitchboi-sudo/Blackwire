@@ -29,7 +29,7 @@ export function HistoryPanel(props) {
                       <input className={'flt-in' + (httpqlError ? ' flt-err' : '')} placeholder='Filter: req.method.eq:"GET" AND resp.code.lt:400' value={search} onChange={e => setSearch(e.target.value)} />
                       {httpqlError && <div className="flt-err-msg">{httpqlError}</div>}
                     </div>
-                    <div className="flt-preset-wrap" style={{position:'relative'}}>
+                    <div className="flt-preset-wrap">
                       <div className="flt-tog" onClick={() => setShowPresets(!showPresets)} title="Filter presets">▼</div>
                       {showPresets && (
                         <div className="flt-preset-dd">
