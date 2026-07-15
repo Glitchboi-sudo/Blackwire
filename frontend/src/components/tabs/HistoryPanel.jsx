@@ -2,7 +2,8 @@
 // Recibe todo el estado/handlers vía props (objeto __appCtx de App.jsx).
 
 export function HistoryPanel(props) {
-  const { API, ResizeHandle, api, applyPreset, clearHist, currentPage, delPreset, delReq, detTab, escapeHtml, exportSitemap, extensions, filtered, firstPage, fmtHHtml, fmtTime, formatBody, highlightMatches, histContentRef, histPanelW, histSearch, histSubTab, httpqlError, lastPage, loadReqs, loadWsConns, loadWsFrames, nextPage, pageSize, pagination, presetName, presets, prevPage, renderTreeNode, reqFormat, requests, resendWsFrame, respFormat, savePreset, savedOnly, scopeOnly, search, selReq, selReqFull, selWsConn, selWsFrame, selectWsFrame, setDetTab, setHistPanelW, setHistSubTab, setPageSize, setPresetName, setReqFormat, setRespFormat, setSavedOnly, setScopeOnly, setSearch, setSelReq, setShowPresets, setSmExpanded, setSmFilterExt, setSmFilterMethod, setSmFilterStatus, setSmFilterText, setSmSelNode, setSmShowStats, setSmTreeW, setWsConnsW, setWsFramesW, setWsResendMsg, showContextMenu, showPresets, siteTree, smContentRef, smFilterExt, smFilterMethod, smFilterStatus, smFilterText, smNodeReqs, smSelNode, smShowStats, smStats, smTreeW, stCls, tab, toRep, togSave, totalPages, totalRequests, wsConns, wsConnsW, wsFrames, wsFramesW, wsResendMsg, wsResendResp, wsSending } = props;
+  const { API, ResizeHandle, api, applyPreset, clearHist, currentPage, delPreset, delReq, detTab, escapeHtml, exportSitemap, extensions, filtered, firstPage, fmtHHtml, fmtTime, formatBody, highlightMatches, histContentRef, histPanelW, histSearch, histSubTab, httpqlError, lastPage, loadReqs, loadWsConns, loadWsFrames, nextPage, pageSize, pagination, presetName, presets, prevPage, renderTreeNode, reqFormat, requests, resendWsFrame, respFormat, savePreset, savedOnly, scopeOnly, search, selReq, selReqFull, selWsConn, selWsFrame, selectWsFrame, setDetTab, setHistPanelW, setHistSubTab, setPageSize, setPresetName, setReqFormat, setRespFormat, setSavedOnly, setScopeOnly, setSearch, setSelReq, setShowPresets, setSmExpanded, setSmFilterExt, setSmFilterMethod, setSmFilterStatus, setSmFilterText, setSmSelNode, setSmDetPct, setSmShowStats, setSmTreeW, setWsConnsW, setWsFramesW, setWsResendMsg, showContextMenu, showPresets, siteTree, smContentRef, smDetPct, smFilterExt, smFilterMethod, smFilterStatus, smFilterText, smNodeReqs, smSelNode, smShowStats, smStats, smTreeW, stCls, tab, toRep, togSave, totalPages, totalRequests, wsConns, wsConnsW, wsFrames, wsFramesW, wsResendMsg, wsResendResp, wsSending } = props;
+  const smRightRef = React.useRef(null);
   return (
           <div className="hist-wrap">
             <div className="hist-sub-tabs">
@@ -332,8 +333,8 @@ export function HistoryPanel(props) {
                   const dpct = (dx / el.offsetWidth) * 100;
                   setSmTreeW(prev => Math.max(15, Math.min(70, prev + dpct)));
                 }} />
-                <div className="sm-right">
-                  <div className="panel" style={{ flex: smSelNode && selReq ? 1 : 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                <div className="sm-right" ref={smRightRef}>
+                  <div className="panel" style={{ flex: selReq && smSelNode ? 'none' : 1, height: selReq && smSelNode ? smDetPct + '%' : 'auto', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
                     <div className="pnl-hdr">
                       <span>{smSelNode ? smNodeReqs.length + ' requests' : 'Select a node'}</span>
                       {smSelNode && (
@@ -388,6 +389,14 @@ export function HistoryPanel(props) {
                       )}
                     </div>
                   </div>
+                  {selReq && smSelNode && (
+                    <ResizeHandle vertical onDrag={(dy) => {
+                      const el = smRightRef.current;
+                      if (!el) return;
+                      const dpct = (dy / el.offsetHeight) * 100;
+                      setSmDetPct(prev => Math.max(20, Math.min(80, prev + dpct)));
+                    }} />
+                  )}
                   {selReq && smSelNode && (
                     <div className="panel" style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', borderTop: '1px solid var(--brd)' }}>
                       <div className="pnl-hdr">

@@ -1,8 +1,11 @@
 // ComparePanel — extraído de App.jsx (pestaña 'compare').
 // Recibe todo el estado/handlers vía props (objeto __appCtx de App.jsx).
 
+const { useRef } = React;
+
 export function ComparePanel(props) {
-  const { cmpA, cmpB, cmpDiff, cmpView, colorizeHeaders, setCmpA, setCmpB, setCmpView, tab } = props;
+  const { ResizeHandle, cmpA, cmpB, cmpDiff, cmpSplitPct, cmpView, colorizeHeaders, setCmpA, setCmpB, setCmpSplitPct, setCmpView, tab } = props;
+  const wrapRef = useRef(null);
   return (
           <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%' }}>
             <div className="det-tabs" style={{ justifyContent: 'flex-start', gap: 0 }}>
@@ -17,8 +20,8 @@ export function ComparePanel(props) {
                 <span>Right-click a request and choose "Send to Compare (A/B)"</span>
               </div>
             ) : (
-              <div className="cmp-wrap">
-                <div className="cmp-side">
+              <div className="cmp-wrap" ref={wrapRef}>
+                <div className="cmp-side" style={{ flex: 'none', width: cmpSplitPct + '%' }}>
                   <div className="pnl-hdr">
                     <span style={{ fontWeight: 600, color: 'var(--red)' }}>A {cmpA ? <span style={{ fontWeight: 400, color: 'var(--txt2)' }}>{cmpA.method} {cmpA.url}</span> : '(empty)'}</span>
                     <button className="btn btn-sm btn-s" onClick={() => setCmpA(null)}>Clear</button>
@@ -31,6 +34,12 @@ export function ComparePanel(props) {
                     })}
                   </div>
                 </div>
+                <ResizeHandle onDrag={(dx) => {
+                  const el = wrapRef.current;
+                  if (!el) return;
+                  const dpct = (dx / el.offsetWidth) * 100;
+                  setCmpSplitPct(prev => Math.max(20, Math.min(80, prev + dpct)));
+                }} />
                 <div className="cmp-side">
                   <div className="pnl-hdr">
                     <span style={{ fontWeight: 600, color: 'var(--green)' }}>B {cmpB ? <span style={{ fontWeight: 400, color: 'var(--txt2)' }}>{cmpB.method} {cmpB.url}</span> : '(empty)'}</span>
