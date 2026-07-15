@@ -62,16 +62,6 @@ export function useProxy(toast, currentProject) {
     }
   }, [toast]);
 
-  // Launch browser with proxy
-  const launchBrowser = useCallback(async () => {
-    try {
-      const r = await proxyService.launchBrowser(port);
-      toast(r.status === 'launched' ? 'Browser launched' : 'Failed', 'success');
-    } catch (err) {
-      toast('Failed to launch browser', 'error');
-    }
-  }, [port, toast]);
-
   return {
     isRunning,
     port,
@@ -83,7 +73,6 @@ export function useProxy(toast, currentProject) {
     loading,
     start,
     stop,
-    launchBrowser,
     loadStatus
   };
 }
