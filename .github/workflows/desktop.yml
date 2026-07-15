@@ -82,7 +82,7 @@ jobs:
         run: bash packaging/apply-patches.sh
 
       - name: Descargar la imagen Docker compartida
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: blackwire-image
           path: packaging   # tauri.conf la referencia como ../blackwire-image.tar.gz
