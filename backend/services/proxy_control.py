@@ -30,6 +30,7 @@ logger = logging.getLogger('blackwire')
 async def update_proxy_config():
     config = {
         "intercept_enabled": state.intercept_enabled,
+        "intercept_responses": state.intercept_responses_enabled,
         "scope_rules": state.scope_rules,
         "project": state.get_current_project(),
         "extensions": state.extensions_config,
@@ -56,8 +57,9 @@ def _stream_pipe(pipe, level_fn, label: str):
         logger.debug('Pipe reader for %s stopped: %s', label, e)
 
 
-async def start_proxy(port: int = 8080, mode: str = "regular", extra_args: str = ""):
-    logger.debug('start_proxy called (port=%s)', port)
+async def start_proxy(port: int = 8080, mode: str = "regular", extra_args: str = "",
+                      listen_host: str = ""):
+    logger.debug('start_proxy called (port=%s, listen_host=%s)', port, listen_host or "*")
     if state.proxy_process and state.proxy_process.poll() is None:
         return {"status": "already_running", "port": port}
 
@@ -100,6 +102,10 @@ async def start_proxy(port: int = 8080, mode: str = "regular", extra_args: str =
     extra = shlex.split(extra_args) if extra_args else []
     cmd = [str(mitmdump_bin), "--mode", mode, "-p", str(port),
            "-s", str(addon_path), "--set", "connection_strategy=lazy", "--ssl-insecure"]
+
+    # Interfaz de escucha: sin valor, mitmproxy enlaza a todas (*).
+    if listen_host:
+        cmd.extend(["--listen-host", listen_host])
 
     # Añadir ignore-hosts si hay reglas de bypass.
     if ignore_hosts:

@@ -80,12 +80,16 @@ export function IntruderPanel(props) {
 
                 <div className="int-section">
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <button className="btn btn-sm btn-p" onClick={() => {
-                      const ref = intUrlRef.current || intHeadersRef.current || intBodyRef.current;
-                      if (!ref) return;
+                    <button className="btn btn-sm btn-p" onMouseDown={e => e.preventDefault()} onClick={() => {
+                      // Elegir el campo donde realmente hay una selección (URL, Headers o Body),
+                      // no el primero que exista. Preferir el campo enfocado si aplica.
+                      const refs = [intUrlRef.current, intHeadersRef.current, intBodyRef.current];
+                      const active = document.activeElement;
+                      let ref = refs.find(r => r && r === active && r.selectionStart !== r.selectionEnd);
+                      if (!ref) ref = refs.find(r => r && r.selectionStart !== r.selectionEnd);
+                      if (!ref) { toast('Select text first', 'error'); return; }
                       const start = ref.selectionStart;
                       const end = ref.selectionEnd;
-                      if (start === end) { toast('Select text first', 'error'); return; }
                       const val = ref.value;
                       const selected = val.substring(start, end);
                       const nv = val.substring(0, start) + '\u00a7' + selected + '\u00a7' + val.substring(end);

@@ -60,3 +60,27 @@ async def receive_intercept(data: dict = Body(...)):
         "headers": data.get("headers", {}), "body": data.get("body"), "timestamp": datetime.now().isoformat()}
     await state.broadcast({"type": "intercept_new", "data": state.intercepted_requests[rid]})
     return {"status": "intercepted", "request_id": rid}
+
+
+@router.post("/api/internal/intercept_response")
+async def receive_intercept_response(data: dict = Body(...)):
+    """Response pausada por el addon (Burp-style 'intercept this response').
+
+    El addon manda {request_id(=id de la respuesta), method, url, req_headers,
+    req_body, status_code, headers(=resp), body(=resp)} y bloquea esperando la
+    acción (forward/drop) escrita en `.action_resp_{id}.json`.
+    """
+    rid = data.get("request_id", "")
+    if not _validate_id(rid):
+        rid = hashlib.md5(str(datetime.now()).encode()).hexdigest()[:12]
+    logger.debug('Intercept response incoming: %s %s %s',
+                 data.get('method'), data.get('url'), data.get('status_code'))
+    state.intercepted_responses[rid] = {
+        "id": rid, "method": data.get("method", ""), "url": data.get("url", ""),
+        "req_headers": data.get("req_headers", {}), "req_body": data.get("req_body"),
+        "status_code": data.get("status_code"), "headers": data.get("headers", {}),
+        "body": data.get("body"), "timestamp": datetime.now().isoformat(),
+    }
+    await state.broadcast({"type": "intercept_response_new",
+                           "data": state.intercepted_responses[rid]})
+    return {"status": "intercepted", "request_id": rid}

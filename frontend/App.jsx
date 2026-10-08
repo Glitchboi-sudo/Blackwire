@@ -224,6 +224,7 @@ function Blackwire() {
 
   // Proxy Config
   const [showProxyCfg, setShowProxyCfg] = useState(false);
+  const [proxyInterfaces, setProxyInterfaces] = useState([]);
 
   // Menú contextual
   const [contextMenu, setContextMenu] = useState(null);
@@ -383,9 +384,11 @@ function Blackwire() {
   const pxPort = proxy.port;
   const pxMode = proxy.mode;
   const pxArgs = proxy.args;
+  const pxListenHost = proxy.listenHost;
   const setPxPort = proxy.setPort;
   const setPxMode = proxy.setMode;
   const setPxArgs = proxy.setArgs;
+  const setPxListenHost = proxy.setListenHost;
   const reqs = requests.requests;
   const commits = git.commits;
   const cmtMsg = git.commitMessage;
@@ -870,6 +873,7 @@ function Blackwire() {
       proxy.setPort(r.config?.proxy_port || 8080);
       proxy.setMode(r.config?.proxy_mode || 'regular');
       proxy.setArgs(r.config?.proxy_args || '');
+      proxy.setListenHost(r.config?.proxy_listen_host || '');
       setTab('history');
     }
   };
@@ -1889,10 +1893,19 @@ function Blackwire() {
     r.config.proxy_port = pxPort;
     r.config.proxy_mode = pxMode;
     r.config.proxy_args = pxArgs;
+    r.config.proxy_listen_host = pxListenHost;
     await save_project_config(curPrj.project, r.config);
     toast('Proxy config saved', 'success');
     setShowProxyCfg(false);
   };
+
+  // Cargar las interfaces disponibles al abrir el modal de configuración.
+  useEffect(() => {
+    if (!showProxyCfg) return;
+    proxyService.getInterfaces()
+      .then(r => setProxyInterfaces(r.interfaces || []))
+      .catch(() => setProxyInterfaces([]));
+  }, [showProxyCfg]);
 
   const save_project_config = async (name, config) => {
     await projectService.updateConfig(name, config);
@@ -2162,18 +2175,26 @@ function Blackwire() {
         if (source === 'history') await delReq(req.id);
         else if (source === 'repeater') await delRepItem(req.id);
         break;
-      case 'compare-a':
+      case 'compare-a': {
+        // Si venías mirando la respuesta, abrir Compare en la vista Response.
+        const onResp = source === 'repeater-response' || (source === 'history' && detTab === 'response');
         setCmpA({ method: norm.method, url: norm.url, headers: norm.headers, body: norm.body,
           response_status: req.response_status || null, response_headers: req.response_headers || null, response_body: req.response_body || null });
+        setCmpView(onResp ? 'response' : 'request');
         setTab('compare');
-        toast('Loaded into Compare A', 'success');
+        toast(onResp ? 'Loaded response into Compare A' : 'Loaded into Compare A', 'success');
         break;
-      case 'compare-b':
+      }
+      case 'compare-b': {
+        // Si venías mirando la respuesta, abrir Compare en la vista Response.
+        const onResp = source === 'repeater-response' || (source === 'history' && detTab === 'response');
         setCmpB({ method: norm.method, url: norm.url, headers: norm.headers, body: norm.body,
           response_status: req.response_status || null, response_headers: req.response_headers || null, response_body: req.response_body || null });
+        setCmpView(onResp ? 'response' : 'request');
         setTab('compare');
-        toast('Loaded into Compare B', 'success');
+        toast(onResp ? 'Loaded response into Compare B' : 'Loaded into Compare B', 'success');
         break;
+      }
     }
   };
 
@@ -2786,7 +2807,7 @@ function Blackwire() {
                 Intercept {intOn ? 'ON' : 'OFF'}
                 {pending.length > 0 && <span className="pend-badge">{pending.length}</span>}
               </div>
-              <div className="prx-st" onClick={() => setShowProxyCfg(true)} style={{ cursor: 'pointer' }} title={'Mode: ' + pxMode + (pxArgs ? ' | Args: ' + pxArgs : '')}>
+              <div className="prx-st" onClick={() => setShowProxyCfg(true)} style={{ cursor: 'pointer' }} title={'Mode: ' + pxMode + ' | Listen: ' + (pxListenHost || 'all interfaces') + (pxArgs ? ' | Args: ' + pxArgs : '')}>
                 <div className={'st-dot ' + (pxRun ? 'run' : 'stop')}></div>
                 {pxRun ? pxMode + ' :' + pxPort : 'Stopped'}
               </div>
@@ -3033,6 +3054,32 @@ function Blackwire() {
               <label style={{ display: 'block', fontSize: '12px', color: 'var(--txt2)', marginBottom: '6px' }}>Port</label>
               <input className="inp" type="number" value={pxPort} onChange={e => setPxPort(parseInt(e.target.value) || 8080)} min="1" max="65535" />
             </div>
+            {(() => {
+              // '' y '0.0.0.0' representan "todas las interfaces".
+              const effectiveHost = pxListenHost || '0.0.0.0';
+              const known = proxyInterfaces.some(i => i.address === effectiveHost);
+              const selectValue = known ? effectiveHost : '__custom__';
+              return (
+                <div style={{ marginBottom: '16px' }}>
+                  <label style={{ display: 'block', fontSize: '12px', color: 'var(--txt2)', marginBottom: '6px' }}>Listen on</label>
+                  <select className="sel" value={selectValue} style={{ width: '100%' }}
+                    onChange={e => setPxListenHost(e.target.value === '__custom__' ? '' : e.target.value)}>
+                    {proxyInterfaces.map(i => (
+                      <option key={i.address} value={i.address}>{i.label}</option>
+                    ))}
+                    <option value="__custom__">Custom address…</option>
+                  </select>
+                  {selectValue === '__custom__' && (
+                    <input className="inp" type="text" value={pxListenHost} style={{ marginTop: '8px' }}
+                      onChange={e => setPxListenHost(e.target.value.trim())}
+                      placeholder="e.g. 192.168.1.50" />
+                  )}
+                  <div style={{ fontSize: '10px', color: 'var(--txt3)', marginTop: '4px' }}>
+                    Network interface the proxy binds to. "All interfaces" (0.0.0.0) exposes it on your LAN; "Localhost only" keeps it private to this machine.
+                  </div>
+                </div>
+              );
+            })()}
             <div style={{ marginBottom: '16px' }}>
               <label style={{ display: 'block', fontSize: '12px', color: 'var(--txt2)', marginBottom: '6px' }}>Mode</label>
               <select className="sel" value={pxMode} onChange={e => setPxMode(e.target.value)} style={{ width: '100%' }}>

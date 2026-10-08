@@ -201,12 +201,18 @@ def send_to_backend(endpoint: str, data: dict, retries: int = 2):
             _alog.warning(f"Backend error: {e}")
 
 
-def wait_for_action(request_id: str, timeout: int = 300) -> dict:
-    """Wait for user action on intercepted request"""
+def wait_for_action(request_id: str, timeout: int = 300, resp: bool = False) -> dict:
+    """Wait for user action on an intercepted request (resp=False) or response.
+
+    Responses use a distinct action-file prefix (`.action_resp_{id}.json`) so a
+    request and its response never collide on the same id, matching the backend
+    which writes response actions via `config.action_resp_file`.
+    """
     if not _SAFE_ID_RE.fullmatch(request_id):
         _alog.warning(f"[blackwire][intercept] unsafe request_id rejected: {request_id!r}")
         return {"action": "forward"}
-    action_file = _RUNTIME_DIR / f".action_{request_id}.json"
+    prefix = ".action_resp_" if resp else ".action_"
+    action_file = _RUNTIME_DIR / f"{prefix}{request_id}.json"
     # Defence-in-depth: verify the resolved path stays inside _RUNTIME_DIR
     if action_file.resolve().parent != _RUNTIME_DIR.resolve():
         _alog.warning(f"[blackwire][intercept] path traversal blocked for {request_id!r}")
@@ -419,6 +425,11 @@ class BlackwireAddon:
 
                 if modified:
                     vlog(f"Applied modifications for {request_id}: keys={list(modified.keys())}")
+                # Burp-style "intercept this response": marca el flow para pausar
+                # su respuesta cuando llegue (correlación request->response por flow).
+                if action.get("intercept_response"):
+                    flow.metadata["bw_catch_response"] = True
+                    vlog(f"Will intercept response for {request_id} {url}")
                 _alog.info(f"Forwarded: {url}")
 
     def response(self, flow: http.HTTPFlow):
@@ -449,8 +460,15 @@ class BlackwireAddon:
                     daemon=True
                 ).start()
 
-            # Check if response interception is enabled
-            if self.config.get("intercept_enabled") and self.config.get("intercept_responses", False) and in_scope and flow.response:
+            # Pausar la respuesta si: (a) este flow fue marcado per-request con
+            # "intercept this response" (Burp-style, vía flow.metadata), o (b) el
+            # toggle global de responses está activo y el flow está en scope.
+            catch_response = flow.metadata.get("bw_catch_response", False)
+            global_responses = (
+                self.config.get("intercept_enabled")
+                and self.config.get("intercept_responses", False) and in_scope
+            )
+            if (catch_response or global_responses) and flow.response:
                 response_id = hashlib.md5(f"{url}_resp{time.time()}".encode()).hexdigest()[:12]
 
                 intercept_data = {
@@ -471,7 +489,7 @@ class BlackwireAddon:
                 ).start()
 
                 _alog.info(f"Response intercepted: {flow.request.method} {url} {flow.response.status_code}")
-                action = wait_for_action(response_id)
+                action = wait_for_action(response_id, resp=True)
 
                 if action.get("action") == "drop":
                     _alog.warning(f"[blackwire][intercept] response dropped {response_id} {url}")

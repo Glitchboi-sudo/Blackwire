@@ -9,10 +9,17 @@ export const proxyService = {
   },
 
   /**
+   * List local addresses the proxy can listen on
+   */
+  async getInterfaces() {
+    return await api.get('/api/proxy/interfaces');
+  },
+
+  /**
    * Start proxy server
    */
-  async start(port, mode = 'regular', extra = '') {
-    return await api.post(`/api/proxy/start?port=${port}&mode=${mode}&extra=${encodeURIComponent(extra)}`);
+  async start(port, mode = 'regular', extra = '', listenHost = '') {
+    return await api.post(`/api/proxy/start?port=${port}&mode=${mode}&extra=${encodeURIComponent(extra)}&listen_host=${encodeURIComponent(listenHost)}`);
   },
 
   /**

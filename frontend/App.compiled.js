@@ -224,6 +224,7 @@ function Blackwire() {
 
   // Proxy Config
   const [showProxyCfg, setShowProxyCfg] = useState(false);
+  const [proxyInterfaces, setProxyInterfaces] = useState([]);
 
   // Menú contextual
   const [contextMenu, setContextMenu] = useState(null);
@@ -383,9 +384,11 @@ function Blackwire() {
   const pxPort = proxy.port;
   const pxMode = proxy.mode;
   const pxArgs = proxy.args;
+  const pxListenHost = proxy.listenHost;
   const setPxPort = proxy.setPort;
   const setPxMode = proxy.setMode;
   const setPxArgs = proxy.setArgs;
+  const setPxListenHost = proxy.setListenHost;
   const reqs = requests.requests;
   const commits = git.commits;
   const cmtMsg = git.commitMessage;
@@ -870,6 +873,7 @@ function Blackwire() {
       proxy.setPort(_optionalChain([r, 'access', _26 => _26.config, 'optionalAccess', _27 => _27.proxy_port]) || 8080);
       proxy.setMode(_optionalChain([r, 'access', _28 => _28.config, 'optionalAccess', _29 => _29.proxy_mode]) || 'regular');
       proxy.setArgs(_optionalChain([r, 'access', _30 => _30.config, 'optionalAccess', _31 => _31.proxy_args]) || '');
+      proxy.setListenHost(_optionalChain([r, 'access', _32 => _32.config, 'optionalAccess', _33 => _33.proxy_listen_host]) || '');
       setTab('history');
     }
   };
@@ -900,14 +904,14 @@ function Blackwire() {
   // These functions are now in hooks (repeater.load, git.loadHistory, scope.loadRules, extensions.loadExtensions, proxy.checkStatus)
 
   // Webhook wrapper functions (delegate to hook)
-  const loadWebhookLocal = () => webhook.loadRequests(_optionalChain([webhookExt, 'optionalAccess', _32 => _32.config, 'optionalAccess', _33 => _33.token_id]));
-  const refreshWebhook = (silent = false) => webhook.refresh(_optionalChain([webhookExt, 'optionalAccess', _34 => _34.config, 'optionalAccess', _35 => _35.token_id]));
+  const loadWebhookLocal = () => webhook.loadRequests(_optionalChain([webhookExt, 'optionalAccess', _34 => _34.config, 'optionalAccess', _35 => _35.token_id]));
+  const refreshWebhook = (silent = false) => webhook.refresh(_optionalChain([webhookExt, 'optionalAccess', _36 => _36.config, 'optionalAccess', _37 => _37.token_id]));
 
   const createWebhookToken = async () => {
     const success = await webhook.createToken();
     if (success) {
       await extensions.loadExtensions();
-      await webhook.loadRequests(_optionalChain([webhookExt, 'optionalAccess', _36 => _36.config, 'optionalAccess', _37 => _37.token_id]));
+      await webhook.loadRequests(_optionalChain([webhookExt, 'optionalAccess', _38 => _38.config, 'optionalAccess', _39 => _39.token_id]));
     }
   };
 
@@ -946,7 +950,7 @@ function Blackwire() {
     }
     const r = await projectService.create(name, newDesc);
     if (!r || r.status !== 'created') {
-      toast(_optionalChain([r, 'optionalAccess', _38 => _38.detail]) || 'Failed to create project', 'error');
+      toast(_optionalChain([r, 'optionalAccess', _40 => _40.detail]) || 'Failed to create project', 'error');
       return;
     }
     await projects.load();
@@ -961,11 +965,11 @@ function Blackwire() {
     if (!confirm('Delete ' + n + '?')) return;
     const r = await projectService.delete(n);
     if (r && (r.status === 'deleted' || r.status === 'ok')) {
-      if (_optionalChain([curPrj, 'optionalAccess', _39 => _39.project]) === n) await projects.loadCurrent();
+      if (_optionalChain([curPrj, 'optionalAccess', _41 => _41.project]) === n) await projects.loadCurrent();
       await projects.load();
       toast('Deleted', 'success');
     } else {
-      toast(_optionalChain([r, 'optionalAccess', _40 => _40.detail]) || 'Failed to delete project', 'error');
+      toast(_optionalChain([r, 'optionalAccess', _42 => _42.detail]) || 'Failed to delete project', 'error');
     }
   };
 
@@ -993,7 +997,7 @@ function Blackwire() {
         if (data.status === 'success') {
           toast(`Imported ${data.imported} of ${data.total} items from Burp Suite`, 'success');
           // Recargar datos si es el proyecto actual
-          if (_optionalChain([curPrj, 'optionalAccess', _41 => _41.project]) === n) {
+          if (_optionalChain([curPrj, 'optionalAccess', _43 => _43.project]) === n) {
             await loadReqs();
           }
         } else {
@@ -1026,7 +1030,7 @@ function Blackwire() {
         // Importar como nuevo proyecto
         const r = await projectService.importAsNew(file);
         if (r && r.status === 'imported') {
-          toast(`Project "${data.project_name}" created successfully! ${_optionalChain([r, 'access', _42 => _42.stats, 'optionalAccess', _43 => _43.total_requests]) || 0} requests imported.`, 'success');
+          toast(`Project "${data.project_name}" created successfully! ${_optionalChain([r, 'access', _44 => _44.stats, 'optionalAccess', _45 => _45.total_requests]) || 0} requests imported.`, 'success');
           await projects.load();
         } else {
           toast('Import failed', 'error');
@@ -1057,7 +1061,7 @@ function Blackwire() {
 
         // Preguntar si quiere merge o replace
         const action = clearExisting ? 'replace' : 'merge';
-        if (!confirm(`${clearExisting ? 'Replace all data' : 'Merge data'} in project "${n}"?\n\nThis will ${clearExisting ? 'DELETE existing data and' : ''} import:\n- ${_optionalChain([data, 'access', _44 => _44.stats, 'optionalAccess', _45 => _45.total_requests]) || 0} requests\n- ${_optionalChain([data, 'access', _46 => _46.stats, 'optionalAccess', _47 => _47.total_repeater]) || 0} repeater items\n- ${_optionalChain([data, 'access', _48 => _48.stats, 'optionalAccess', _49 => _49.total_collections]) || 0} collections`)) {
+        if (!confirm(`${clearExisting ? 'Replace all data' : 'Merge data'} in project "${n}"?\n\nThis will ${clearExisting ? 'DELETE existing data and' : ''} import:\n- ${_optionalChain([data, 'access', _46 => _46.stats, 'optionalAccess', _47 => _47.total_requests]) || 0} requests\n- ${_optionalChain([data, 'access', _48 => _48.stats, 'optionalAccess', _49 => _49.total_repeater]) || 0} repeater items\n- ${_optionalChain([data, 'access', _50 => _50.stats, 'optionalAccess', _51 => _51.total_collections]) || 0} collections`)) {
           return;
         }
 
@@ -1065,13 +1069,13 @@ function Blackwire() {
         if (r && r.status === 'imported') {
           toast(`${action === 'replace' ? 'Replaced' : 'Merged'} successfully!`, 'success');
           // Recargar datos si es el proyecto actual
-          if (_optionalChain([curPrj, 'optionalAccess', _50 => _50.project]) === n) {
+          if (_optionalChain([curPrj, 'optionalAccess', _52 => _52.project]) === n) {
             await loadReqs();
             await loadRep();
             await loadColls();
           }
         } else {
-          toast(_optionalChain([r, 'optionalAccess', _51 => _51.detail]) || 'Import failed', 'error');
+          toast(_optionalChain([r, 'optionalAccess', _53 => _53.detail]) || 'Import failed', 'error');
         }
       } catch (err) {
         toast('Invalid JSON file: ' + err.message, 'error');
@@ -1087,7 +1091,7 @@ function Blackwire() {
   };
 
   const advanceQueue = (id, remaining) => {
-    if (_optionalChain([selPend, 'optionalAccess', _52 => _52.id]) !== id) return;
+    if (_optionalChain([selPend, 'optionalAccess', _54 => _54.id]) !== id) return;
     const next = _nullishCoalesce(remaining[0], () => ( null));
     setSelPend(next);
     setEditReq(next ? { ...next, rawHeaders: fmtH(next.headers, next.url) } : null);
@@ -1849,7 +1853,7 @@ function Blackwire() {
   const togSave = async id => {
     await requestService.toggleSave(id);
     // Actualizar también selReq si es el request activo
-    if (_optionalChain([selReq, 'optionalAccess', _53 => _53.id]) === id) setSelReq(prev => ({ ...prev, saved: !prev.saved }));
+    if (_optionalChain([selReq, 'optionalAccess', _55 => _55.id]) === id) setSelReq(prev => ({ ...prev, saved: !prev.saved }));
     // Reload requests to refresh the state
     loadReqs();
   };
@@ -1857,7 +1861,7 @@ function Blackwire() {
   const delReq = async id => {
     await requestService.delete(id);
     await loadReqs();
-    if (_optionalChain([selReq, 'optionalAccess', _54 => _54.id]) === id) setSelReq(null);
+    if (_optionalChain([selReq, 'optionalAccess', _56 => _56.id]) === id) setSelReq(null);
   };
 
   const clearHist = async () => {
@@ -1889,10 +1893,19 @@ function Blackwire() {
     r.config.proxy_port = pxPort;
     r.config.proxy_mode = pxMode;
     r.config.proxy_args = pxArgs;
+    r.config.proxy_listen_host = pxListenHost;
     await save_project_config(curPrj.project, r.config);
     toast('Proxy config saved', 'success');
     setShowProxyCfg(false);
   };
+
+  // Cargar las interfaces disponibles al abrir el modal de configuración.
+  useEffect(() => {
+    if (!showProxyCfg) return;
+    proxyService.getInterfaces()
+      .then(r => setProxyInterfaces(r.interfaces || []))
+      .catch(() => setProxyInterfaces([]));
+  }, [showProxyCfg]);
 
   const save_project_config = async (name, config) => {
     await projectService.updateConfig(name, config);
@@ -1999,7 +2012,7 @@ function Blackwire() {
   };
 
   const addScopeFromRequest = async ruleType => {
-    const norm = _optionalChain([contextMenu, 'optionalAccess', _55 => _55.normalized]);
+    const norm = _optionalChain([contextMenu, 'optionalAccess', _57 => _57.normalized]);
     if (!norm || !norm.url) {
       toast('No URL', 'error');
       return;
@@ -2162,18 +2175,26 @@ function Blackwire() {
         if (source === 'history') await delReq(req.id);
         else if (source === 'repeater') await delRepItem(req.id);
         break;
-      case 'compare-a':
+      case 'compare-a': {
+        // Si venías mirando la respuesta, abrir Compare en la vista Response.
+        const onResp = source === 'repeater-response' || (source === 'history' && detTab === 'response');
         setCmpA({ method: norm.method, url: norm.url, headers: norm.headers, body: norm.body,
           response_status: req.response_status || null, response_headers: req.response_headers || null, response_body: req.response_body || null });
+        setCmpView(onResp ? 'response' : 'request');
         setTab('compare');
-        toast('Loaded into Compare A', 'success');
+        toast(onResp ? 'Loaded response into Compare A' : 'Loaded into Compare A', 'success');
         break;
-      case 'compare-b':
+      }
+      case 'compare-b': {
+        // Si venías mirando la respuesta, abrir Compare en la vista Response.
+        const onResp = source === 'repeater-response' || (source === 'history' && detTab === 'response');
         setCmpB({ method: norm.method, url: norm.url, headers: norm.headers, body: norm.body,
           response_status: req.response_status || null, response_headers: req.response_headers || null, response_body: req.response_body || null });
+        setCmpView(onResp ? 'response' : 'request');
         setTab('compare');
-        toast('Loaded into Compare B', 'success');
+        toast(onResp ? 'Loaded response into Compare B' : 'Loaded into Compare B', 'success');
         break;
+      }
     }
   };
 
@@ -2786,7 +2807,7 @@ function Blackwire() {
                  , intOn ? 'ON' : 'OFF'
                 , pending.length > 0 && React.createElement('span', { className: "pend-badge",}, pending.length)
               )
-              , React.createElement('div', { className: "prx-st", onClick: () => setShowProxyCfg(true), style: { cursor: 'pointer' }, title: 'Mode: ' + pxMode + (pxArgs ? ' | Args: ' + pxArgs : ''),}
+              , React.createElement('div', { className: "prx-st", onClick: () => setShowProxyCfg(true), style: { cursor: 'pointer' }, title: 'Mode: ' + pxMode + ' | Listen: ' + (pxListenHost || 'all interfaces') + (pxArgs ? ' | Args: ' + pxArgs : ''),}
                 , React.createElement('div', { className: 'st-dot ' + (pxRun ? 'run' : 'stop'),})
                 , pxRun ? pxMode + ' :' + pxPort : 'Stopped'
               )
@@ -2884,11 +2905,11 @@ function Blackwire() {
       , contextMenu && (
         React.createElement('div', { ref: ctxMenuRef, className: "context-menu", style: { left: contextMenu.x, top: contextMenu.y }, onClick: e => e.stopPropagation(),}
           , (() => {
-            const hasBody = _optionalChain([contextMenu, 'access', _56 => _56.normalized, 'optionalAccess', _57 => _57.body]) || _optionalChain([contextMenu, 'access', _58 => _58.request, 'optionalAccess', _59 => _59.response_body]) || contextMenu.source === 'selection';
-            const hasUrl = _optionalChain([contextMenu, 'access', _60 => _60.normalized, 'optionalAccess', _61 => _61.url]);
+            const hasBody = _optionalChain([contextMenu, 'access', _58 => _58.normalized, 'optionalAccess', _59 => _59.body]) || _optionalChain([contextMenu, 'access', _60 => _60.request, 'optionalAccess', _61 => _61.response_body]) || contextMenu.source === 'selection';
+            const hasUrl = _optionalChain([contextMenu, 'access', _62 => _62.normalized, 'optionalAccess', _63 => _63.url]);
             const isSelection = contextMenu.source === 'selection';
             const currentTab = contextMenu.currentTab;
-            const hasRequest = _optionalChain([contextMenu, 'access', _62 => _62.normalized, 'optionalAccess', _63 => _63.method]) && _optionalChain([contextMenu, 'access', _64 => _64.normalized, 'optionalAccess', _65 => _65.url]);
+            const hasRequest = _optionalChain([contextMenu, 'access', _64 => _64.normalized, 'optionalAccess', _65 => _65.method]) && _optionalChain([contextMenu, 'access', _66 => _66.normalized, 'optionalAccess', _67 => _67.url]);
 
             return (
               React.createElement(React.Fragment, null
@@ -3033,6 +3054,32 @@ function Blackwire() {
               , React.createElement('label', { style: { display: 'block', fontSize: '12px', color: 'var(--txt2)', marginBottom: '6px' },}, "Port")
               , React.createElement('input', { className: "inp", type: "number", value: pxPort, onChange: e => setPxPort(parseInt(e.target.value) || 8080), min: "1", max: "65535",} )
             )
+            , (() => {
+              // '' y '0.0.0.0' representan "todas las interfaces".
+              const effectiveHost = pxListenHost || '0.0.0.0';
+              const known = proxyInterfaces.some(i => i.address === effectiveHost);
+              const selectValue = known ? effectiveHost : '__custom__';
+              return (
+                React.createElement('div', { style: { marginBottom: '16px' },}
+                  , React.createElement('label', { style: { display: 'block', fontSize: '12px', color: 'var(--txt2)', marginBottom: '6px' },}, "Listen on" )
+                  , React.createElement('select', { className: "sel", value: selectValue, style: { width: '100%' },
+                    onChange: e => setPxListenHost(e.target.value === '__custom__' ? '' : e.target.value),}
+                    , proxyInterfaces.map(i => (
+                      React.createElement('option', { key: i.address, value: i.address,}, i.label)
+                    ))
+                    , React.createElement('option', { value: "__custom__",}, "Custom address…" )
+                  )
+                  , selectValue === '__custom__' && (
+                    React.createElement('input', { className: "inp", type: "text", value: pxListenHost, style: { marginTop: '8px' },
+                      onChange: e => setPxListenHost(e.target.value.trim()),
+                      placeholder: "e.g. 192.168.1.50" ,} )
+                  )
+                  , React.createElement('div', { style: { fontSize: '10px', color: 'var(--txt3)', marginTop: '4px' },}, "Network interface the proxy binds to. \"All interfaces\" (0.0.0.0) exposes it on your LAN; \"Localhost only\" keeps it private to this machine."
+
+                  )
+                )
+              );
+            })()
             , React.createElement('div', { style: { marginBottom: '16px' },}
               , React.createElement('label', { style: { display: 'block', fontSize: '12px', color: 'var(--txt2)', marginBottom: '6px' },}, "Mode")
               , React.createElement('select', { className: "sel", value: pxMode, onChange: e => setPxMode(e.target.value), style: { width: '100%' },}

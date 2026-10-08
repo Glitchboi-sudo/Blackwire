@@ -11,26 +11,54 @@ import asyncio
 import logging
 import os
 import shlex
+import socket
 
 from fastapi import APIRouter, HTTPException
 
 from config import ALLOWED_PROXY_MODES, BLOCKED_MITM_FLAGS
 from services import state
 from services.proxy_control import start_proxy, stop_proxy
+from utils.net_interfaces import list_interfaces
 
 router = APIRouter()
 
 logger = logging.getLogger('blackwire')
 
 
+def _validate_listen_host(listen_host: str) -> str:
+    """Devuelve la IP validada o lanza HTTPException.
+
+    Cadena vacía => escuchar en todas las interfaces (comportamiento por
+    defecto de mitmproxy). Cualquier otro valor debe ser una IPv4/IPv6 válida.
+    """
+    listen_host = (listen_host or "").strip()
+    if not listen_host:
+        return ""
+    for family in (socket.AF_INET, socket.AF_INET6):
+        try:
+            socket.inet_pton(family, listen_host)
+            return listen_host
+        except OSError:
+            continue
+    raise HTTPException(status_code=400, detail="listen_host must be a valid IP address")
+
+
+@router.get("/api/proxy/interfaces")
+async def api_proxy_interfaces():
+    """Direcciones locales sugeridas donde el proxy puede escuchar."""
+    return {"interfaces": list_interfaces()}
+
+
 @router.post("/api/proxy/start")
-async def api_start_proxy(port: int = 8080, mode: str = "regular", extra: str = ""):
+async def api_start_proxy(port: int = 8080, mode: str = "regular", extra: str = "",
+                          listen_host: str = ""):
     if not state.get_current_project():
         raise HTTPException(status_code=400, detail="Select a project first")
     if mode not in ALLOWED_PROXY_MODES:
         raise HTTPException(status_code=400, detail=f"Invalid proxy mode. Allowed: {sorted(ALLOWED_PROXY_MODES)}")
     if not (1 <= port <= 65535):
         raise HTTPException(status_code=400, detail="Port must be between 1 and 65535")
+    listen_host = _validate_listen_host(listen_host)
     # Quitar flags que cargarían scripts externos o escribirían archivos arbitrarios.
     if extra:
         safe_extra_parts = []
@@ -45,7 +73,7 @@ async def api_start_proxy(port: int = 8080, mode: str = "regular", extra: str = 
             safe_extra_parts.append(parts[i])
             i += 1
         extra = shlex.join(safe_extra_parts)
-    return await start_proxy(port, mode, extra)
+    return await start_proxy(port, mode, extra, listen_host)
 
 
 @router.post("/api/proxy/stop")

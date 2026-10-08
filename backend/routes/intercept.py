@@ -51,7 +51,11 @@ async def get_pending():
 
 
 @router.post("/api/intercept/{request_id}/forward")
-async def forward_request(request_id: str, modified: Optional[dict] = Body(None)):
+async def forward_request(
+    request_id: str,
+    modified: Optional[dict] = Body(None),
+    intercept_response: bool = False,
+):
     if request_id not in state.intercepted_requests:
         raise HTTPException(status_code=404)
     state.intercepted_requests.pop(request_id)
@@ -59,7 +63,11 @@ async def forward_request(request_id: str, modified: Optional[dict] = Body(None)
         action_file = _action_file(request_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid request_id")
-    action_file.write_text(json.dumps({"action": "forward", "modified": modified}))
+    # intercept_response (query): marca el flow para pausar su respuesta (Burp-style).
+    action_file.write_text(json.dumps({
+        "action": "forward", "modified": modified,
+        "intercept_response": intercept_response,
+    }))
     await state.broadcast({"type": "intercept_forwarded", "request_id": request_id})
     return {"status": "forwarded"}
 
@@ -106,6 +114,9 @@ async def drop_all():
 @router.post("/api/intercept/toggle_responses")
 async def toggle_intercept_responses():
     state.intercept_responses_enabled = not state.intercept_responses_enabled
+    # Propagar el flag al addon vía .proxy_config.json (sin esto el gate global
+    # del addon queda siempre en False y el toggle no tiene efecto).
+    await update_proxy_config()
     await state.broadcast({
         "type": "intercept_responses_toggled",
         "enabled": state.intercept_responses_enabled
@@ -119,10 +130,14 @@ async def get_pending_responses():
 
 
 @router.post("/api/intercept_response/{response_id}/forward")
-async def forward_response(response_id: str):
+async def forward_response(response_id: str, modified: Optional[dict] = Body(None)):
+    # modified (opcional): {status_code?, headers?, body?} — el addon lo aplica a
+    # la respuesta antes de reenviarla (edit-then-forward, mitm_addon.response()).
     if response_id in state.intercepted_responses:
         try:
-            _action_resp_file(response_id).write_text(json.dumps({"action": "forward"}))
+            _action_resp_file(response_id).write_text(
+                json.dumps({"action": "forward", "modified": modified})
+            )
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid response_id")
         del state.intercepted_responses[response_id]

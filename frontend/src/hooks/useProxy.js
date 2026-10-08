@@ -12,6 +12,7 @@ export function useProxy(toast, currentProject) {
   const [port, setPort] = useState(8080);
   const [mode, setMode] = useState('regular');
   const [args, setArgs] = useState('');
+  const [listenHost, setListenHost] = useState('');
   const [loading, setLoading] = useState(false);
 
   // Load proxy status
@@ -30,6 +31,7 @@ export function useProxy(toast, currentProject) {
       setPort(currentProject.config.proxy_port || 8080);
       setMode(currentProject.config.proxy_mode || 'regular');
       setArgs(currentProject.config.proxy_args || '');
+      setListenHost(currentProject.config.proxy_listen_host || '');
     }
   }, [currentProject]);
 
@@ -37,7 +39,7 @@ export function useProxy(toast, currentProject) {
   const start = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await proxyService.start(port, mode, args);
+      const r = await proxyService.start(port, mode, args, listenHost);
       if (r.status === 'started' || r.status === 'already_running') {
         setIsRunning(true);
         toast('Proxy started', 'success');
@@ -49,7 +51,7 @@ export function useProxy(toast, currentProject) {
     } finally {
       setLoading(false);
     }
-  }, [port, mode, args, toast]);
+  }, [port, mode, args, listenHost, toast]);
 
   // Stop proxy
   const stop = useCallback(async () => {
@@ -70,6 +72,8 @@ export function useProxy(toast, currentProject) {
     setMode,
     args,
     setArgs,
+    listenHost,
+    setListenHost,
     loading,
     start,
     stop,
