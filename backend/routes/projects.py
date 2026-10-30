@@ -30,12 +30,28 @@ logger = logging.getLogger('blackwire')
 async def list_projects():
     projects = []
     if PROJECTS_DIR.exists():
+        current = state.get_current_project()
         for p in PROJECTS_DIR.iterdir():
-            if p.is_dir() and (p / "config.json").exists():
-                config = json.loads((p / "config.json").read_text())
-                projects.append({"name": p.name, "description": config.get("description", ""),
-                    "created_at": config.get("created_at"), "is_current": p.name == state.get_current_project()})
-    return sorted(projects, key=lambda x: x.get("created_at", ""), reverse=True)
+            cfg_path = p / "config.json"
+            if not (p.is_dir() and cfg_path.exists()):
+                continue
+            # Un config.json ilegible o no-objeto NO debe tumbar toda la lista:
+            # se registra y el proyecto se incluye con campos vacíos.
+            try:
+                config = json.loads(cfg_path.read_text())
+                if not isinstance(config, dict):
+                    raise ValueError("config.json is not a JSON object")
+            except Exception as exc:
+                logger.warning("Project %s has an invalid config.json: %s", p.name, exc)
+                config = {}
+            projects.append({
+                "name": p.name,
+                "description": config.get("description", ""),
+                # Normalizar a "" (nunca None) para que el orden no mezcle None y str.
+                "created_at": config.get("created_at") or "",
+                "is_current": p.name == current,
+            })
+    return sorted(projects, key=lambda x: x.get("created_at") or "", reverse=True)
 
 
 @router.post("/api/projects")
