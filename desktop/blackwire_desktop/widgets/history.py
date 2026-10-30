@@ -90,6 +90,23 @@ class HistoryModel(QAbstractTableModel):
             return self.COLUMNS[section]
         return None
 
+    # Claves de orden por columna: # y Status ordenan numéricamente; Method y
+    # URL, alfabéticamente (sin distinguir mayúsculas).
+    _SORT_KEYS = {
+        0: lambda r: r.get("id") or 0,
+        1: lambda r: (r.get("method") or "").casefold(),
+        2: lambda r: r.get("response_status") or 0,
+        3: lambda r: (r.get("url") or "").casefold(),
+    }
+
+    def sort(self, column: int, order=Qt.AscendingOrder) -> None:
+        key = self._SORT_KEYS.get(column)
+        if key is None or not self._rows:
+            return
+        self.layoutAboutToBeChanged.emit()
+        self._rows.sort(key=key, reverse=(order == Qt.DescendingOrder))
+        self.layoutChanged.emit()
+
     def data(self, index: QModelIndex, role=Qt.DisplayRole):
         if not index.isValid():
             return None
@@ -151,7 +168,10 @@ class HistoryPanel(QWidget):
         # ahora es una barra dedicada estilo Burp, con el filtro expandible.
         self._filter = QLineEdit()
         self._filter.setObjectName("HttpqlFilter")
-        self._filter.setPlaceholderText("HTTPQL…  req.method.eq:GET AND resp.code.gte:400")
+        self._filter.setPlaceholderText(
+            "HTTPQL…  resp.code eq 200 AND req.method eq GET"
+            "   (o req.method.eq:GET)"
+        )
         self._filter.setClearButtonEnabled(True)
         self._filter.returnPressed.connect(
             lambda: self.search_requested.emit(self._filter.text())
@@ -192,13 +212,28 @@ class HistoryPanel(QWidget):
         bar_lay.addWidget(self._builder_btn)
         bar_lay.addWidget(self._presets_btn)
         bar_lay.addWidget(self._clear_btn)
-        bar_lay.addWidget(QLabel("Por página:"))
+        bar_lay.addWidget(QLabel("Mostrar:"))
         self._page_size = QComboBox()
-        self._page_size.addItems(["100", "300", "500", "1000", "5000"])
-        self._page_size.setCurrentText("1000")
-        self._page_size.setToolTip("Nº máximo de resultados a traer por búsqueda")
-        self._page_size.currentTextChanged.connect(
-            lambda _t: self.search_requested.emit(self._filter.text())
+        # Etiquetas autoexplicativas: deja claro que es el máximo de requests
+        # (las más recientes) que se cargan y se ven en la tabla. El valor real
+        # (el LIMIT) va en itemData, no en el texto.
+        for label, value in (
+            ("Últimas 100", 100),
+            ("Últimas 300", 300),
+            ("Últimas 500", 500),
+            ("Últimas 1000", 1000),
+            ("Últimas 5000", 5000),
+            ("Todas", self.PAGE_SIZE_ALL),
+        ):
+            self._page_size.addItem(label, value)
+        self._page_size.setCurrentText("Últimas 1000")
+        self._page_size.setToolTip(
+            "Máximo de requests (las más recientes) que se cargan y se muestran\n"
+            "en la tabla. No afecta a lo capturado: el total real de la base de\n"
+            "datos se ve en la barra de estado."
+        )
+        self._page_size.currentIndexChanged.connect(
+            lambda _i: self.search_requested.emit(self._filter.text())
         )
         bar_lay.addWidget(self._page_size)
         layout.addWidget(filter_bar)
@@ -218,6 +253,10 @@ class HistoryPanel(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(False)
+        # Ordenar por cabecera (# numérico, Method/URL alfabético). Por defecto
+        # se mantiene el orden del backend (id desc = más reciente primero).
+        self.table.setSortingEnabled(True)
+        self.table.sortByColumn(0, Qt.DescendingOrder)
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
@@ -315,6 +354,7 @@ class HistoryPanel(QWidget):
         self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
         self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.tree.setUniformRowHeights(True)
+        self.tree.setSortingEnabled(True)  # ordenar por Host/Ruta o por # (clic cabecera)
         self.tree.currentItemChanged.connect(self._on_tree_item)
         split.addWidget(self.tree)
 
@@ -369,11 +409,14 @@ class HistoryPanel(QWidget):
     def current_filter(self) -> str:
         return self._filter.text()
 
+    # Sentinela de "Todos": LIMIT suficientemente alto para traer el historial
+    # completo (la tabla está virtualizada, así que renderiza 20k+ filas sin
+    # problema). El backend lo trata como un LIMIT normal.
+    PAGE_SIZE_ALL = 100_000_000
+
     def page_size(self) -> int:
-        try:
-            return int(self._page_size.currentText())
-        except ValueError:
-            return 1000
+        data = self._page_size.currentData()
+        return int(data) if data is not None else 1000
 
     def show_error(self, message: str) -> None:
         if message:
@@ -398,7 +441,10 @@ class HistoryPanel(QWidget):
         self.tree.setHeaderLabels([f"{len(tree)} hosts", "#"])
 
     def _node_item(self, node: dict[str, Any]) -> QTreeWidgetItem:
-        item = QTreeWidgetItem([node["label"], str(node["count"])])
+        item = QTreeWidgetItem([node["label"]])
+        # El count va como int en DisplayRole para que la columna "#" ordene
+        # numéricamente (1 < 2 < 10), no como texto.
+        item.setData(1, Qt.DisplayRole, int(node["count"]))
         # Guardar el id del request más reciente de este subárbol (si hay) y los
         # requests del subárbol para estadísticas/export.
         reqs = collect_node_reqs(node)

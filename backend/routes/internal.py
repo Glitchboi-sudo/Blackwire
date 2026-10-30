@@ -9,6 +9,7 @@ No expuestos a la UI directamente. Usan el scope y el estado de interceptación.
 import hashlib
 import json
 import logging
+import uuid
 from datetime import datetime
 
 import aiosqlite
@@ -31,7 +32,16 @@ async def receive_request(data: dict = Body(...)):
     in_scope = match_scope(data["url"], state.scope_rules)
     logger.debug('Internal capture: %s %s (in_scope=%s)', data.get('method'), data.get('url'), in_scope)
     async with aiosqlite.connect(get_project_db(project)) as db:
-        h = hashlib.md5(f"{data['method']}{data['url']}{data.get('body','')}".encode()).hexdigest()
+        # Hash ÚNICO por captura: prefijo de contenido (método+url+body) + nonce.
+        # La columna `requests.hash` es UNIQUE; antes el hash era solo del contenido
+        # y descartaba como "duplicate" cualquier request idéntica. El proxy debe
+        # guardar TODO lo que pasa, aunque se repita, así que el nonce garantiza
+        # unicidad y el prefijo conserva la firma de contenido por si se quiere
+        # agrupar duplicados en el futuro.
+        content = hashlib.md5(
+            f"{data['method']}{data['url']}{data.get('body','')}".encode()
+        ).hexdigest()
+        h = f"{content}-{uuid.uuid4().hex[:8]}"
         try:
             await db.execute("""INSERT INTO requests (method,url,headers,body,response_status,response_headers,
                 response_body,timestamp,request_type,in_scope,hash) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",

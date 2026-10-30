@@ -76,14 +76,10 @@ class ProjectsPanel(QWidget):
         layout.setSpacing(8)
 
         # -- lista de proyectos --------------------------------------------- #
+        # Las acciones de creación van ARRIBA, antes de la lista: es lo primero
+        # que se busca al entrar al panel (crear/importar un proyecto) y mejora el
+        # flujo frente a tenerlas al pie.
         left = QVBoxLayout()
-        self._list = QListWidget()
-        self._list.setSelectionMode(QAbstractItemView.SingleSelection)
-        self._list.currentRowChanged.connect(self._on_select)
-        self._list.itemDoubleClicked.connect(lambda _i: self._activate())
-        left.addWidget(QLabel("Proyectos"))
-        left.addWidget(self._list, 1)
-
         new_row = QHBoxLayout()
         new_btn = QPushButton("Nuevo proyecto")
         new_btn.clicked.connect(self._new_project)
@@ -92,6 +88,13 @@ class ProjectsPanel(QWidget):
         new_row.addWidget(new_btn)
         new_row.addWidget(from_file_btn)
         left.addLayout(new_row)
+
+        self._list = QListWidget()
+        self._list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self._list.currentRowChanged.connect(self._on_select)
+        self._list.itemDoubleClicked.connect(lambda _i: self._activate())
+        left.addWidget(QLabel("Proyectos"))
+        left.addWidget(self._list, 1)
         layout.addLayout(left, 1)
 
         # -- detalle + acciones --------------------------------------------- #

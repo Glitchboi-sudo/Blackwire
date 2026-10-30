@@ -27,6 +27,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ._sorting import make_sortable, populating
+
 Runner = Callable[[Callable[[], Any], Callable[[Any], None]], None]
 
 _WHEN = ["request", "response"]
@@ -87,6 +89,7 @@ class SessionPanel(QWidget):
         self._table.verticalHeader().setVisible(False)
         self._table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self._table.cellDoubleClicked.connect(lambda _r, _c: self._toggle_selected())
+        make_sortable(self._table)  # ES: ordenar por cabecera / EN: header sort
         layout.addWidget(self._table, 1)
 
         # -- acciones ------------------------------------------------------- #
@@ -110,21 +113,35 @@ class SessionPanel(QWidget):
 
     def _on_rules(self, rules: list[dict[str, Any]]) -> None:
         self._rules = rules or []
-        self._table.setRowCount(len(self._rules))
-        for r, rule in enumerate(self._rules):
-            cells = [
-                rule.get("name", ""), rule.get("when", ""), rule.get("target", ""),
-                rule.get("regex", ""), str(rule.get("group", 1)),
-                rule.get("variable", ""), "sí" if rule.get("enabled", True) else "no",
-            ]
-            for c, text in enumerate(cells):
-                item = QTableWidgetItem(text)
-                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-                self._table.setItem(r, c, item)
+        # ES: poblar sin reordenar; guardar el índice estable en la col 0.
+        # EN: populate without re-sorting; stash the stable index on col 0.
+        with populating(self._table):
+            self._table.setRowCount(len(self._rules))
+            for r, rule in enumerate(self._rules):
+                cells = [
+                    rule.get("name", ""), rule.get("when", ""), rule.get("target", ""),
+                    rule.get("regex", ""), str(rule.get("group", 1)),
+                    rule.get("variable", ""),
+                    "sí" if rule.get("enabled", True) else "no",
+                ]
+                for c, text in enumerate(cells):
+                    item = QTableWidgetItem(text)
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                    if c == 0:
+                        item.setData(Qt.UserRole, r)
+                    self._table.setItem(r, c, item)
 
     def _selected_rule(self) -> dict[str, Any] | None:
+        # ES: resolver el índice original desde la col 0 (la fila visible puede
+        # estar reordenada). EN: resolve the original index from col 0.
         row = self._table.currentRow()
-        return self._rules[row] if 0 <= row < len(self._rules) else None
+        if row < 0:
+            return None
+        item = self._table.item(row, 0)
+        idx = item.data(Qt.UserRole) if item is not None else None
+        if isinstance(idx, int) and 0 <= idx < len(self._rules):
+            return self._rules[idx]
+        return None
 
     # -- mutaciones --------------------------------------------------------- #
     def _after_mutation(self, _result: Any) -> None:

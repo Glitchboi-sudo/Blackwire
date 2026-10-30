@@ -310,6 +310,17 @@ class _RenderView(QTextBrowser):
         self.setOpenLinks(False)
         self.setOpenExternalLinks(False)
         self.setPlaceholderText("Sin contenido HTML para renderizar")
+        # Lienzo tipo navegador: fondo claro y texto oscuro, INDEPENDIENTE del
+        # tema de la app. El QSS global (`QTextEdit {...}`) también aplica a este
+        # QTextBrowser (subclase) y pintaba el fondo oscuro; el HTML interceptado
+        # suele asumir fondo blanco (p. ej. `color:#000`), así que quedaba
+        # ilegible -> parecía que "el render no funcionaba". Un stylesheet propio
+        # del widget gana sobre el global y da una vista previa legible.
+        self.setStyleSheet(
+            "QTextBrowser { background: #ffffff; color: #1a1a1a;"
+            " border: 1px solid #c8c8c8; }"
+        )
+        self.document().setDefaultStyleSheet("body { background:#ffffff; color:#1a1a1a; }")
 
     def render_body(self, body: str) -> None:
         if body.strip():

@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ._sorting import make_sortable, numeric_item, populating
 from .http_view import HttpEditor
 
 Runner = Callable[[Callable[[], Any], Callable[[Any], None]], None]
@@ -65,6 +66,7 @@ class WebSocketPanel(QWidget):
         self._frames_tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._frames_tbl.verticalHeader().setVisible(False)
         self._frames_tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        make_sortable(self._frames_tbl)  # orden por cabecera / click-to-sort
         self._frames_tbl.currentCellChanged.connect(self._on_frame)
         right.addWidget(self._frames_tbl)
 
@@ -142,19 +144,32 @@ class WebSocketPanel(QWidget):
     # -- frames ------------------------------------------------------------- #
     def _on_frames(self, frames: list[dict[str, Any]]) -> None:
         self._frames = frames if isinstance(frames, list) else []
-        self._frames_tbl.setRowCount(len(self._frames))
-        for r, f in enumerate(self._frames):
-            arrow = "UP" if f.get("direction") == "up" else "DOWN"
-            for col, text in enumerate([str(f.get("id", "")), arrow,
-                                        str(f.get("timestamp", ""))]):
-                item = QTableWidgetItem(text)
-                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-                self._frames_tbl.setItem(r, col, item)
+        # Desactiva el orden al poblar para que las filas no "salten":
+        with populating(self._frames_tbl):
+            self._frames_tbl.setRowCount(len(self._frames))
+            for r, f in enumerate(self._frames):
+                arrow = "UP" if f.get("direction") == "up" else "DOWN"
+                # Columna "#" numérica + índice estable en UserRole:
+                item0 = numeric_item(f.get("id", ""))
+                item0.setData(Qt.UserRole, r)
+                self._frames_tbl.setItem(r, 0, item0)
+                for col, text in enumerate([arrow, str(f.get("timestamp", ""))],
+                                           start=1):
+                    item = QTableWidgetItem(text)
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                    self._frames_tbl.setItem(r, col, item)
         self._content.clear()
 
+    def _frame_index(self, row: int) -> int:
+        """Índice estable en `self._frames` de la fila visual `row` (o -1)."""
+        item = self._frames_tbl.item(row, 0) if row >= 0 else None
+        idx = item.data(Qt.UserRole) if item is not None else None
+        return idx if isinstance(idx, int) else -1
+
     def _on_frame(self, row: int, _c: int, _pr: int, _pc: int) -> None:
-        if 0 <= row < len(self._frames):
-            self._content.setPlainText(str(self._frames[row].get("content", "")))
+        idx = self._frame_index(row)
+        if 0 <= idx < len(self._frames):
+            self._content.setPlainText(str(self._frames[idx].get("content", "")))
 
     # -- reenvío ------------------------------------------------------------ #
     def _resend(self) -> None:

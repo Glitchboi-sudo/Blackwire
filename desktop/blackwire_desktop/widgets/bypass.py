@@ -28,6 +28,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ._sorting import make_sortable, populating
+
 Runner = Callable[[Callable[[], Any], Callable[[Any], None]], None]
 
 _COLUMNS = ["Patrón", "Regex", "Descripción", "Activa"]
@@ -93,6 +95,7 @@ class BypassPanel(QWidget):
         self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self._table.cellDoubleClicked.connect(lambda _r, _c: self._toggle_selected())
+        make_sortable(self._table)  # ordenar al hacer clic en cabeceras
         layout.addWidget(self._table, 1)
 
         # -- acciones ------------------------------------------------------- #
@@ -117,18 +120,23 @@ class BypassPanel(QWidget):
 
     def _on_rules(self, rules: list[dict[str, Any]]) -> None:
         self._rules = rules or []
-        self._table.setRowCount(len(self._rules))
-        for r, rule in enumerate(self._rules):
-            cells = [
-                rule.get("pattern", ""),
-                "sí" if rule.get("is_regex") else "no",
-                rule.get("description", ""),
-                "sí" if rule.get("enabled", True) else "no",
-            ]
-            for c, text in enumerate(cells):
-                item = QTableWidgetItem(text)
-                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-                self._table.setItem(r, c, item)
+        # Desactiva el orden mientras poblamos para no corromper las filas.
+        with populating(self._table):
+            self._table.setRowCount(len(self._rules))
+            for r, rule in enumerate(self._rules):
+                cells = [
+                    rule.get("pattern", ""),
+                    "sí" if rule.get("is_regex") else "no",
+                    rule.get("description", ""),
+                    "sí" if rule.get("enabled", True) else "no",
+                ]
+                for c, text in enumerate(cells):
+                    item = QTableWidgetItem(text)
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                    if c == 0:
+                        # Índice estable en la lista original; resiste el orden.
+                        item.setData(Qt.UserRole, r)
+                    self._table.setItem(r, c, item)
 
     def _on_presets(self, presets: dict[str, Any]) -> None:
         self._presets.clear()
@@ -136,8 +144,16 @@ class BypassPanel(QWidget):
             self._presets.addItem(name)
 
     def _selected_rule(self) -> dict[str, Any] | None:
+        # Resuelve el índice original vía UserRole (la fila visual puede estar
+        # reordenada por el usuario al hacer clic en una cabecera).
         row = self._table.currentRow()
-        return self._rules[row] if 0 <= row < len(self._rules) else None
+        if row < 0:
+            return None
+        item = self._table.item(row, 0)
+        idx = item.data(Qt.UserRole) if item is not None else None
+        if isinstance(idx, int) and 0 <= idx < len(self._rules):
+            return self._rules[idx]
+        return None
 
     def _after(self, _result: Any) -> None:
         self.reload()

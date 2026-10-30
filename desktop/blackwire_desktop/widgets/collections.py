@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
 
 from .. import themes
 from . import icons
+from ._sorting import make_sortable, numeric_item, populating
 
 Runner = Callable[[Callable[[], Any], Callable[[Any], None]], None]
 
@@ -135,6 +136,7 @@ class CollectionsPanel(QWidget):
         self._items_tbl.setSelectionMode(QAbstractItemView.SingleSelection)
         self._items_tbl.verticalHeader().setVisible(False)
         self._items_tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        make_sortable(self._items_tbl)  # ordenar al clicar cabecera / sort on header click
         self._items_tbl.itemSelectionChanged.connect(self._on_item_selected)
         lright.addWidget(self._items_tbl, 1)
 
@@ -293,13 +295,19 @@ class CollectionsPanel(QWidget):
 
     def _on_items(self, items: list[dict[str, Any]]) -> None:
         self._items = items if isinstance(items, list) else []
-        self._items_tbl.setRowCount(len(self._items))
-        for r, it in enumerate(self._items):
-            for c, text in enumerate([str(it.get("position", r)), it.get("method", ""),
-                                      it.get("url", "")]):
-                cell = QTableWidgetItem(text)
-                cell.setFlags(cell.flags() & ~Qt.ItemIsEditable)
-                self._items_tbl.setItem(r, c, cell)
+        # Poblar sin ordenar en vivo / populate with live sorting disabled.
+        with populating(self._items_tbl):
+            self._items_tbl.setRowCount(len(self._items))
+            for r, it in enumerate(self._items):
+                # "#" ordena numéricamente; guarda el índice estable en UserRole.
+                # "#" sorts numerically; stash the stable list index in UserRole.
+                item0 = numeric_item(str(it.get("position", r)))
+                item0.setData(Qt.UserRole, r)
+                self._items_tbl.setItem(r, 0, item0)
+                for c, text in enumerate([it.get("method", ""), it.get("url", "")], 1):
+                    cell = QTableWidgetItem(text)
+                    cell.setFlags(cell.flags() & ~Qt.ItemIsEditable)
+                    self._items_tbl.setItem(r, c, cell)
         self._update_session_labels()
         self._load_extracts(self._selected_item())
 
@@ -348,8 +356,33 @@ class CollectionsPanel(QWidget):
         )
 
     def _selected_item(self) -> dict[str, Any] | None:
+        # Mapear fila visible -> índice estable vía UserRole (la tabla es ordenable).
+        # Map visible row -> stable index via UserRole (the table is sortable).
         row = self._items_tbl.currentRow()
-        return self._items[row] if 0 <= row < len(self._items) else None
+        if row < 0:
+            return None
+        cell = self._items_tbl.item(row, 0)
+        idx = cell.data(Qt.UserRole) if cell is not None else None
+        if isinstance(idx, int) and 0 <= idx < len(self._items):
+            return self._items[idx]
+        return None
+
+    def _selected_row_index(self) -> int | None:
+        """Índice estable en `self._items` de la fila seleccionada, o None."""
+        row = self._items_tbl.currentRow()
+        if row < 0:
+            return None
+        cell = self._items_tbl.item(row, 0)
+        idx = cell.data(Qt.UserRole) if cell is not None else None
+        return idx if isinstance(idx, int) and 0 <= idx < len(self._items) else None
+
+    def _select_by_index(self, idx: int) -> None:
+        """Selecciona la fila visible cuyo índice estable (UserRole) es `idx`."""
+        for row in range(self._items_tbl.rowCount()):
+            cell = self._items_tbl.item(row, 0)
+            if cell is not None and cell.data(Qt.UserRole) == idx:
+                self._items_tbl.selectRow(row)
+                return
 
     def _edit_step(self) -> None:
         item = self._selected_item()
@@ -366,7 +399,10 @@ class CollectionsPanel(QWidget):
 
     def _move_step(self, step: int) -> None:
         """Intercambia la posición del paso seleccionado con su vecino."""
-        row = self._items_tbl.currentRow()
+        # Índice estable (la tabla es ordenable) / stable index (table is sortable).
+        row = self._selected_row_index()
+        if row is None:
+            return
         target = row + step
         if self._cid is None or not (0 <= row < len(self._items)) \
                 or not (0 <= target < len(self._items)):
@@ -389,7 +425,8 @@ class CollectionsPanel(QWidget):
     def _reselect_after_move(self, row: int) -> None:
         self._load_items()
         if 0 <= row < len(self._items):
-            self._items_tbl.selectRow(row)
+            # `row` es índice estable; localizar su fila visible / find visible row.
+            self._select_by_index(row)
 
     def _delete_step(self) -> None:
         item = self._selected_item()
@@ -442,7 +479,8 @@ class CollectionsPanel(QWidget):
         item = self._items[self._cursor]
         cid, iid = self._cid, item.get("id")
         variables = dict(self._session_vars)
-        self._items_tbl.selectRow(self._cursor)
+        # `_cursor` es índice estable; localizar su fila visible / find visible row.
+        self._select_by_index(self._cursor)
         self._output.setPlainText(f"Ejecutando paso {self._cursor + 1}…")
         self._run(lambda: self._api.collection_execute_item(cid, iid, variables),
                   self._on_send_next_result)
