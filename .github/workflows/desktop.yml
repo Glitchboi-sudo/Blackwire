@@ -116,7 +116,9 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: |
-          dotnet tool install --global wix
+          # WiX v7 exige aceptar la EULA de la OSMF (error WIX7015) y falla en CI;
+          # se fija v5.0.2 (última sin OSMF, misma sintaxis `wix build`).
+          dotnet tool install --global wix --version 5.0.2
           $build = Join-Path $PWD 'dist\blackwire-desktop'
           wix build packaging\windows-installer.wxs -d "BuildDir=$build" -o "Blackwire-$env:BW_VERSION-x64.msi"
 
@@ -140,7 +142,7 @@ jobs:
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
-          name: 'Blackwire 2.0 "Buck"'
+          name: 'Blackwire 2.1 "Buck"'
           draft: true
           files: |
             *.deb
