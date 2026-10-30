@@ -2,12 +2,12 @@
 <!-- WiX v4/v5 — instalador .msi por-usuario de Blackwire (Windows).
      Empaqueta la salida onedir de PyInstaller (pasada como -d BuildDir=...).
      Compilar:
-       wix build packaging/windows-installer.wxs -d BuildDir=dist\blackwire-desktop -o Blackwire-2.1.0-x64.msi
+       wix build packaging/windows-installer.wxs -d BuildDir=dist\blackwire-desktop -o Blackwire-2.1.1-x64.msi
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package Name="Blackwire"
            Manufacturer="Blackwire"
-           Version="2.1.0"
+           Version="2.1.1"
            UpgradeCode="7b1ac471-0000-4000-a000-626c61636b77"
            Scope="perUser">
 

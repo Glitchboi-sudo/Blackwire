@@ -4,7 +4,7 @@
 
 [project]
 name = "blackwire"
-version = "2.1.0"
+version = "2.1.1"
 description = "Proxy interceptor HTTP/HTTPS para pruebas de seguridad — alternativa ligera y extensible a Burp Suite/OWASP ZAP."
 readme = "README.md"
 requires-python = ">=3.9"

@@ -4,10 +4,10 @@
 ; colocado docker-compose.yml + blackwire-image.tar.gz junto al ejecutable.
 ;
 ; Compilar:  iscc /DBuildDir=dist\blackwire-desktop packaging\windows-installer.iss
-; Salida:    packaging\Output\Blackwire-Setup-2.1.0-x64.exe
+; Salida:    packaging\Output\Blackwire-Setup-2.1.1-x64.exe
 
 #define MyAppName "Blackwire"
-#define MyAppVersion "2.1.0"
+#define MyAppVersion "2.1.1"
 #define MyAppExeName "blackwire-desktop.exe"
 
 [Setup]

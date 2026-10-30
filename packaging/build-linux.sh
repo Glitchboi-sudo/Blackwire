@@ -7,7 +7,7 @@
 # que el release reciba al menos los que sí compilaron.
 set -uo pipefail
 
-VERSION="${1:-2.1.0}"
+VERSION="${1:-2.1.1}"
 DIST="${2:-dist/blackwire-desktop}"
 ARCH_DEB="amd64"
 ARCH_RPM="x86_64"

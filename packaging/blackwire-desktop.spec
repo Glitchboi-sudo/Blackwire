@@ -104,8 +104,8 @@ if sys.platform == "darwin":
         info_plist={
             "CFBundleName": "Blackwire",
             "CFBundleDisplayName": "Blackwire",
-            "CFBundleShortVersionString": "2.1.0",
-            "CFBundleVersion": "2.1.0",
+            "CFBundleShortVersionString": "2.1.1",
+            "CFBundleVersion": "2.1.1",
             "NSHighResolutionCapable": True,
         },
     )

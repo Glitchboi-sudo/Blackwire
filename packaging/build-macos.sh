@@ -5,7 +5,7 @@
 # Requiere dist/Blackwire.app y dist-image/blackwire-image.tar.gz.
 set -uo pipefail
 
-VERSION="${1:-2.1.0}"
+VERSION="${1:-2.1.1}"
 APP="dist/Blackwire.app"
 RES="${APP}/Contents/Resources"
 
