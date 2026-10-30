@@ -100,22 +100,22 @@ jobs:
         run: bash packaging/build-macos.sh "${BW_VERSION}"
 
       # ----------------------- Windows: .exe, .msi --------------------------
+      # PowerShell en Windows: evita que Git-bash (MSYS) destroce los argumentos
+      # tipo /D... de ISCC ("You may not specify more than one script filename").
       - name: Empaquetar Windows (.exe Inno Setup)
         if: matrix.asset == 'windows'
-        shell: bash
+        shell: pwsh
         run: |
-          cp packaging/docker-compose.runtime.yml dist/blackwire-desktop/docker-compose.yml
-          cp dist-image/blackwire-image.tar.gz dist/blackwire-desktop/blackwire-image.tar.gz
-          choco install innosetup --no-progress -y
-          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "/DBuildDir=dist\\blackwire-desktop" packaging/windows-installer.iss
+          Copy-Item packaging/docker-compose.runtime.yml dist/blackwire-desktop/docker-compose.yml
+          Copy-Item dist-image/blackwire-image.tar.gz dist/blackwire-desktop/blackwire-image.tar.gz
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DBuildDir=dist\blackwire-desktop" "packaging\windows-installer.iss"
       - name: Empaquetar Windows (.msi WiX)
         if: matrix.asset == 'windows'
         continue-on-error: true
-        shell: bash
+        shell: pwsh
         run: |
           dotnet tool install --global wix
-          wix extension add -g WixToolset.Util.wixext || true
-          wix build packaging/windows-installer.wxs -d BuildDir=dist/blackwire-desktop -o "Blackwire-${BW_VERSION}-x64.msi"
+          wix build packaging\windows-installer.wxs -d BuildDir=dist\blackwire-desktop -o "Blackwire-$env:BW_VERSION-x64.msi"
 
       - name: Subir instaladores como artifact
         if: always()

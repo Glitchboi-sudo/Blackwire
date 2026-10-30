@@ -43,14 +43,16 @@ Categories=Development;Security;Network;
 EOF
 
 # --- .deb + .rpm via fpm ---
+# OJO: fpm exige que TODOS los flags vayan ANTES del primer argumento posicional;
+# por eso el path de entrada "." va al FINAL de cada invocación, no en los comunes.
 FPM_COMMON=(-s dir -n blackwire-desktop -v "${VERSION}" --license "AGPL-3.0"
             --vendor "Blackwire" --url "https://github.com/Glitchboi-sudo/Blackwire"
             --description "Blackwire - native HTTP/HTTPS intercepting proxy (runs its backend in Docker)."
-            -C "${STAGE}" .)
+            -C "${STAGE}")
 fpm "${FPM_COMMON[@]}" -t deb -a "${ARCH_DEB}" --depends "docker.io" \
-    -p "blackwire-desktop_${VERSION}_${ARCH_DEB}.deb" || echo "WARN: .deb build failed"
+    -p "blackwire-desktop_${VERSION}_${ARCH_DEB}.deb" . || echo "WARN: .deb build failed"
 fpm "${FPM_COMMON[@]}" -t rpm -a "${ARCH_RPM}" --depends "docker" \
-    -p "blackwire-desktop-${VERSION}.${ARCH_RPM}.rpm" || echo "WARN: .rpm build failed"
+    -p "blackwire-desktop-${VERSION}.${ARCH_RPM}.rpm" . || echo "WARN: .rpm build failed"
 
 # --- .tar.gz (distro-agnóstico) ---
 tar -C dist -czf "blackwire-desktop-${VERSION}-linux.tar.gz" blackwire-desktop || echo "WARN: .tar.gz failed"
