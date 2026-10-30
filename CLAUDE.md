@@ -3,34 +3,37 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 # Project Overview
-BlackWire is a self-hosted, portable HTTP/HTTPS proxy interceptor for security testing, traffic analysis, and web-application debugging — a lightweight, extensible alternative to Burp Suite and OWASP ZAP. Stack: **FastAPI + Python**, **mitmproxy** (interception engine), **React with no bundler** (JSX transpiled on the fly via Sucrase), and **SQLite, one database per project**. The frontend is served as static files from FastAPI; there is no Webpack/Vite build pipeline for the main app. UI strings are mostly English; in-code comments are bilingual (ES/EN). The desktop build (Tauri + Docker) lives in [`packaging/`](packaging/) and is produced by the GitHub Actions workflow `.github/workflows/desktop.yml` on a `v*` tag.
+BlackWire is a self-hosted, portable HTTP/HTTPS proxy interceptor for security testing, traffic analysis, and web-application debugging — a lightweight, extensible alternative to Burp Suite and OWASP ZAP. Stack: **FastAPI + Python** backend, **mitmproxy** (interception engine), **SQLite, one database per project**, and a **native PySide6/Qt desktop app** as the only UI. In-code comments are bilingual (ES/EN).
+
+> **The web UI is EOL (removed).** As of v2.0.0 the React/web frontend has been deleted and is no longer maintained. The **only** interface is the native desktop app (PySide6/Qt) in [`desktop/`](desktop/); it runs on the host, consumes the backend over REST + WebSocket, and manages the backend as a Docker container ([`desktop/blackwire_desktop/docker_runtime.py`](desktop/blackwire_desktop/docker_runtime.py)). It is packaged with PyInstaller ([`packaging/blackwire-desktop.spec`](packaging/blackwire-desktop.spec)) and produced, with the backend Docker image, by `.github/workflows/desktop.yml` on a `v*` tag. An MCP server ([`mcp_server/`](mcp_server/), launchable as `blackwire-desktop --mcp`) exposes Blackwire to AI agents. **All new UI work goes in `desktop/`, never a web frontend.**
 
 # Current State
 Built and verified: proxy interception, **Repeater**, **HTTPQL** filtering, **Site Map**, **Sensitive Discovery** (50+ patterns + Shannon entropy), **JWT analyzer**, **Cipher** (chainable encode/hash/crypto ops), **WebSocket viewer**, **Collections** with JSONPath variables, **Session rules**, **Compare** (LCS diff), Git integration, Burp-compatible import/export, 15 themes, and the **extension system**.
 
-The codebase has been **fully de-monolithized**: the backend is an app factory (`backend/main.py`) plus one FastAPI router per domain under `backend/routes/`, shared state/services in `backend/services/`, and helpers in `backend/utils/`. The frontend coordinator (`frontend/App.jsx`) delegates each tab to a component under `frontend/src/components/`. **Not yet built:** multi-user authentication, a CI/CD pipeline, and automated desktop builds — see the wiki roadmap.
+The codebase has been **fully de-monolithized**: the backend is an app factory (`backend/main.py`) plus one FastAPI router per domain under `backend/routes/`, shared state/services in `backend/services/`, and helpers in `backend/utils/`. The UI is the native desktop app under `desktop/blackwire_desktop/` (shell in `main.py`, one widget per tool under `widgets/`, REST client in `api.py`). **Not yet built:** multi-user authentication; automated tests.
 
 # Environment Setup (read this first)
-Requires **Python 3.9+** and **Node** (used only for Sucrase JSX transpilation).
+Requires **Python 3.9+**. The desktop app additionally needs **PySide6/Qt** (and, to run the MCP server, the deps in `mcp_server/requirements.txt`).
 ```bash
 git clone https://github.com/Glitchboi-sudo/Blackwire.git
 cd Blackwire
-make install     # creates the venv, installs deps, generates the mitmproxy cert
-make run         # compiles the frontend, starts the backend, opens the browser
+make install                 # venv + backend deps + mitmproxy cert
+make start                   # start the backend (FastAPI + mitmproxy) in the background
+python desktop/run.py        # launch the native desktop app (needs PySide6 on the host)
 ```
 Two constraints that will otherwise waste your time:
-- **Never edit `frontend/App.compiled.js` by hand.** It is the Sucrase output of `App.jsx` and is regenerated on every compile. Edit `App.jsx`, then `make compile`.
+- **There is no web UI.** It was removed in v2.0.0 (EOL). The only interface is the native desktop app in `desktop/`; do not reintroduce a browser frontend.
 - **The mitmproxy CA lives at `~/.mitmproxy/`.** If HTTPS interception breaks, delete that directory and run `make cert`.
 
 # Commands
-Development commands live in the `Makefile` (run `make help` for the full list):
+Backend development commands live in the `Makefile` (run `make help` for the full list):
 - **Setup:** `make install` — venv + dependencies + mitmproxy certificate
-- **Run + browser:** `make run`
 - **Start (background):** `make start` · **Foreground:** `make serve`
 - **Stop:** `make stop` · **Restart:** `make restart` (required after any backend or extension change)
-- **Compile frontend:** `make compile`
 - **Verify environment:** `make verify`
 - **Clean (venv, caches, build):** `make clean`
+
+Desktop app: `python desktop/run.py` (GUI) · `python desktop/run.py --selftest` (headless smoke test) · `blackwire-desktop --mcp` (MCP server, stdio).
 
 # Architecture
 ```
@@ -38,11 +41,11 @@ Client traffic → mitmproxy (backend/mitm_addon.py, :8080)
                      ↕ hooks: on_request / on_response
 FastAPI (backend/main.py, :5000) ↔ SQLite (projects/{name}/blackwire.db)
                      ↕ REST + WebSocket
-React frontend (served transpiled as static files)
+Native desktop app (desktop/, PySide6/Qt — runs on the host)
 ```
 - **Backend** is a thin app factory (`main.py`) that registers one router per feature domain from `backend/routes/` (history/search, repeater, intercept, scope, proxy, collections, intruder, session, chepy, websocket, git, projects, export/import, webhook, extensions, internal). Shared mutable state and the proxy lifecycle live in `backend/services/` (`state.py`, `proxy_control.py`); data access in `backend/db.py`; pure helpers in `backend/utils/`. `mitm_addon.py` runs inside the mitmproxy process and talks to the API through the `.proxy_config.json` and `.action_*.json` files (its lifecycle is independent).
-- **Frontend** loads as native ES modules. `App.jsx` holds shared state and renders the shell; each tab is a component under `frontend/src/components/tabs/`, extension UIs under `frontend/src/components/extensions/`, with domain logic in `src/hooks/`, API calls in `src/services/`, and helpers in `src/utils/`. `.jsx` modules are transpiled on request by `backend/utils/jsx.py`.
-- **Extensions** (`backend/extensions/`) get full access to `mitmproxy.http.HTTPFlow`. Three types, preferred in order: **Schema-Driven** (pure Python, UI auto-generated from `EXTENSION_META["ui_schema"]`), **Dynamic JSX** (a `.ui.jsx` alongside the `.py`, no frontend recompile), and **Custom React** (legacy). Minimal shape:
+- **Desktop app** (`desktop/blackwire_desktop/`) is a PySide6/Qt client of the backend REST+WS. `main.py` is the shell; each tool is a widget under `widgets/`; `api.py` is the only HTTP boundary; `docker_runtime.py` manages the backend container in packaged builds; `backend_server.py` runs uvicorn directly in dev. The MCP server lives separately in `mcp_server/`.
+- **Extensions** (`backend/extensions/`) get full access to `mitmproxy.http.HTTPFlow`. Preferred type: **Schema-Driven** (pure Python, UI auto-generated from `EXTENSION_META["ui_schema"]`, rendered by the desktop app). The legacy `.ui.jsx` "Dynamic JSX" / "Custom React" extension UIs were removed with the web frontend (v2.0.0). Minimal shape:
   ```python
   EXTENSION_META = {"name": "...", "title": "...", "description": "...", "ui_schema": {...}, "default_config": {...}}
   class MyExtension:
@@ -50,7 +53,7 @@ React frontend (served transpiled as static files)
       def on_request(self, flow, cfg, full_config): ...
   def register(): return MyExtension()
   ```
-- **Expansion strategy** — before touching `App.jsx` or `main.py`, prefer in order: (1) proxy/HTTP logic → an extension; (2) new endpoints → a `backend/routes/{feature}.py` registered in `main.py`; (3) new UI → a `frontend/src/components/{Feature}.jsx`; (4) shared helper → `backend/utils/` or `frontend/src/utils/`; (5) only if there is no alternative, edit `App.jsx`/`main.py` with the minimum diff.
+- **Expansion strategy** — prefer in order: (1) proxy/HTTP logic → an extension; (2) new endpoints → a `backend/routes/{feature}.py` registered in `backend/main.py`; (3) new UI → a widget under `desktop/blackwire_desktop/widgets/`, wired into `main.py`; (4) shared helper → `backend/utils/` or a module in `desktop/blackwire_desktop/`; (5) only if there is no alternative, edit `backend/main.py` / `desktop/.../main.py` with the minimum diff.
 
 # Out of Scope
 - Network-facing / multi-user authentication (the tool is designed for local, controlled use)
@@ -99,12 +102,14 @@ React frontend (served transpiled as static files)
 ```
 Blackwire/
 ├── backend/          # FastAPI app factory + routes/ services/ utils/ db.py + extensions/
-├── frontend/         # React shell (App.jsx) + src/{components,context,hooks,services,utils}
+├── desktop/          # Native PySide6/Qt app (blackwire_desktop/ + run.py) — the only UI
+├── mcp_server/       # MCP server (blackwire-mcp): exposes Blackwire to AI agents (stdio)
+├── packaging/        # Dockerfile (backend image), PyInstaller spec, compose, entrypoint
 ├── assets/           # Banner, icon, and .desktop entry
 ├── projects/         # One SQLite database per project (generated)
-├── Makefile          # Development commands (make help)
+├── Makefile          # Backend development commands (make help)
 ├── pyproject.toml    # Project metadata and tooling config
-└── requirements.txt  # Python dependencies
+└── requirements.txt  # Backend Python dependencies
 ```
 
 # Workflow Guidelines
@@ -119,7 +124,7 @@ When working on a feature, follow these steps sequentially:
 - Do not commit directly to `main`. Always create a new branch (`feat/name`, `fix/name`).
 
 # Known Pitfalls / Avoid
-- **Editing `frontend/App.compiled.js`** — it is generated; changes are overwritten on the next `make compile`. Edit `App.jsx`.
+- **Reintroducing a web frontend** — the web UI is EOL/removed (v2.0.0). All UI work goes in the native desktop app under `desktop/`.
 - **Hardcoding ports or absolute paths** — the project is 100% portable; use relative paths only.
 - **Putting proxy/HTTP logic in `main.py`** — it belongs in `backend/mitm_addon.py` or an extension.
 - **Not restarting after backend/extension changes** — there is no hot-reload; extensions are discovered at startup. Run `make restart`.

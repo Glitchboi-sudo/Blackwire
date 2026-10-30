@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import browser
+from . import icons
 
 Runner = Callable[[Callable[[], Any], Callable[[Any], None]], None]
 
@@ -107,10 +108,13 @@ class ProxyControl(QWidget):
 
     status_text = Signal(str)
 
-    def __init__(self, api, runner: Runner, parent: QWidget | None = None) -> None:
+    def __init__(self, api, runner: Runner,
+                 tokens: Callable[[], dict] | None = None,
+                 parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._api = api
         self._run = runner
+        self._tokens = tokens
         self._running = False
         # Config efímera; se siembra desde el config.json del proyecto activo.
         self._cfg: dict[str, Any] = {
@@ -122,16 +126,20 @@ class ProxyControl(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
 
-        self._dot = QLabel("●")
+        self._dot = QLabel()
         self._label = QLabel("proxy: —")
-        self._toggle_btn = QPushButton("▶ Start")
-        self._toggle_btn.setMaximumWidth(90)
+        self._toggle_btn = QPushButton("Start")
+        icons.apply(self._toggle_btn, "play", 15)
+        self._toggle_btn.setMaximumWidth(96)
         self._toggle_btn.clicked.connect(self._toggle)
-        self._cfg_btn = QPushButton("⚙")
+        self._cfg_btn = QPushButton()
+        icons.apply(self._cfg_btn, "settings", 16)
         self._cfg_btn.setMaximumWidth(34)
         self._cfg_btn.setToolTip("Configuración del proxy")
+        self._cfg_btn.setAccessibleName("Configuración del proxy")
         self._cfg_btn.clicked.connect(self._open_config)
-        self._browser_btn = QPushButton("🌐 Navegador")
+        self._browser_btn = QPushButton("Navegador")
+        icons.apply(self._browser_btn, "globe", 15)
         self._browser_btn.setToolTip(
             "Abrir Chromium apuntando al proxy y confiando en el CA de Blackwire"
         )
@@ -158,16 +166,31 @@ class ProxyControl(QWidget):
     def _on_status(self, status: dict[str, Any]) -> None:
         self._set_indicator(bool(status.get("running")))
 
+    def _state_colors(self) -> tuple[str, str]:
+        """Verde/rojo del tema activo (fallback a los tokens de githubdark)."""
+        if self._tokens is not None:
+            t = self._tokens()
+            return t.get("green", "#3fb950"), t.get("red", "#f85149")
+        return "#3fb950", "#f85149"
+
+    def refresh_theme(self) -> None:
+        """Recolorea el indicador al cambiar de tema (llamado desde el shell)."""
+        self._set_indicator(self._running)
+
     def _set_indicator(self, running: bool) -> None:
         self._running = running
+        green, red = self._state_colors()
+        color = green if running else red
+        # Status dot as a themed filled circle recolored to the run state.
+        self._dot.setPixmap(icons.icon("circle", color, 10).pixmap(10, 10))
         if running:
-            self._dot.setStyleSheet("color: #4ade80;")  # verde
             self._label.setText(f"proxy: {self._cfg['mode']}:{self._cfg['port']}")
-            self._toggle_btn.setText("■ Stop")
+            self._toggle_btn.setText("Stop")
+            self._toggle_btn.setIcon(icons.icon("stop", size=15))
         else:
-            self._dot.setStyleSheet("color: #f87171;")  # rojo
             self._label.setText("proxy: detenido")
-            self._toggle_btn.setText("▶ Start")
+            self._toggle_btn.setText("Start")
+            self._toggle_btn.setIcon(icons.icon("play", size=15))
 
     # -- siembra de config desde el proyecto activo ------------------------- #
     def load_project_config(self) -> None:
@@ -209,7 +232,7 @@ class ProxyControl(QWidget):
             self.status_text.emit(f"Proxy escuchando en :{port} ({status})")
         else:
             err = result.get("error", "desconocido") if isinstance(result, dict) else "?"
-            self.status_text.emit(f"⚠ No se pudo arrancar el proxy: {err}")
+            self.status_text.emit(f"No se pudo arrancar el proxy: {err}")
             self.refresh_status()
 
     def _on_stopped(self, _result: dict[str, Any]) -> None:
@@ -236,7 +259,7 @@ class ProxyControl(QWidget):
             self._cfg.get("listen_host", ""), self._cfg.get("port", 8080)
         )
         if ok and not self._running:
-            msg += " — recuerda iniciar el proxy (▶ Start)"
+            msg += " — recuerda iniciar el proxy (Start)"
         self.status_text.emit(msg)
 
     # -- configuración ------------------------------------------------------ #

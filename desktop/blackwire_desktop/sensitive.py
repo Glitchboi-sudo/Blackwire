@@ -82,7 +82,43 @@ _FILES = [
     for ext in _FILE_EXTS
 ]
 
-DEFAULT_PATTERNS = _GENERAL + _TOKENS + _URLS + _FILES
+PATTERN_GROUPS = ("General", "Tokens", "URLs", "Files")
+
+
+def _tag_group(patterns: list[dict[str, Any]], group: str) -> list[dict[str, Any]]:
+    """Marca cada patrón con su grupo activable (General/Tokens/URLs/Files)."""
+    for pat in patterns:
+        pat["group"] = group
+    return patterns
+
+
+DEFAULT_PATTERNS = (
+    _tag_group(_GENERAL, "General")
+    + _tag_group(_TOKENS, "Tokens")
+    + _tag_group(_URLS, "URLs")
+    + _tag_group(_FILES, "Files")
+)
+
+
+def make_custom_pattern(name: str, regex: str) -> dict[str, Any]:
+    """Crea un patrón custom (escanea todas las secciones, categoría 'Custom')."""
+    return {
+        "name": name, "regex": regex, "category": "Custom",
+        "sections": list(SECTIONS), "enabled": True, "group": "Custom",
+    }
+
+
+def dedupe_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Filtra filas duplicadas por (patternName, match) conservando el orden."""
+    seen: set[tuple[str, str]] = set()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        key = (row.get("patternName", ""), row.get("match", ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
 
 # Categoría -> token de color del tema (espejo de SENS_COLORS).
 _CATEGORY_TOKEN = {

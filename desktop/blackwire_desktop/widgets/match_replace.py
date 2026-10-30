@@ -168,7 +168,7 @@ class MatchReplacePanel(QWidget):
 
     def _on_saved(self, result: dict[str, Any]) -> None:
         if isinstance(result, dict) and result.get("error"):
-            self.status_text.emit(f"⚠ Match & Replace: {result['error']}")
+            self.status_text.emit(f"Match & Replace: {result['error']}")
             return
         self.status_text.emit(
             f"Match & Replace: {len(self._rules)} regla(s) guardadas"
@@ -184,7 +184,7 @@ class MatchReplacePanel(QWidget):
     def _add_rule(self) -> None:
         pattern = self._pattern.text()
         if not pattern:
-            self.status_text.emit("⚠ El patrón no puede estar vacío")
+            self.status_text.emit("El patrón no puede estar vacío")
             return
         rule = {
             "enabled": True,

@@ -226,7 +226,7 @@ class WebhookSitePanel(QWidget):
             "token_url"
         ):
             msg = result.get("error") if isinstance(result, dict) else "respuesta inválida"
-            self.status_text.emit(f"⚠ Webhook.site: {msg}")
+            self.status_text.emit(f"Webhook.site: {msg}")
             return
         self._token_url = result["token_url"]
         self._url.setText(self._token_url)
@@ -247,7 +247,7 @@ class WebhookSitePanel(QWidget):
 
     def _on_synced(self, result: dict[str, Any]) -> None:
         if isinstance(result, dict) and result.get("error"):
-            self.status_text.emit(f"⚠ Webhook.site: {result['error']}")
+            self.status_text.emit(f"Webhook.site: {result['error']}")
             return
         count = result.get("count", 0) if isinstance(result, dict) else 0
         self.status_text.emit(f"Webhook.site: {count} request(s) sincronizados")

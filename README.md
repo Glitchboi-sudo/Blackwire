@@ -49,10 +49,10 @@ make run
 [`Releases`](https://github.com/Glitchboi-sudo/Blackwire/releases) 
 
 **Características:**
--  Ventana nativa con Tauri (Rust + WebView)
--  Backend aislado en Docker (seguridad)
--  System tray integration
--  Instaladores para Linux, macOS y Windows
+-  Aplicación de escritorio nativa (PySide6/Qt, empaquetada con PyInstaller)
+-  Backend aislado en Docker (seguridad), gestionado por la propia GUI
+-  Servidor MCP integrado (`blackwire-desktop --mcp`) para agentes de IA
+-  Bundles para Linux, macOS y Windows
 
 ---
 

@@ -78,6 +78,7 @@ class ScopePanel(QWidget):
         toggle_btn = QPushButton("Activar/Desactivar")
         toggle_btn.clicked.connect(self._toggle_selected)
         remove_btn = QPushButton("Eliminar")
+        remove_btn.setObjectName("DangerButton")
         remove_btn.clicked.connect(self._remove_selected)
         reload_btn = QPushButton("Recargar")
         reload_btn.clicked.connect(self.reload)

@@ -97,11 +97,40 @@ class WebSocketPanel(QWidget):
         self._run(self._api.ws_connections, self._on_conns)
 
     def _on_conns(self, conns: list[dict[str, Any]]) -> None:
+        # Preserva la selección actual al repoblar (refresco en vivo no disruptivo):
+        # repoblar sin bloquear señales reiniciaría los frames en cada frame nuevo.
+        prev = self._cur_url
+        self._conns.blockSignals(True)
         self._conns.clear()
-        for c in (conns if isinstance(conns, list) else []):
+        sel_row = -1
+        for i, c in enumerate(conns if isinstance(conns, list) else []):
             item = QListWidgetItem(f"{c.get('url', '')}  ({c.get('frame_count', 0)})")
             item.setData(Qt.UserRole, c.get("url"))
             self._conns.addItem(item)
+            if c.get("url") == prev:
+                sel_row = i
+        if sel_row >= 0:
+            self._conns.setCurrentRow(sel_row)
+        self._conns.blockSignals(False)
+
+    # -- refresco en vivo --------------------------------------------------- #
+    def on_live_frame(self, url: str) -> None:
+        """Llamado al llegar un frame WS nuevo: actualiza conteos y frames."""
+        self.reload()
+        if url and url == self._cur_url:
+            self._refresh_frames_preserving()
+
+    def _refresh_frames_preserving(self) -> None:
+        if not self._cur_url:
+            return
+        row = self._frames_tbl.currentRow()
+
+        def _apply(frames: list[dict[str, Any]]) -> None:
+            self._on_frames(frames)
+            if 0 <= row < self._frames_tbl.rowCount():
+                self._frames_tbl.selectRow(row)
+
+        self._run(lambda: self._api.ws_frames(self._cur_url), _apply)
 
     def _on_conn(self, current: QListWidgetItem | None, _p: QListWidgetItem | None) -> None:
         if current is None:
@@ -115,7 +144,7 @@ class WebSocketPanel(QWidget):
         self._frames = frames if isinstance(frames, list) else []
         self._frames_tbl.setRowCount(len(self._frames))
         for r, f in enumerate(self._frames):
-            arrow = "↑ up" if f.get("direction") == "up" else "↓ down"
+            arrow = "UP" if f.get("direction") == "up" else "DOWN"
             for col, text in enumerate([str(f.get("id", "")), arrow,
                                         str(f.get("timestamp", ""))]):
                 item = QTableWidgetItem(text)
@@ -139,6 +168,6 @@ class WebSocketPanel(QWidget):
 
     def _on_resent(self, result: dict[str, Any]) -> None:
         if result.get("error"):
-            self._resend_status.setText(f"⚠ {result['error']}")
+            self._resend_status.setText(f"{result['error']}")
         else:
-            self._resend_status.setText(f"✓ {result.get('status', 'ok')}")
+            self._resend_status.setText(f"{result.get('status', 'ok')}")

@@ -12,6 +12,7 @@ from typing import Any
 from PySide6.QtCore import QByteArray, QSettings
 
 from . import themes
+from . import i18n
 
 ORG = "Blackwire"
 APP = "BlackwireDesktop"
@@ -42,6 +43,15 @@ class Settings:
     @density.setter
     def density(self, key: str) -> None:
         self._s.setValue("ui/density", key)
+
+    @property
+    def language(self) -> str:
+        value = self._s.value("ui/language", i18n.DEFAULT_LANG, type=str)
+        return value if value in i18n.LANGUAGES else i18n.DEFAULT_LANG
+
+    @language.setter
+    def language(self, code: str) -> None:
+        self._s.setValue("ui/language", code)
 
     @property
     def base_url(self) -> str:

@@ -32,6 +32,9 @@ node_modules/
 
 # Artefactos de empaquetado de escritorio (packaging/)
 packaging/blackwire-image.tar.gz
-packaging/src-tauri/target/
 packaging/backend/
 packaging/frontend/
+
+# Salida de PyInstaller (app de escritorio nativa)
+/build/
+/dist/

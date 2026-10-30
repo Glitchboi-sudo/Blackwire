@@ -39,6 +39,25 @@ scope_rules: List[dict] = []
 current_project: Optional[str] = None
 extensions_config: Dict[str, dict] = {}
 
+# --- MCP (Model Context Protocol) ---
+# Puerta de acceso: el servidor `blackwire-mcp` (stdio, lanzado por el cliente de
+# IA) consulta este flag antes de CADA llamada de herramienta y la rechaza si está
+# en False. Es el control real que la GUI enciende/apaga: gobierna si un agente
+# externo puede leer el tráfico interceptado (credenciales/tokens en vivo) o
+# disparar peticiones por el proxy. Por defecto DESACTIVADO.
+mcp_enabled: bool = False
+# Registro acotado de la actividad de las herramientas MCP (para mostrarla en la
+# GUI). El servidor MCP lo alimenta vía POST /api/mcp/activity.
+mcp_activity: List[dict] = []
+MCP_ACTIVITY_MAX = 200
+
+
+def record_mcp_activity(entry: dict) -> None:
+    """Añade una entrada de actividad MCP, recortando el buffer al máximo."""
+    mcp_activity.append(entry)
+    if len(mcp_activity) > MCP_ACTIVITY_MAX:
+        del mcp_activity[: len(mcp_activity) - MCP_ACTIVITY_MAX]
+
 
 def get_current_project() -> Optional[str]:
     global current_project

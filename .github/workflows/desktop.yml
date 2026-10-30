@@ -1,12 +1,13 @@
 name: Desktop build
 
-# Construye los instaladores de escritorio (Tauri + Docker) para Linux, macOS y
-# Windows. Se dispara al publicar un tag `v*` (crea un release en borrador con
-# todos los bundles) o manualmente desde la pestaña Actions.
+# Construye la app de escritorio NATIVA (PySide6, empaquetada con PyInstaller) para
+# Linux, macOS y Windows. Se dispara al publicar un tag `v*` (crea un release en
+# borrador con todos los bundles) o manualmente desde la pestaña Actions.
 #
-# Arquitectura: la app empaqueta la MISMA imagen Docker de Linux en los 3 SO
-# (el backend corre en Docker Desktop). Por eso la imagen se construye una sola
-# vez en Linux y se comparte como artifact a los jobs de macOS/Windows.
+# Arquitectura: la GUI nativa corre en el HOST y gestiona un contenedor Docker con
+# el backend (ver desktop/blackwire_desktop/docker_runtime.py). Por eso la MISMA
+# imagen Docker de Linux se construye una vez y se incluye, como tarball, junto al
+# ejecutable de cada SO; la GUI la carga en el primer arranque (`docker load`).
 
 on:
   push:
@@ -18,18 +19,11 @@ permissions:
   contents: write   # necesario para crear el release
 
 jobs:
-  # 1) Construye la imagen Docker una vez y la comparte
+  # 1) Construye la imagen Docker del backend una vez y la comparte como artifact.
   docker-image:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 20
-
-      - name: Aplicar parches de empaquetado
-        run: bash packaging/apply-patches.sh
 
       - name: Construir imagen Docker
         run: docker build -f packaging/Dockerfile -t blackwire:latest .
@@ -43,7 +37,7 @@ jobs:
           path: blackwire-image.tar.gz
           retention-days: 1
 
-  # 2) Construye los instaladores en cada SO (bundlean el tarball compartido)
+  # 2) Empaqueta la GUI nativa en cada SO con PyInstaller y le adjunta el tarball.
   bundle:
     needs: docker-image
     permissions:
@@ -52,63 +46,62 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04   # 22.04 = mejor compatibilidad de glibc para el AppImage
+          - os: ubuntu-22.04   # glibc antigua = mejor compatibilidad del binario
+            asset: linux
           - os: macos-latest
+            asset: macos
           - os: windows-latest
+            asset: windows
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-python@v6
         with:
-          node-version: 20
+          python-version: '3.12'
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: packaging/src-tauri -> target
-
-      - name: Dependencias de sistema (Linux/Tauri)
-        if: matrix.os == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libappindicator3-dev \
-            librsvg2-dev patchelf rpm
-
-      - name: Aplicar parches de empaquetado
+      # Dependencias de ejecución de la GUI + MCP + el empaquetador. El backend
+      # (mitmproxy/fastapi/uvicorn) NO se instala: va en la imagen Docker.
+      - name: Instalar dependencias
         shell: bash
-        run: bash packaging/apply-patches.sh
+        run: |
+          python -m pip install --upgrade pip
+          pip install "PySide6>=6.11" requests websocket-client "mcp>=2.3.0" httpx pyinstaller
 
       - name: Descargar la imagen Docker compartida
         uses: actions/download-artifact@v8
         with:
           name: blackwire-image
-          path: packaging   # tauri.conf la referencia como ../blackwire-image.tar.gz
+          path: dist-image
 
-      - name: Construir app de escritorio (Tauri) + release en tag
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # linuxdeploy trae un strip viejo que rompe con secciones .relr.dyn modernas.
-          NO_STRIP: '1'
-        with:
-          projectPath: packaging
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-          releaseName: 'Blackwire ${{ github.ref_name }}'
-          releaseDraft: true
-          prerelease: false
+      - name: Construir el ejecutable (PyInstaller)
+        shell: bash
+        run: pyinstaller --noconfirm packaging/blackwire-desktop.spec
 
-      - name: Subir bundles como artifact (también en runs manuales)
+      # Coloca compose + tarball JUNTO al ejecutable: docker_runtime._resource_dir()
+      # los resuelve primero via Path(sys.executable).parent.
+      - name: Adjuntar compose + imagen al bundle
+        shell: bash
+        run: |
+          cp packaging/docker-compose.runtime.yml dist/blackwire-desktop/docker-compose.yml
+          cp dist-image/blackwire-image.tar.gz dist/blackwire-desktop/blackwire-image.tar.gz
+
+      - name: Empaquetar el bundle
+        shell: bash
+        run: tar -C dist -czf blackwire-desktop-${{ matrix.asset }}.tar.gz blackwire-desktop
+
+      - name: Subir bundle como artifact
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: installers-${{ matrix.os }}
-          path: |
-            packaging/src-tauri/target/release/bundle/**/*.deb
-            packaging/src-tauri/target/release/bundle/**/*.AppImage
-            packaging/src-tauri/target/release/bundle/**/*.rpm
-            packaging/src-tauri/target/release/bundle/**/*.dmg
-            packaging/src-tauri/target/**/release/bundle/**/*.msi
-          if-no-files-found: ignore
+          name: blackwire-desktop-${{ matrix.asset }}
+          path: blackwire-desktop-${{ matrix.asset }}.tar.gz
+          if-no-files-found: error
+
+      - name: Publicar en el release (solo en tag)
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: 'Blackwire ${{ github.ref_name }}'
+          draft: true
+          files: blackwire-desktop-${{ matrix.asset }}.tar.gz

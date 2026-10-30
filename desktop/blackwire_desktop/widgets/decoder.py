@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 
 from .. import themes
 from ..jwt_tool import decode_jwt, encode_jwt
+from . import icons
 
 Runner = Callable[[Callable[[], Any], Callable[[Any], None]], None]
 
@@ -85,8 +86,12 @@ class DecoderPanel(QWidget):
         lleft.addWidget(QLabel("Receta"))
         lleft.addWidget(self._recipe_list, 1)
         recipe_btns = QHBoxLayout()
-        up = QPushButton("▲"); up.clicked.connect(lambda: self._move(-1))
-        down = QPushButton("▼"); down.clicked.connect(lambda: self._move(1))
+        up = QPushButton(); up.setToolTip("Subir"); icons.apply(up, "chevron-up", 14)
+        up.clicked.connect(lambda: self._move(-1))
+        up.setToolTip("Subir paso"); up.setAccessibleName("Subir paso")
+        down = QPushButton(); down.setToolTip("Bajar"); icons.apply(down, "chevron-down", 14)
+        down.clicked.connect(lambda: self._move(1))
+        down.setToolTip("Bajar paso"); down.setAccessibleName("Bajar paso")
         rm = QPushButton("Quitar"); rm.clicked.connect(self._remove_op)
         recipe_btns.addWidget(up); recipe_btns.addWidget(down)
         recipe_btns.addStretch(1); recipe_btns.addWidget(rm)
@@ -186,7 +191,7 @@ class DecoderPanel(QWidget):
 
     def _on_baked(self, result: dict[str, Any]) -> None:
         if result.get("error"):
-            self._cipher_out.setPlainText(f"⚠ Error: {result['error']}")
+            self._cipher_out.setPlainText(f"Error: {result['error']}")
         else:
             self._cipher_out.setPlainText(str(result.get("output", "")))
 
@@ -201,9 +206,11 @@ class DecoderPanel(QWidget):
         lay.addWidget(self._jwt_token)
 
         btns = QHBoxLayout()
-        decode_btn = QPushButton("Decodificar ▼")
+        decode_btn = QPushButton("Decodificar")
+        icons.apply(decode_btn, "arrow-down", 14)
         decode_btn.clicked.connect(self._jwt_decode)
-        encode_btn = QPushButton("▲ Recomponer")
+        encode_btn = QPushButton("Recomponer")
+        icons.apply(encode_btn, "arrow-up", 14)
         encode_btn.clicked.connect(self._jwt_encode)
         self._jwt_info = QLabel("")
         btns.addWidget(decode_btn)
@@ -232,14 +239,14 @@ class DecoderPanel(QWidget):
     def _jwt_decode(self) -> None:
         decoded = decode_jwt(self._jwt_token.toPlainText().strip())
         if decoded is None:
-            self._jwt_info.setText("⚠ token inválido")
+            self._jwt_info.setText("token inválido")
             return
         self._jwt_header.setPlainText(json.dumps(decoded["header"], indent=2))
         self._jwt_payload.setPlainText(json.dumps(decoded["payload"], indent=2))
         self._jwt_sig.setText(decoded["signature"])
         header = decoded["header"] if isinstance(decoded["header"], dict) else {}
         alg = header.get("alg", "?")
-        warn = "  ⚠ alg=none" if str(alg).lower() == "none" else ""
+        warn = "  alg=none" if str(alg).lower() == "none" else ""
         payload = decoded["payload"] if isinstance(decoded["payload"], dict) else {}
         exp = payload.get("exp")
         exp_txt = ""
@@ -253,7 +260,7 @@ class DecoderPanel(QWidget):
             header = json.loads(self._jwt_header.toPlainText() or "{}")
             payload = json.loads(self._jwt_payload.toPlainText() or "{}")
         except (ValueError, TypeError):
-            self._jwt_info.setText("⚠ header/payload no es JSON válido")
+            self._jwt_info.setText("header/payload no es JSON válido")
             return
         token = encode_jwt(header, payload, self._jwt_sig.text())
         self._jwt_token.setPlainText(token)

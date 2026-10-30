@@ -146,7 +146,7 @@ class BypassPanel(QWidget):
     def _add_rule(self) -> None:
         pattern = self._pattern.text().strip()
         if not pattern:
-            self.status_text.emit("⚠ El patrón no puede estar vacío")
+            self.status_text.emit("El patrón no puede estar vacío")
             return
         self._run(
             lambda: self._api.bypass_add_rule(
@@ -157,7 +157,7 @@ class BypassPanel(QWidget):
 
     def _on_added(self, result: dict[str, Any]) -> None:
         if isinstance(result, dict) and result.get("error"):
-            self.status_text.emit(f"⚠ Bypass: {result['error']}")
+            self.status_text.emit(f"Bypass: {result['error']}")
             return
         self._pattern.clear()
         self._desc.clear()

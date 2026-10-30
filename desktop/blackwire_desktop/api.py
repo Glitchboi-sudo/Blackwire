@@ -151,6 +151,27 @@ class BlackwireApi:
         """Detiene el proxy. {status:'stopped'|'not_running'}."""
         return self._post("/api/proxy/stop").json()
 
+    def shutdown_server(self) -> dict[str, Any]:
+        """Apaga el backend (`POST /api/shutdown`). Tras esto el backend muere."""
+        return self._post("/api/shutdown").json()
+
+    # -- puerta MCP (Model Context Protocol) -------------------------------- #
+    def mcp_status(self) -> dict[str, Any]:
+        """Estado de la puerta MCP. {"enabled": bool, "activity_count": int}."""
+        return self._get("/api/mcp/status").json()
+
+    def mcp_enable(self) -> dict[str, Any]:
+        """Abre la puerta MCP (los agentes IA pueden usar las herramientas)."""
+        return self._post("/api/mcp/enable").json()
+
+    def mcp_disable(self) -> dict[str, Any]:
+        """Cierra la puerta MCP (rechaza toda llamada de herramienta)."""
+        return self._post("/api/mcp/disable").json()
+
+    def mcp_activity(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Actividad reciente de las herramientas MCP (más reciente primero)."""
+        return self._get("/api/mcp/activity", limit=limit).json().get("activity", [])
+
     # -- console (logs del proxy en vivo) ----------------------------------- #
     def console_logs(self, limit: int = 500) -> list[dict[str, Any]]:
         """Entradas de log: [{ts, level, name, msg}] (`GET /api/console/logs`)."""
@@ -260,6 +281,18 @@ class BlackwireApi:
 
     def intercept_drop_response(self, response_id: str) -> dict[str, Any]:
         return self._post(f"/api/intercept_response/{response_id}/drop").json()
+
+    def intercept_toggle_responses(self) -> dict[str, Any]:
+        """Alterna el intercept GLOBAL de respuestas. {"enabled": bool}."""
+        return self._post("/api/intercept/toggle_responses").json()
+
+    def intercept_forward_all_responses(self) -> dict[str, Any]:
+        """Reenvía todas las respuestas pausadas. {status, count}."""
+        return self._post("/api/intercept_response/forward-all").json()
+
+    def intercept_drop_all_responses(self) -> dict[str, Any]:
+        """Descarta todas las respuestas pausadas. {status, count}."""
+        return self._post("/api/intercept_response/drop-all").json()
 
     # -- repeater ----------------------------------------------------------- #
     def repeater_send(
@@ -382,6 +415,33 @@ class BlackwireApi:
         """Ejecuta un paso con variables {{name}}. Devuelve respuesta + extracted."""
         return self._post(f"/api/collections/{cid}/items/{iid}/execute",
                           {"variables": variables or {}}).json()
+
+    # -- session macros (secuencias de requests ejecutadas server-side) ----- #
+    def session_macros(self) -> list[dict[str, Any]]:
+        """[{id, name, description, requests, created_at}] (orden created_at DESC).
+
+        Cada item de `requests` es {method, url, headers(JSON str), body}."""
+        return self._get("/api/session/macros").json()
+
+    def session_create_macro(
+        self, name: str, description: str = "",
+        requests: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Crea una macro. Devuelve {id}."""
+        body = {"name": name, "description": description,
+                "requests": requests or []}
+        return self._post("/api/session/macros", body).json()
+
+    def session_update_macro(self, mid: int, data: dict[str, Any]) -> dict[str, Any]:
+        """Actualización parcial (name/description/requests). {status}."""
+        return self._put(f"/api/session/macros/{mid}", data).json()
+
+    def session_delete_macro(self, mid: int) -> dict[str, Any]:
+        return self._delete(f"/api/session/macros/{mid}").json()
+
+    def session_execute_macro(self, mid: int) -> dict[str, Any]:
+        """Ejecuta la macro en orden (server-side). {results: [...]} o 404."""
+        return self._post(f"/api/session/macros/{mid}/execute").json()
 
     # -- session rules (extracción por regex) ------------------------------- #
     def session_rules(self) -> list[dict[str, Any]]:
@@ -519,6 +579,19 @@ class BlackwireApi:
             headers={"Content-Type": "application/json"},
         )
         return resp.json()
+
+    def import_project_merge(
+        self, name: str, data: dict[str, Any], clear_existing: bool = False
+    ) -> dict[str, Any]:
+        """Importa datos a un proyecto EXISTENTE (`POST /api/projects/{name}/import`).
+
+        `clear_existing=True` reemplaza el contenido; False hace merge. Devuelve
+        {status: 'merged'|'replaced', ...}."""
+        return self._request(
+            "POST", f"/api/projects/{name}/import",
+            params={"clear_existing": str(clear_existing).lower()},
+            json=data,
+        ).json()
 
     def export_project_json(self, name: str) -> bytes:
         """Descarga el export nativo JSON del proyecto (bytes)."""

@@ -25,12 +25,15 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QPushButton,
     QSplitter,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from ..i18n import t
 from ..rawhttp import format_raw, parse_raw
 from .http_view import HttpEditor
 
@@ -109,8 +112,15 @@ class InterceptPanel(QWidget):
         self._toggle_btn = QPushButton("Intercept: OFF")
         self._toggle_btn.setCheckable(True)
         self._toggle_btn.clicked.connect(self._toggle)
+        self._toggle_resp_btn = QPushButton("Resp intercept: OFF")
+        self._toggle_resp_btn.setCheckable(True)
+        self._toggle_resp_btn.setToolTip(
+            "Intercepta TODAS las respuestas in-scope (no solo las marcadas)"
+        )
+        self._toggle_resp_btn.clicked.connect(self._toggle_responses)
         self._count = QLabel("0 pendientes")
         top.addWidget(self._toggle_btn)
+        top.addWidget(self._toggle_resp_btn)
         top.addStretch(1)
         top.addWidget(self._count)
         layout.addLayout(top)
@@ -128,30 +138,38 @@ class InterceptPanel(QWidget):
 
         # -- acciones ------------------------------------------------------- #
         actions = QHBoxLayout()
-        self._fwd_btn = QPushButton("Reenviar")
+        self._fwd_btn = QPushButton(t("Forward"))
         self._fwd_btn.clicked.connect(lambda: self._forward(False))
-        self._fwd_mod_btn = QPushButton("Reenviar modificado")
+        self._fwd_mod_btn = QPushButton(t("Forward modified"))
         self._fwd_mod_btn.setObjectName("AccentButton")
         self._fwd_mod_btn.clicked.connect(lambda: self._forward(True))
-        self._drop_btn = QPushButton("Descartar")
+        self._drop_btn = QPushButton(t("Drop"))
         self._drop_btn.setObjectName("DangerButton")
         self._drop_btn.clicked.connect(self._drop)
         # Burp-style: sobre un REQUEST pausado, también pausar su respuesta.
-        self._catch_resp = QCheckBox("Interceptar su respuesta")
+        self._catch_resp = QCheckBox(t("Intercept its response"))
         self._catch_resp.setToolTip(
             "Al reenviar este request, pausa también su respuesta para editarla"
         )
-        fwd_all = QPushButton("Reenviar todo")
-        fwd_all.clicked.connect(self._forward_all)
-        drop_all = QPushButton("Descartar todo")
-        drop_all.clicked.connect(self._drop_all)
+        # Las 4 acciones en lote se agrupan en un único botón de menú para
+        # reducir el ruido visual de la barra de acciones.
+        self._bulk_btn = QToolButton()
+        self._bulk_btn.setText(t("Bulk actions"))
+        self._bulk_btn.setPopupMode(QToolButton.InstantPopup)
+        bulk_menu = QMenu(self._bulk_btn)
+        bulk_menu.addAction(t("Forward all"), self._forward_all)
+        bulk_menu.addAction(t("Drop all"), self._drop_all)
+        bulk_menu.addSeparator()
+        bulk_menu.addAction(t("Forward responses"), self._forward_all_responses)
+        bulk_menu.addAction(t("Drop responses"), self._drop_all_responses)
+        self._bulk_btn.setMenu(bulk_menu)
+
         actions.addWidget(self._fwd_btn)
         actions.addWidget(self._fwd_mod_btn)
         actions.addWidget(self._drop_btn)
         actions.addWidget(self._catch_resp)
         actions.addStretch(1)
-        actions.addWidget(fwd_all)
-        actions.addWidget(drop_all)
+        actions.addWidget(self._bulk_btn)
         layout.addLayout(actions)
 
     def set_palette(self, palette: dict[str, Any]) -> None:
@@ -200,6 +218,12 @@ class InterceptPanel(QWidget):
             self._rebuild_list()
         elif mtype == "intercept_all_forwarded":
             self._pending.clear()
+            self._rebuild_list()
+        elif mtype == "intercept_responses_toggled":
+            self._set_resp_enabled(bool(msg.get("enabled")))
+        elif mtype in ("intercept_all_responses_forwarded",
+                       "intercept_all_responses_dropped"):
+            self._pending_resp.clear()
             self._rebuild_list()
 
     # -- helpers UI --------------------------------------------------------- #
@@ -264,6 +288,24 @@ class InterceptPanel(QWidget):
 
     def _toggle(self) -> None:
         self._run(self._api.intercept_toggle, self._on_status)
+
+    def _toggle_responses(self) -> None:
+        self._run(self._api.intercept_toggle_responses, self._on_resp_status)
+
+    def _on_resp_status(self, status: dict[str, Any]) -> None:
+        self._set_resp_enabled(bool(status.get("enabled")))
+
+    def _set_resp_enabled(self, enabled: bool) -> None:
+        self._toggle_resp_btn.setChecked(enabled)
+        self._toggle_resp_btn.setText(f"Resp intercept: {'ON' if enabled else 'OFF'}")
+
+    def _forward_all_responses(self) -> None:
+        self._run(self._api.intercept_forward_all_responses,
+                  lambda _r: self.refresh_pending())
+
+    def _drop_all_responses(self) -> None:
+        self._run(self._api.intercept_drop_all_responses,
+                  lambda _r: self.refresh_pending())
 
     def _forward(self, modified: bool) -> None:
         kind, rid = self._selected()

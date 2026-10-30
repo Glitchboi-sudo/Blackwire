@@ -8,7 +8,8 @@ projects/
 **/__pycache__/
 *.pyc
 assets/
-packaging/src-tauri/target/
+desktop/
+dist/
+build/
 packaging/blackwire-image.tar.gz
 *.md
-frontend/App.compiled.js

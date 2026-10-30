@@ -12,6 +12,7 @@ texto plano (`setPlainText`), nunca `setHtml` con datos no confiables.
 
 from __future__ import annotations
 
+import json
 import sys
 import webbrowser
 from typing import Any, Callable
@@ -34,8 +35,13 @@ from PySide6.QtWidgets import (
 )
 
 from . import themes
-from .api import BlackwireApi
+from . import i18n
+from .i18n import t
+from .api import ApiError, BlackwireApi
 from .commands import Command, CommandPalette, CommandRegistry
+from .widgets import icons
+from .widgets.nav_rail import NavRail
+from .widgets.asset_profile import AssetProfilePanel
 from .widgets.bypass import BypassPanel
 from .widgets.console import ConsolePanel
 from .httpql import httpql_parse
@@ -50,13 +56,17 @@ from .widgets.intruder import IntruderPanel
 from .widgets.match_replace import MatchReplacePanel
 from .widgets.projects import ProjectsPanel
 from .widgets.proxy_control import ProxyControl
+from .widgets.mcp_control import McpControl
 from .widgets.repeater import RepeaterPanel
 from .widgets.scope import ScopePanel
 from .widgets.sensitive import SensitivePanel
 from .widgets.session import SessionPanel
+from .widgets.session_macros import SessionMacrosPanel
 from .widgets.webhook_site import WebhookSitePanel
 from .widgets.websocket_viewer import WebSocketPanel
 from .ws_client import LiveHistoryClient
+from .backend_server import BackendServer, BackendError
+from .docker_runtime import make_backend_runtime, DockerError
 
 
 # --------------------------------------------------------------------------- #
@@ -200,21 +210,21 @@ class ProxyPage(QWidget):
         # Visores Pretty/Raw/Hex con resaltado + menú contextual (estilo Burp).
         self.req_view = HttpView(palette)
         self.resp_view = HttpView(palette)
-        self.req_view.set_placeholder("Selecciona un request en el historial")
-        self.resp_view.set_placeholder("Sin respuesta")
+        self.req_view.set_placeholder(t("Select a request in the history"))
+        self.resp_view.set_placeholder(t("No response"))
         splitter.addWidget(_titled("Request", "ReqLabel", self.req_view))
         splitter.addWidget(_titled("Response", "RespLabel", self.resp_view))
         splitter.setSizes([680, 680])
         self._hist_win.setCentralWidget(splitter)
         self.history_dock = self._dock(
-            "HTTP History", "HistoryDock", history, Qt.TopDockWidgetArea
+            t("HTTP history"), "HistoryDock", history, Qt.TopDockWidgetArea
         )
         self.history_dock.setMinimumHeight(240)
 
-        self.sub.addTab(self._hist_win, "HTTP history")
-        self.sub.addTab(intercept, "Intercept")
-        self.sub.addTab(websocket, "WS")
-        self.sub.addTab(console, "Console")
+        self.sub.addTab(self._hist_win, t("HTTP history"))
+        self.sub.addTab(intercept, t("Intercept"))
+        self.sub.addTab(websocket, t("WS"))
+        self.sub.addTab(console, t("Console"))
         layout.addWidget(self.sub)
 
     def _dock(self, title: str, obj_name: str, widget: QWidget, area) -> QDockWidget:
@@ -268,6 +278,7 @@ class MainWindow(QMainWindow):
         self._commands = CommandRegistry(self, settings)
         self._live: LiveHistoryClient | None = None
         self._current_detail: dict[str, Any] | None = None
+        self._backend: BackendServer | None = None
 
         # Paneles de dominio (Fases 2-3).
         self.history = HistoryPanel()
@@ -275,20 +286,22 @@ class MainWindow(QMainWindow):
         self._intercept = InterceptPanel(api, self._run, theme.highlight_palette())
         self._scope = ScopePanel(api, self._run)
         self._repeater = RepeaterPanel(api, self._run, theme.highlight_palette())
-        self._comparer = ComparerPanel()
+        self._comparer = ComparerPanel(tokens=lambda: self._theme.tokens)
         self._intruder = IntruderPanel(api, self._run)
         self._collections = CollectionsPanel(api, self._run)
         self._decoder = DecoderPanel(api, self._run)
         self._sensitive = SensitivePanel(api, self._run, lambda: self._theme.tokens)
+        self._assets = AssetProfilePanel(api, self._run, lambda: self._theme.tokens)
         self._websocket = WebSocketPanel(api, self._run, theme.highlight_palette())
         self._session = SessionPanel(api, self._run)
+        self._session_macros = SessionMacrosPanel(api, self._run)
         self._match_replace = MatchReplacePanel(api, self._run)
         self._webhook_site = WebhookSitePanel(api, self._run)
         self._projects = ProjectsPanel(api, self._run)
         self._console = ConsolePanel(api, self._run)
         self._bypass = BypassPanel(api, self._run)
 
-        self.setWindowTitle("Blackwire — nativo")
+        self.setWindowTitle(t("Blackwire — native"))
         self.resize(1360, 860)
 
         self._build_tools()
@@ -310,121 +323,148 @@ class MainWindow(QMainWindow):
         self._intercept.set_palette(palette)
         self._websocket.set_palette(palette)
         self._sensitive.set_palette(palette)
+        self._proxy_ctl.refresh_theme()
+        self._mcp_ctl.refresh_theme()
 
     # -- construcción de UI -------------------------------------------------- #
     def _build_tools(self) -> None:
-        """Área central = barra de herramientas (pestañas) estilo Burp."""
+        """Área central = rail de navegación (estilo Burp) + stack de páginas.
+
+        Rail plano: cada herramienta es una página de primer nivel (se eliminó
+        el anidamiento de dos niveles de pestañas). La única herramienta con
+        sub-modos reales es **Proxy** (History / Intercept / WS / Console).
+        """
         self.proxy = ProxyPage(self.history, self._intercept, self._websocket,
                                self._console, self._theme.highlight_palette())
         self.req_view = self.proxy.req_view
         self.resp_view = self.proxy.resp_view
         self._wire_detail_context_menus()
 
-        # Pestaña "Scope" con sub-pestañas Scope / Proxy Bypass (estilo web).
-        self._scope_tabs = QTabWidget()
-        self._scope_tabs.setDocumentMode(True)
-        self._scope_tabs.addTab(self._scope, "Scope")
-        self._scope_tabs.addTab(self._bypass, "Proxy Bypass")
-
-        # Pestaña agrupadora "Herramientas" con sub-pestañas utilitarias.
-        self.utils = QTabWidget()
-        self.utils.setDocumentMode(True)
-        self.utils.addTab(self._sensitive, "Sensitive")
-        self.utils.addTab(self._session, "Session")
-        self.utils.addTab(self._match_replace, "Match && Replace")
-        self.utils.addTab(self._webhook_site, "Webhook.site")
-        self.utils.addTab(self._comparer, "Comparer")
-        self.utils.addTab(self._decoder, "Decoder")
-
-        self.tools = QTabWidget()
-        self.tools.setDocumentMode(True)
-        self.tools.setMovable(True)
-        # Orden: Proyectos · Scope · Proxy · Collections · Repeater · Intruder · Herramientas
-        self.tools.addTab(self._projects, "Proyectos")
-        self.tools.addTab(self._scope_tabs, "Scope")
-        self.tools.addTab(self.proxy, "Proxy")
-        self.tools.addTab(self._collections, "Collections")
-        self.tools.addTab(self._repeater, "Repeater")
-        self.tools.addTab(self._intruder, "Intruder")
-        self.tools.addTab(self.utils, "Herramientas")
+        self.tools = NavRail()
+        # Config primero: lo primero con lo que interactúas (crear/elegir proyecto,
+        # definir scope) — Projects es la página por defecto.
+        self.tools.add_section(t("Config"))
+        self.tools.addTab(self._projects, t("Projects"), "briefcase")
+        self.tools.addTab(self._scope, t("Scope"), "target")
+        self.tools.addTab(self._bypass, t("Proxy Bypass"), "shuffle")
+        self.tools.add_section(t("Traffic"))
+        self.tools.addTab(self.proxy, t("Proxy"), "arrow-left-right")
+        self.tools.addTab(self._repeater, t("Repeater"), "repeat")
+        self.tools.addTab(self._intruder, t("Intruder"), "crosshair")
+        self.tools.addTab(self._collections, t("Collections"), "folder")
+        self.tools.add_section(t("Tools"))
+        self.tools.addTab(self._decoder, t("Decoder"), "code")
+        self.tools.addTab(self._comparer, t("Comparer"), "columns")
+        self.tools.addTab(self._sensitive, t("Sensitive"), "shield")
+        self.tools.addTab(self._assets, t("Asset Profile"), "layout-grid")
+        self.tools.addTab(self._session, t("Session"), "key")
+        self.tools.addTab(self._session_macros, t("Macros"), "list")
+        self.tools.addTab(self._match_replace, t("Match && Replace"), "replace")
+        self.tools.addTab(self._webhook_site, t("Webhook.site"), "link")
+        self.tools.finish()
         self.tools.currentChanged.connect(self._on_tool_changed)
         self.setCentralWidget(self.tools)
 
     def _build_statusbar(self) -> None:
         self.setStatusBar(QStatusBar())
         self._status = QLabel(f"Backend: {self._api.base_url}")
-        self._project_label = QLabel("proyecto: —")
+        self._project_label = QLabel(t("project: {name}", name="—"))
         self._project_label.setObjectName("Badge")
-        self._proxy_ctl = ProxyControl(self._api, self._run)
+        self._proxy_ctl = ProxyControl(
+            self._api, self._run, tokens=lambda: self._theme.tokens)
         self._proxy_ctl.status_text.connect(self._status.setText)
-        self._live_label = QLabel("● live: —")
+        self._mcp_ctl = McpControl(
+            self._api, self._run, tokens=lambda: self._theme.tokens)
+        self._mcp_ctl.status_text.connect(self._status.setText)
+        self._live_dot = QLabel()
+        self._live_label = QLabel(t("live: —"))
         self.statusBar().addWidget(self._status)
         self.statusBar().addPermanentWidget(self._project_label)
         self.statusBar().addPermanentWidget(self._proxy_ctl)
+        self.statusBar().addPermanentWidget(self._mcp_ctl)
+        self.statusBar().addPermanentWidget(self._live_dot)
         self.statusBar().addPermanentWidget(self._live_label)
+        self._set_live("txt3", t("live: —"))
+
+    def _set_live(self, color_token: str, text: str) -> None:
+        """Indicador de conexión en vivo: punto temático + texto (sin glifos)."""
+        tokens = self._theme.tokens
+        color = tokens.get(color_token, tokens["txt3"])
+        self._live_dot.setPixmap(icons.icon("circle", color, 9).pixmap(9, 9))
+        self._live_label.setText(text)
 
     # -- comandos + menús ---------------------------------------------------- #
     def _register_commands(self) -> None:
         defs = [
-            Command("refresh", "Refrescar historial", self.refresh_history, "F5"),
-            Command("go_projects", "Ir a Proyectos",
+            Command("refresh", t("Refresh history"), self.refresh_history, "F5"),
+            Command("go_projects", t("Go to Projects"),
                     lambda: self._go(self._projects)),
-            Command("palette", "Command Palette…", self.open_palette, "Ctrl+K"),
-            Command("focus_filter", "Enfocar filtro HTTPQL",
+            Command("palette", t("Command Palette…"), self.open_palette, "Ctrl+K"),
+            Command("focus_filter", t("Focus HTTPQL filter"),
                     self._focus_filter, "Ctrl+L"),
-            Command("toggle_intercept", "Intercept: activar/desactivar",
+            Command("toggle_intercept", t("Intercept: toggle on/off"),
                     self._intercept._toggle, "Ctrl+I"),
-            Command("go_proxy", "Ir a Proxy (HTTP history)",
+            Command("go_proxy", t("Go to Proxy (HTTP history)"),
                     self._go_history, "Ctrl+Shift+P"),
-            Command("go_intercept", "Ir a Intercept",
+            Command("go_intercept", t("Go to Intercept"),
                     self._go_intercept, "Ctrl+Shift+I"),
-            Command("go_repeater", "Ir a Repeater",
+            Command("go_repeater", t("Go to Repeater"),
                     lambda: self._go(self._repeater), "Ctrl+Shift+R"),
-            Command("go_intruder", "Ir a Intruder",
+            Command("go_intruder", t("Go to Intruder"),
                     lambda: self._go(self._intruder)),
-            Command("go_collections", "Ir a Collections",
+            Command("go_collections", t("Go to Collections"),
                     lambda: self._go(self._collections)),
-            Command("go_decoder", "Ir a Decoder (Cipher/JWT)",
+            Command("go_decoder", t("Go to Decoder (Cipher/JWT)"),
                     lambda: self._go_util(self._decoder)),
-            Command("go_sensitive", "Ir a Sensitive",
+            Command("go_sensitive", t("Go to Sensitive"),
                     lambda: self._go_util(self._sensitive)),
-            Command("go_websocket", "Ir a WebSocket (Proxy)", self._go_ws),
-            Command("go_session", "Ir a Session rules",
+            Command("go_assets", t("Go to Asset Profile"),
+                    lambda: self._go_util(self._assets)),
+            Command("go_websocket", t("Go to WebSocket (Proxy)"), self._go_ws),
+            Command("go_session", t("Go to Session rules"),
                     lambda: self._go_util(self._session)),
-            Command("go_match_replace", "Ir a Match & Replace",
+            Command("go_session_macros", t("Go to Session Macros"),
+                    lambda: self._go_util(self._session_macros)),
+            Command("go_match_replace", t("Go to Match & Replace"),
                     lambda: self._go_util(self._match_replace)),
-            Command("go_webhook_site", "Ir a Webhook.site",
+            Command("go_webhook_site", t("Go to Webhook.site"),
                     lambda: self._go_util(self._webhook_site)),
-            Command("go_comparer", "Ir a Comparer",
+            Command("go_comparer", t("Go to Comparer"),
                     lambda: self._go_util(self._comparer), "Ctrl+Shift+C"),
-            Command("go_scope", "Ir a Scope",
-                    lambda: self._go(self._scope_tabs), "Ctrl+Shift+S"),
-            Command("go_bypass", "Ir a Proxy Bypass",
+            Command("go_scope", t("Go to Scope"),
+                    lambda: self._go(self._scope), "Ctrl+Shift+S"),
+            Command("go_bypass", t("Go to Proxy Bypass"),
                     self._go_bypass),
-            Command("go_console", "Ir a Console (logs del proxy)",
+            Command("go_console", t("Go to Console (proxy logs)"),
                     self._go_console),
-            Command("open_browser", "Abrir navegador con el CA de Blackwire",
+            Command("open_browser", t("Open browser with Blackwire CA"),
                     self._proxy_ctl.open_browser, "Ctrl+Shift+B"),
-            Command("send_to_collection", "Añadir request a Collections",
+            Command("mcp_toggle", t("MCP: enable/disable gate"),
+                    self._mcp_ctl.toggle, "Ctrl+Shift+M"),
+            Command("mcp_copy_config", t("MCP: copy client config"),
+                    self._mcp_ctl.copy_config),
+            Command("mcp_activity", t("MCP: show activity"),
+                    self._mcp_ctl.show_activity),
+            Command("send_to_collection", t("Add request to Collections"),
                     self.send_to_collection),
-            Command("send_to_repeater", "Enviar al Repeater",
+            Command("send_to_repeater", t("Send to Repeater"),
                     self.send_to_repeater, "Ctrl+R"),
-            Command("save_repeater", "Repeater: guardar pestaña",
+            Command("save_repeater", t("Repeater: save tab"),
                     self._repeater.save_current, "Ctrl+S"),
-            Command("send_to_intruder", "Enviar al Intruder",
+            Command("send_to_intruder", t("Send to Intruder"),
                     self.send_to_intruder, "Ctrl+Shift+J"),
-            Command("cmp_a", "Comparer: fijar A = request actual",
+            Command("cmp_a", t("Comparer: set A = current request"),
                     self.compare_set_a),
-            Command("cmp_b", "Comparer: fijar B = respuesta actual",
+            Command("cmp_b", t("Comparer: set B = current response"),
                     self.compare_set_b),
-            Command("next_theme", "Tema: siguiente", self.cycle_theme, "Ctrl+Shift+T"),
-            Command("save_layout", "Guardar layout del Proxy…",
+            Command("next_theme", t("Theme: next"), self.cycle_theme, "Ctrl+Shift+T"),
+            Command("save_layout", t("Save Proxy layout…"),
                     self.save_named_layout),
-            Command("load_layout", "Cargar layout del Proxy…",
+            Command("load_layout", t("Load Proxy layout…"),
                     self.load_named_layout),
-            Command("reset_layout", "Restablecer layout del Proxy",
+            Command("reset_layout", t("Reset Proxy layout"),
                     self.reset_layout),
-            Command("quit", "Salir", self.close, "Ctrl+Q"),
+            Command("quit", t("Quit"), self.close, "Ctrl+Q"),
         ]
         for cmd in defs:
             self._commands.register(cmd)
@@ -432,49 +472,61 @@ class MainWindow(QMainWindow):
     def _build_menubar(self) -> None:
         bar = self.menuBar()
 
-        file_menu = bar.addMenu("&Archivo")
+        file_menu = bar.addMenu(t("&File"))
         file_menu.addAction(self._commands.action("refresh"))
         file_menu.addSeparator()
 
         # Proyecto de trabajo: crear y cambiar (el submenú se puebla al abrirlo).
-        act_new_proj = QAction("Nuevo proyecto…", self)
+        act_new_proj = QAction(t("New project…"), self)
         act_new_proj.triggered.connect(self._projects.new_project)
         file_menu.addAction(act_new_proj)
-        self._switch_proj_menu = file_menu.addMenu("Cambiar de proyecto")
+        self._switch_proj_menu = file_menu.addMenu(t("Switch project"))
         self._switch_proj_menu.aboutToShow.connect(self._populate_switch_projects)
         file_menu.addSeparator()
 
-        exp_json = QAction("Exportar proyecto (JSON)…", self)
+        exp_json = QAction(t("Export project (JSON)…"), self)
         exp_json.triggered.connect(lambda: self._export_project("json"))
-        exp_burp = QAction("Exportar proyecto (Burp XML)…", self)
+        exp_burp = QAction(t("Export project (Burp XML)…"), self)
         exp_burp.triggered.connect(lambda: self._export_project("burp"))
-        imp_burp = QAction("Importar Burp XML…", self)
+        imp_burp = QAction(t("Import Burp XML…"), self)
         imp_burp.triggered.connect(self._import_burp)
+        imp_json = QAction(t("Import into project (JSON)…"), self)
+        imp_json.triggered.connect(self._import_project_json)
         file_menu.addAction(exp_json)
         file_menu.addAction(exp_burp)
         file_menu.addAction(imp_burp)
+        file_menu.addAction(imp_json)
         file_menu.addSeparator()
+        act_shutdown = QAction(t("Shut down backend"), self)
+        act_shutdown.triggered.connect(self._shutdown_server)
+        file_menu.addAction(act_shutdown)
         file_menu.addAction(self._commands.action("quit"))
 
-        tools_menu = bar.addMenu("&Herramientas")
+        tools_menu = bar.addMenu(t("&Tools"))
 
         # Proxy ▸ — acciones reales de control del proxy.
-        proxy_sub = tools_menu.addMenu("Proxy")
-        act_toggle = QAction("Iniciar / Detener proxy", self)
+        proxy_sub = tools_menu.addMenu(t("Proxy"))
+        act_toggle = QAction(t("Start / Stop proxy"), self)
         act_toggle.triggered.connect(self._proxy_ctl.toggle)
         proxy_sub.addAction(act_toggle)
-        act_int = QAction("Activar / Desactivar Intercept", self)
+        act_int = QAction(t("Enable / Disable Intercept"), self)
         act_int.triggered.connect(self._intercept.toggle)
         proxy_sub.addAction(act_int)
         proxy_sub.addAction(self._commands.action("open_browser"))
-        act_cfg = QAction("Configuración del proxy…", self)
+        act_cfg = QAction(t("Proxy settings…"), self)
         act_cfg.triggered.connect(self._proxy_ctl.open_config)
         proxy_sub.addAction(act_cfg)
+
+        # MCP ▸ — puerta para agentes de IA (servidor MCP por stdio).
+        mcp_sub = tools_menu.addMenu(t("MCP (AI agents)"))
+        mcp_sub.addAction(self._commands.action("mcp_toggle"))
+        mcp_sub.addAction(self._commands.action("mcp_copy_config"))
+        mcp_sub.addAction(self._commands.action("mcp_activity"))
 
         tools_menu.addSeparator()
 
         # Enviar el request seleccionado a otra herramienta.
-        send_sub = tools_menu.addMenu("Enviar request actual a")
+        send_sub = tools_menu.addMenu(t("Send current request to"))
         send_sub.addAction(self._commands.action("send_to_repeater"))
         send_sub.addAction(self._commands.action("send_to_intruder"))
         send_sub.addAction(self._commands.action("send_to_collection"))
@@ -482,30 +534,31 @@ class MainWindow(QMainWindow):
         tools_menu.addSeparator()
 
         # Utilidades (abren la herramienta directamente, con etiqueta limpia).
-        util_decoder = QAction("Decoder", self)
+        util_decoder = QAction(t("Decoder"), self)
         util_decoder.triggered.connect(lambda: self._go_util(self._decoder))
-        util_comparer = QAction("Comparer", self)
+        util_comparer = QAction(t("Comparer"), self)
         util_comparer.triggered.connect(lambda: self._go_util(self._comparer))
-        util_sensitive = QAction("Sensitive Discovery", self)
+        util_sensitive = QAction(t("Sensitive Discovery"), self)
         util_sensitive.triggered.connect(lambda: self._go_util(self._sensitive))
         tools_menu.addActions([util_decoder, util_comparer, util_sensitive])
 
         tools_menu.addSeparator()
 
         # Navegar a… — la vieja lista de 16 pestañas, ahora como submenú demoted.
-        nav_sub = tools_menu.addMenu("Navegar a")
+        nav_sub = tools_menu.addMenu(t("Navigate to"))
         for cid in ("go_projects", "go_scope", "go_bypass", "go_proxy",
                     "go_intercept", "go_websocket", "go_console",
                     "go_collections", "go_repeater", "go_intruder",
-                    "go_sensitive", "go_session", "go_match_replace",
+                    "go_sensitive", "go_assets", "go_session", "go_session_macros",
+                    "go_match_replace",
                     "go_webhook_site", "go_comparer", "go_decoder"):
             nav_sub.addAction(self._commands.action(cid))
 
-        view_menu = bar.addMenu("&Ver")
+        view_menu = bar.addMenu(t("&View"))
         view_menu.addAction(self._commands.action("palette"))
         view_menu.addSeparator()
 
-        theme_menu = view_menu.addMenu("Tema")
+        theme_menu = view_menu.addMenu(t("Theme"))
         theme_menu.addAction(self._commands.action("next_theme"))
         theme_menu.addSeparator()
         self._theme_group = QActionGroup(self)
@@ -518,16 +571,27 @@ class MainWindow(QMainWindow):
             self._theme_group.addAction(act)
             theme_menu.addAction(act)
 
-        density_menu = view_menu.addMenu("Densidad")
+        density_menu = view_menu.addMenu(t("Density"))
         self._density_group = QActionGroup(self)
         self._density_group.setExclusive(True)
         cur_density = self._settings.density
         for key, spec in themes.DENSITIES.items():
-            act = QAction(spec["label"], self, checkable=True)
+            act = QAction(t(spec["label"]), self, checkable=True)
             act.setChecked(key == cur_density)
             act.triggered.connect(lambda _c, k=key: self._pick_density(k))
             self._density_group.addAction(act)
             density_menu.addAction(act)
+
+        lang_menu = view_menu.addMenu(t("Language"))
+        self._lang_group = QActionGroup(self)
+        self._lang_group.setExclusive(True)
+        cur_lang = self._settings.language
+        for code, label in i18n.LANGUAGES.items():
+            act = QAction(label, self, checkable=True)
+            act.setChecked(code == cur_lang)
+            act.triggered.connect(lambda _c, k=code: self._pick_language(k))
+            self._lang_group.addAction(act)
+            lang_menu.addAction(act)
 
         view_menu.addSeparator()
         view_menu.addAction(self._commands.action("save_layout"))
@@ -535,17 +599,17 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self._commands.action("reset_layout"))
 
         # -- Ayuda ---------------------------------------------------------- #
-        help_menu = bar.addMenu("A&yuda")
-        act_about = QAction("Acerca de Blackwire", self)
+        help_menu = bar.addMenu(t("&Help"))
+        act_about = QAction(t("About Blackwire"), self)
         act_about.triggered.connect(self._show_about)
         help_menu.addAction(act_about)
-        act_docs = QAction("Documentación (Blackwire.wiki)", self)
+        act_docs = QAction(t("Documentation (Blackwire.wiki)"), self)
         act_docs.triggered.connect(
             lambda: webbrowser.open("https://github.com/Glitchboi-sudo/Blackwire/wiki")
         )
         help_menu.addAction(act_docs)
-        act_shortcuts = QAction("Atajos de teclado…", self)
-        act_shortcuts.triggered.connect(self.open_palette)
+        act_shortcuts = QAction(t("Keyboard shortcuts…"), self)
+        act_shortcuts.triggered.connect(self._show_shortcuts)
         help_menu.addAction(act_shortcuts)
 
     def _wire_signals(self) -> None:
@@ -555,8 +619,10 @@ class MainWindow(QMainWindow):
         self.history.preset_apply.connect(self._do_search)
         self.history.preset_save.connect(self._on_preset_save)
         self.history.preset_delete.connect(self._on_preset_delete)
+        self.history.clear_requested.connect(self._on_clear_history)
         self._intercept.status_text.connect(self._status.setText)
         self._intruder.status_text.connect(self._status.setText)
+        self._intruder.send_to_repeater.connect(self._open_repeater_from_detail)
         self._match_replace.status_text.connect(self._status.setText)
         self._webhook_site.status_text.connect(self._status.setText)
         self._webhook_site.send_to_repeater.connect(self._open_repeater_from_detail)
@@ -589,13 +655,11 @@ class MainWindow(QMainWindow):
         self.proxy.show_console()
 
     def _go_bypass(self) -> None:
-        self._go(self._scope_tabs)
-        self._scope_tabs.setCurrentWidget(self._bypass)
+        self._go(self._bypass)
 
     def _go_util(self, widget: QWidget) -> None:
-        """Abre la pestaña Herramientas y selecciona su sub-pestaña."""
-        self._go(self.utils)
-        self.utils.setCurrentWidget(widget)
+        """Abre la herramienta (ahora una página de primer nivel del rail)."""
+        self._go(widget)
 
     def _focus_filter(self) -> None:
         self._go_history()
@@ -610,7 +674,7 @@ class MainWindow(QMainWindow):
     def _update_project_badge(self) -> None:
         self._run(
             self._api.current_project,
-            lambda name: self._project_label.setText(f"proyecto: {name or '—'}"),
+            lambda name: self._project_label.setText(t("project: {name}", name=name or "—")),
         )
 
     # -- acciones de tema ---------------------------------------------------- #
@@ -624,11 +688,39 @@ class MainWindow(QMainWindow):
         self._theme.set_theme(new_key)
         for act in self._theme_group.actions():
             act.setChecked(act.text() == themes.THEMES[new_key]["label"])
-        self._status.setText(f"Tema: {themes.THEMES[new_key]['label']}")
+        self._status.setText(t("Theme: {name}", name=themes.THEMES[new_key]["label"]))
 
     def _pick_density(self, key: str) -> None:
         self._theme.set_density(key)
-        self._status.setText(f"Densidad: {themes.DENSITIES[key]['label']}")
+        self._status.setText(
+            t("Density: {name}", name=t(themes.DENSITIES[key]["label"]))
+        )
+
+    # -- idioma (requiere reinicio: las cadenas se resuelven al construir) --- #
+    def _pick_language(self, code: str) -> None:
+        if code == self._settings.language:
+            return
+        self._settings.language = code
+        self._settings.sync()
+        self._status.setText(t("Language: {name}", name=i18n.LANGUAGES[code]))
+        resp = QMessageBox.question(
+            self, t("Restart required"),
+            t("The language changes after restarting Blackwire. Restart now?"),
+        )
+        if resp == QMessageBox.Yes:
+            self._restart_app()
+
+    def _restart_app(self) -> None:
+        """Persiste el estado y relanza el proceso con los mismos argumentos."""
+        from PySide6.QtCore import QProcess
+        self._settings.geometry = self.saveGeometry()
+        self._settings.window_state = self.proxy.saveState()
+        self._settings.last_tool = self.tools.currentIndex()
+        self._settings.sync()
+        if self._live is not None:
+            self._live.stop()
+        QProcess.startDetached(sys.executable, sys.argv)
+        QApplication.quit()
 
     # -- menú Archivo: cambiar de proyecto ---------------------------------- #
     def _populate_switch_projects(self) -> None:
@@ -637,7 +729,7 @@ class MainWindow(QMainWindow):
         menu.clear()
         projects = self._projects.known_projects()
         if not projects:
-            act = menu.addAction("(sin proyectos)")
+            act = menu.addAction(t("(no projects)"))
             act.setEnabled(False)
             return
         for proj in projects:
@@ -656,16 +748,31 @@ class MainWindow(QMainWindow):
     def _show_about(self) -> None:
         from . import __version__
         QMessageBox.about(
-            self, "Acerca de Blackwire",
-            f"<b>Blackwire</b> — GUI nativa (PySide6)<br>"
-            f"Versión {__version__}<br><br>"
-            f"Proxy interceptor HTTP/HTTPS para pruebas de seguridad.<br>"
+            self, t("About Blackwire"),
+            f"<b>Blackwire</b> — GUI (PySide6)<br>"
+            f"{t('Version')} {__version__}<br><br>"
+            f"{t('Proxy interceptor HTTP/HTTPS for security testing.')}<br>"
             f"Backend: {self._api.base_url}",
         )
 
     # -- command palette ----------------------------------------------------- #
     def open_palette(self) -> None:
         CommandPalette(self._commands, self).exec()
+
+    def _show_shortcuts(self) -> None:
+        """Referencia de atajos: comandos con tecla asignada (antes abría la paleta)."""
+        rows = []
+        for cmd in self._commands.commands():
+            seq = self._commands.shortcut_text(cmd.id)
+            if seq:
+                rows.append((seq, cmd.title))
+        rows.sort(key=lambda r: r[1].lower())
+        body = "\n".join(f"{seq}  —  {title}" for seq, title in rows)
+        box = QMessageBox(self)
+        box.setWindowTitle(t("Keyboard shortcuts"))
+        box.setText(t("Keyboard shortcuts"))
+        box.setInformativeText(body or t("No shortcuts assigned."))
+        box.exec()
 
     # -- layout del Proxy: persistencia y layouts con nombre ---------------- #
     def _restore_layout(self) -> None:
@@ -682,27 +789,27 @@ class MainWindow(QMainWindow):
     def reset_layout(self) -> None:
         self.proxy.reset_layout()
         self._go(self.proxy)
-        self._status.setText("Layout del Proxy restablecido")
+        self._status.setText(t("Proxy layout reset"))
 
     def save_named_layout(self) -> None:
-        name, ok = QInputDialog.getText(self, "Guardar layout", "Nombre del layout:")
+        name, ok = QInputDialog.getText(self, t("Save layout"), t("Layout name:"))
         if ok and name.strip():
             self._settings.save_named_layout(name.strip(), self.proxy.saveState())
-            self._status.setText(f"Layout '{name.strip()}' guardado")
+            self._status.setText(t("Layout '{name}' saved", name=name.strip()))
 
     def load_named_layout(self) -> None:
         names = self._settings.layout_names()
         if not names:
-            self._status.setText("No hay layouts guardados")
+            self._status.setText(t("No saved layouts"))
             return
         name, ok = QInputDialog.getItem(
-            self, "Cargar layout", "Layout:", names, 0, False
+            self, t("Load layout"), t("Layout:"), names, 0, False
         )
         if ok and name:
             state = self._settings.named_layout(name)
             if state is not None:
                 self.proxy.restoreState(state)
-                self._status.setText(f"Layout '{name}' cargado")
+                self._status.setText(t("Layout '{name}' loaded", name=name))
 
     # -- búsqueda / historial ----------------------------------------------- #
     def _run(self, fn: Callable[[], Any], on_ok: Callable[[Any], None]) -> None:
@@ -721,9 +828,10 @@ class MainWindow(QMainWindow):
             self.history.show_error(err)
             return
         self.history.show_error("")
-        self._status.setText("Buscando…")
+        self._status.setText(t("Searching…"))
+        page_size = self.history.page_size()
         self._run(
-            lambda: self._api.search(query, ast, page=1, page_size=1000),
+            lambda: self._api.search(query, ast, page=1, page_size=page_size),
             self._on_search_result,
         )
 
@@ -734,7 +842,7 @@ class MainWindow(QMainWindow):
         rows = result.get("requests", []) if isinstance(result, dict) else []
         self.history.set_rows(rows)
         total = result.get("total", len(rows)) if isinstance(result, dict) else len(rows)
-        self._status.setText(f"Backend: {self._api.base_url}   ·   {total} requests")
+        self._status.setText(f"Backend: {self._api.base_url}   ·   " + t("{n} requests", n=total))
 
     def _load_detail(self, rid: int) -> None:
         self._run(lambda: self._api.get_detail(rid), self._render_detail)
@@ -743,13 +851,14 @@ class MainWindow(QMainWindow):
         # Regla de seguridad: setPlainText, jamás setHtml con datos interceptados.
         self._current_detail = detail
         self._collections.load_from_detail(detail)
+        self._session_macros.load_from_detail(detail)
         self.req_view.set_message(format_request(detail))
         self.resp_view.set_message(format_response(detail))
 
     # -- Repeater / Comparer (Fase 3) --------------------------------------- #
     def send_to_repeater(self) -> None:
         if self._current_detail is None:
-            self._status.setText("Selecciona un request primero")
+            self._status.setText(t("Select a request first"))
             return
         self._repeater.new_tab(self._current_detail)
         self._go(self._repeater)
@@ -778,7 +887,7 @@ class MainWindow(QMainWindow):
     def _detail_action(self, action: str) -> None:
         """Ejecuta una acción de detalle sobre el request seleccionado actual."""
         if self._current_detail is None:
-            self._status.setText("Selecciona un request primero")
+            self._status.setText(t("Select a request first"))
             return
         self._apply_detail_action(action, self._current_detail)
 
@@ -788,7 +897,7 @@ class MainWindow(QMainWindow):
         from urllib.parse import unquote
         sample = (text or "").strip()
         if not sample:
-            self._status.setText("Selecciona texto para decodificar")
+            self._status.setText(t("Select text to decode"))
             return
         try:
             if kind == "url":
@@ -797,17 +906,17 @@ class MainWindow(QMainWindow):
                 pad = "=" * (-len(sample) % 4)
                 out = base64.b64decode(sample + pad).decode("utf-8", "replace")
         except (ValueError, UnicodeDecodeError) as exc:
-            self._status.setText(f"No se pudo decodificar: {exc}")
+            self._status.setText(t("Could not decode: {err}", err=exc))
             return
         QGuiApplication.clipboard().setText(out)
-        self._status.setText(f"Decodificado ({kind}) copiado al portapapeles")
+        self._status.setText(t("Decoded ({kind}) copied to clipboard", kind=kind))
 
     # -- menú contextual del historial -------------------------------------- #
     def _on_context_action(self, action: str, rid: int, url: str) -> None:
         """Resuelve una acción del menú contextual del historial."""
         if action == "copy_url":
             QGuiApplication.clipboard().setText(url)
-            self._status.setText("URL copiada al portapapeles")
+            self._status.setText(t("URL copied to clipboard"))
             return
         if action == "render":
             webbrowser.open(self._api.render_url(rid))
@@ -818,7 +927,8 @@ class MainWindow(QMainWindow):
         if action == "save":
             self._run(lambda: self._api.toggle_saved(rid),
                       lambda r: self._status.setText(
-                          f"Favorito: {'sí' if r.get('saved') else 'no'}"))
+                          t("Favorite: {state}",
+                            state=t("yes") if r.get("saved") else t("no"))))
             return
         if action == "delete":
             self._run(lambda: self._api.delete_request(rid),
@@ -839,7 +949,7 @@ class MainWindow(QMainWindow):
         elif action == "collection":
             self._collections.load_from_detail(detail)
             self._go(self._collections)
-            self._status.setText("Request listo: elige colección y 'Añadir request actual'")
+            self._status.setText(t("Request ready: pick a collection and 'Add current request'"))
         elif action == "compare_a":
             self._comparer.set_a(format_request(detail), detail.get("url", "request"))
             self._go_util(self._comparer)
@@ -850,7 +960,7 @@ class MainWindow(QMainWindow):
             cmd = to_curl(detail.get("method"), detail.get("url"),
                           detail.get("headers"), detail.get("body"))
             QGuiApplication.clipboard().setText(cmd)
-            self._status.setText("Comando cURL copiado al portapapeles")
+            self._status.setText(t("cURL command copied to clipboard"))
         elif action == "sqlmap":
             raw = to_sqlmap_request(detail.get("method"), detail.get("url"),
                                     detail.get("headers"), detail.get("body"))
@@ -860,7 +970,7 @@ class MainWindow(QMainWindow):
             if path:
                 with open(path, "w", encoding="utf-8") as fh:
                     fh.write(raw)
-                self._status.setText(f"Request guardado: sqlmap -r {path}")
+                self._status.setText(t("Request saved: sqlmap -r {path}", path=path))
 
     # -- Filter Presets ----------------------------------------------------- #
     def _load_presets(self) -> None:
@@ -869,13 +979,13 @@ class MainWindow(QMainWindow):
     def _on_preset_save(self) -> None:
         query = self.history.current_filter()
         if not query.strip():
-            self._status.setText("El filtro está vacío; nada que guardar")
+            self._status.setText(t("The filter is empty; nothing to save"))
             return
         ast, err = httpql_parse(query)
         if err:
-            self._status.setText(f"HTTPQL inválido: {err}")
+            self._status.setText(t("Invalid HTTPQL: {err}", err=err))
             return
-        name, ok = QInputDialog.getText(self, "Guardar preset", "Nombre del preset:")
+        name, ok = QInputDialog.getText(self, t("Save preset"), t("Preset name:"))
         if ok and name.strip():
             self._run(
                 lambda: self._api.create_filter_preset(name.strip(), query, ast),
@@ -886,20 +996,34 @@ class MainWindow(QMainWindow):
         self._run(lambda: self._api.delete_filter_preset(preset_id),
                   lambda _r: self._load_presets())
 
+    def _on_clear_history(self) -> None:
+        """Vacía el historial no guardado (DELETE /api/requests), con confirmación."""
+        resp = QMessageBox.question(
+            self, t("Clear history"),
+            t("Delete all non-saved requests from the history? "
+              "Saved requests are kept."),
+        )
+        if resp != QMessageBox.Yes:
+            return
+        self._run(
+            lambda: self._api.clear_history(keep_saved=True),
+            lambda _r: self.refresh_history(),
+        )
+
     def send_to_intruder(self) -> None:
         if self._current_detail is None:
-            self._status.setText("Selecciona un request primero")
+            self._status.setText(t("Select a request first"))
             return
         self._intruder.load_from_detail(self._current_detail)
         self._go(self._intruder)
 
     def send_to_collection(self) -> None:
         if self._current_detail is None:
-            self._status.setText("Selecciona un request primero")
+            self._status.setText(t("Select a request first"))
             return
         self._collections.load_from_detail(self._current_detail)
         self._go(self._collections)
-        self._status.setText("Request listo: elige colección y 'Añadir request actual'")
+        self._status.setText(t("Request ready: pick a collection and 'Add current request'"))
 
     # -- import / export (Fase 5) ------------------------------------------- #
     def _export_project(self, fmt: str) -> None:
@@ -907,7 +1031,7 @@ class MainWindow(QMainWindow):
 
     def _do_export(self, name: str | None, fmt: str) -> None:
         if not name:
-            self._status.setText("No hay proyecto activo")
+            self._status.setText(t("No active project"))
             return
         ext = "json" if fmt == "json" else "xml"
         path, _ = QFileDialog.getSaveFileName(
@@ -918,7 +1042,7 @@ class MainWindow(QMainWindow):
         fetch = (self._api.export_project_json if fmt == "json"
                  else self._api.export_project_burp)
         self._run(lambda: self._write_bytes(path, fetch(name)),
-                  lambda p: self._status.setText(f"Exportado a {p}"))
+                  lambda p: self._status.setText(t("Exported to {path}", path=p)))
 
     @staticmethod
     def _write_bytes(path: str, data: bytes) -> str:
@@ -939,15 +1063,69 @@ class MainWindow(QMainWindow):
 
     def _do_import_burp(self, name: str | None, xml: str) -> None:
         if not name:
-            self._status.setText("No hay proyecto activo")
+            self._status.setText(t("No active project"))
             return
         self._run(lambda: self._api.import_burp_xml(name, xml), self._on_imported)
 
     def _on_imported(self, result: dict[str, Any]) -> None:
         imported = result.get("imported", "?")
         total = result.get("total", "?")
-        self._status.setText(f"Importados {imported}/{total} requests")
+        self._status.setText(t("Imported {done}/{total} requests", done=imported, total=total))
         self.refresh_history()
+
+    def _import_project_json(self) -> None:
+        """Importa un export JSON de Blackwire al proyecto activo (merge o replace)."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, t("Import JSON into project"), "", "JSON (*.json);;Todos (*)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError) as exc:
+            self._status.setText(t("Error: {msg}", msg=str(exc)))
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle(t("Import into project"))
+        box.setText(t("Merge into the current project, or replace its contents?"))
+        merge_btn = box.addButton(t("Merge"), QMessageBox.AcceptRole)
+        replace_btn = box.addButton(t("Replace"), QMessageBox.DestructiveRole)
+        box.addButton(QMessageBox.Cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked not in (merge_btn, replace_btn):
+            return
+        clear = clicked is replace_btn
+        self._run(
+            self._api.current_project,
+            lambda name: self._do_import_json(name, data, clear),
+        )
+
+    def _do_import_json(
+        self, name: str | None, data: dict[str, Any], clear: bool
+    ) -> None:
+        if not name:
+            self._status.setText(t("No active project"))
+            return
+        self._run(
+            lambda: self._api.import_project_merge(name, data, clear_existing=clear),
+            self._on_imported,
+        )
+
+    def _shutdown_server(self) -> None:
+        resp = QMessageBox.question(
+            self, t("Shut down backend"),
+            t("This stops the backend server. The app will no longer work "
+              "until it is restarted. Continue?"),
+        )
+        if resp != QMessageBox.Yes:
+            return
+        try:
+            self._api.shutdown_server()
+        except ApiError:
+            pass  # el backend puede morir antes de responder; es esperable
+        self._status.setText(t("Backend shut down"))
 
     def compare_set_a(self) -> None:
         if self._current_detail is None:
@@ -968,22 +1146,61 @@ class MainWindow(QMainWindow):
             return
         self._live = LiveHistoryClient(self._api.base_url, self)
         self._live.new_request.connect(self._on_live_request)
+        self._live.new_request.connect(self._assets.on_live_request)
         self._live.event.connect(self._intercept.on_ws_event)
         self._live.connected.connect(
-            lambda: self._live_label.setText("● live: conectado")
+            lambda: self._set_live("green", t("live: connected"))
         )
         self._live.disconnected.connect(
-            lambda _m: self._live_label.setText("● live: reconectando…")
+            lambda _m: self._set_live("orange", t("live: reconnecting…"))
         )
         self._live.start()
 
     def _on_live_request(self, row: dict[str, Any]) -> None:
+        # Frames WS llegan como new_request con request_type 'websocket': refrescan
+        # el visor WS en vivo en lugar de sumarse al historial HTTP.
+        if row.get("request_type") == "websocket":
+            self._websocket.on_live_frame(row.get("url", ""))
+            return
         # Con un filtro HTTPQL activo no prependemos: evita filas que no casan.
         if not self.history.current_filter().strip():
             self.history.prepend_row(row)
 
     def _on_error(self, msg: str) -> None:
-        self._status.setText(f"⚠ Error: {msg}")
+        self._status.setText(t("Error: {msg}", msg=msg))
+
+    # -- arranque del backend ----------------------------------------------- #
+    def ensure_backend(self) -> None:
+        """Arranca el backend si no responde ya, y espera a que esté listo.
+
+        Sin backend cualquier petición falla, así que esto corre antes de
+        `load_initial()`. Reutiliza un backend ya en marcha (no abre otro).
+        """
+        if self._api.ping():
+            return
+        self._status.setText(t("Starting backend…"))
+        QApplication.processEvents()
+        self._backend = make_backend_runtime(self._api.base_url)
+        try:
+            self._backend.start()
+        except (BackendError, DockerError) as exc:
+            self._backend = None
+            QMessageBox.critical(
+                self, t("Backend error"),
+                t("Could not start the backend:\n{err}", err=str(exc)),
+            )
+            return
+        ready = self._backend.wait_ready(
+            self._api.ping, timeout=30.0, on_tick=QApplication.processEvents
+        )
+        if ready:
+            self._status.setText(f"Backend: {self._api.base_url}")
+        else:
+            QMessageBox.warning(
+                self, t("Backend error"),
+                t("The backend did not respond in time. Check the log:\n{log}",
+                  log=str(self._backend.log_path)),
+            )
 
     # -- arranque de datos --------------------------------------------------- #
     def load_initial(self) -> None:
@@ -1001,6 +1218,7 @@ class MainWindow(QMainWindow):
         self._collections.reload()
         self._decoder.load_operations()
         self._session.reload()
+        self._session_macros.reload()
         self._websocket.reload()
         self._match_replace.reload()
         self._webhook_site.reload()
@@ -1015,6 +1233,8 @@ class MainWindow(QMainWindow):
         self._settings.sync()
         if self._live is not None:
             self._live.stop()
+        if self._backend is not None:
+            self._backend.stop()
         super().closeEvent(event)
 
 
@@ -1029,8 +1249,12 @@ def _make_app() -> QApplication:
 
 def _build(settings: Settings | None = None) -> tuple[QApplication, "MainWindow"]:
     settings = settings or Settings()
+    i18n.set_language(settings.language)
     app = _make_app()
     theme = ThemeManager(app, settings)
+    # Themed icons follow the active theme's text color (recolor on theme change).
+    icons.install(lambda: theme.tokens["txt"])
+    theme.changed.connect(icons.refresh)
     theme.apply()
     api = BlackwireApi(settings.base_url)
     win = MainWindow(api, settings, theme)
@@ -1052,10 +1276,8 @@ def selftest() -> int:
     # Navegación de herramientas (pestañas): Scope/Proxy/Collections/Repeater/
     # Intruder/Herramientas; WS dentro de Proxy; Sensitive/Session/Comparer/Decoder
     # dentro de Herramientas.
-    assert win.tools.count() == 7, "deben existir 7 pestañas de herramienta"
+    assert win.tools.count() == 15, "el rail debe exponer 15 herramientas planas"
     assert win.proxy.sub.count() == 4, "Proxy debe tener 4 sub-pestañas (incl. WS/Console)"
-    assert win._scope_tabs.count() == 2, "Scope debe tener Scope + Proxy Bypass"
-    assert win.utils.count() == 6, "Herramientas debe agrupar 6 utilidades"
     win._go(win._intruder)
     assert win.tools.currentWidget() is win._intruder, "no cambió a Intruder"
     win._go(win.proxy)
@@ -1087,10 +1309,10 @@ def selftest() -> int:
         detail = win._api.get_detail(rows[0]["id"])
         win._render_detail(detail)
         assert len(win.req_view.text()) > 0, "request vacío"
-        assert win.req_view._tabs.count() == 3, "visor sin Pretty/Raw/Hex"
-        assert win.resp_view._tabs.count() == 3, "resp sin Pretty/Raw/Hex"
+        assert win.req_view._tabs.count() == 4, "visor sin Pretty/Raw/Hex"
+        assert win.resp_view._tabs.count() == 4, "resp sin Pretty/Raw/Hex"
         print(f"SELFTEST: detail id={rows[0]['id']} "
-              f"req_chars={len(win.req_view.text())} views=Pretty/Raw/Hex")
+              f"req_chars={len(win.req_view.text())} views=Pretty/Raw/Hex/Render")
 
     status = win._api.intercept_status()
     scope = win._api.get_scope()
@@ -1186,7 +1408,7 @@ def selftest() -> int:
         win._sensitive._append_row(finding)
         win._sensitive._render_detail(detail)
         assert win._sensitive._req_view.text(), "sensitive req vacío"
-        assert win._sensitive._resp_view._tabs.count() == 3, "sensitive resp sin tabs"
+        assert win._sensitive._resp_view._tabs.count() == 4, "sensitive resp sin tabs"
         print("SELFTEST: sensitive detail OK req_chars="
               f"{len(win._sensitive._req_view.text())}")
     colls = win._api.collections_list()
@@ -1296,6 +1518,44 @@ def selftest() -> int:
     print(f"SELFTEST: browser bin={_br.find_browser() is not None} "
           f"ca={_ca is not None} spki={_br.compute_spki(_ca) is not None if _ca else False}")
 
+    # Puerta MCP: comando/widget + round-trip enable/disable + config de cliente.
+    assert any(c.id == "mcp_toggle" for c in win._commands.commands()), \
+        "falta el comando mcp_toggle"
+    assert win._mcp_ctl is not None, "falta el widget McpControl"
+    mcp_before = win._api.mcp_status()
+    mcp_en = win._api.mcp_enable()
+    assert mcp_en.get("enabled") is True, "mcp_enable no activó la puerta"
+    win._mcp_ctl._on_status(win._api.mcp_status())
+    win._api.mcp_activity(10)
+    mcp_dis = win._api.mcp_disable()
+    assert mcp_dis.get("enabled") is False, "mcp_disable no cerró la puerta"
+    mcp_cfg = win._mcp_ctl._client_config()
+    # Dev usa `-m mcp_server.server`; el build empaquetado usa `--mcp` (mismo binario).
+    assert "mcpServers" in mcp_cfg and (
+        "mcp_server.server" in mcp_cfg or "--mcp" in mcp_cfg), \
+        "config de cliente MCP mal formado"
+    print(f"SELFTEST: mcp before={mcp_before.get('enabled')} "
+          f"enable={mcp_en.get('enabled')} disable={mcp_dis.get('enabled')} cfg_ok=True")
+
+    # Backend runtime: selección host/docker + resolución del compose (sin Docker).
+    import os as _os
+    from . import docker_runtime as _dr
+    from .backend_server import BackendServer as _BS
+    _prev = _os.environ.get("BLACKWIRE_BACKEND_MODE")
+    _os.environ["BLACKWIRE_BACKEND_MODE"] = "host"
+    assert isinstance(_dr.make_backend_runtime("http://127.0.0.1:5000"), _BS), \
+        "host mode debe dar BackendServer"
+    _os.environ["BLACKWIRE_BACKEND_MODE"] = "docker"
+    _rt = _dr.make_backend_runtime("http://127.0.0.1:5000")
+    assert isinstance(_rt, _dr.DockerRuntime), "docker mode debe dar DockerRuntime"
+    if _prev is None:
+        _os.environ.pop("BLACKWIRE_BACKEND_MODE", None)
+    else:
+        _os.environ["BLACKWIRE_BACKEND_MODE"] = _prev
+    _res = _dr._resource_dir()
+    print(f"SELFTEST: backend_runtime host->BackendServer docker->DockerRuntime "
+          f"compose_dir={'found' if _res else 'MISSING'}")
+
     win.close()
     app.quit()
     print("SELFTEST: OK")
@@ -1307,6 +1567,7 @@ def main() -> int:
         return selftest()
     app, win = _build()
     win.show()
+    win.ensure_backend()
     win.load_initial()
     win.start_live()
     return app.exec()

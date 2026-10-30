@@ -8,6 +8,8 @@ añadidas. Todo texto plano (regla de seguridad).
 
 from __future__ import annotations
 
+from typing import Callable
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
@@ -34,8 +36,10 @@ _ADDED_BG = QColor(63, 185, 80, 60)     # verde translúcido (lado B)
 class ComparerPanel(QWidget):
     """Dos entradas (A/B) + diff por líneas lado a lado."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, tokens: Callable[[], dict] | None = None,
+                 parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._tokens = tokens
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(6)
@@ -107,6 +111,7 @@ class ComparerPanel(QWidget):
     def compare(self) -> None:
         entries = diff_lines(self._a.toPlainText(), self._b.toPlainText())
         self._diff.setRowCount(len(entries))
+        removed_bg, added_bg = self._diff_colors()
         added = removed = 0
         for row, entry in enumerate(entries):
             etype = entry["type"]
@@ -115,16 +120,25 @@ class ComparerPanel(QWidget):
             a_item = QTableWidgetItem(a_text)
             b_item = QTableWidgetItem(b_text)
             if etype == "removed":
-                a_item.setBackground(_REMOVED_BG)
+                a_item.setBackground(removed_bg)
                 removed += 1
             elif etype == "added":
-                b_item.setBackground(_ADDED_BG)
+                b_item.setBackground(added_bg)
                 added += 1
             self._diff.setItem(row, 0, a_item)
             self._diff.setItem(row, 1, b_item)
         self._summary.setText(f"{added} añadidas · {removed} eliminadas")
 
     # -- helpers ------------------------------------------------------------ #
+    def _diff_colors(self) -> tuple[QColor, QColor]:
+        """Rojo/verde translúcidos del tema activo (fallback a githubdark)."""
+        if self._tokens is not None:
+            t = self._tokens()
+            rem = QColor(t.get("red", "#f85149")); rem.setAlpha(60)
+            add = QColor(t.get("green", "#3fb950")); add.setAlpha(60)
+            return rem, add
+        return _REMOVED_BG, _ADDED_BG
+
     def _clear(self) -> None:
         self._a.clear()
         self._b.clear()

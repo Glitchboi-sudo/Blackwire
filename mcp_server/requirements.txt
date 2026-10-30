@@ -1,0 +1,4 @@
+# Dependencias del servidor MCP (blackwire-mcp). Se instalan en el host / en el
+# bundle de escritorio, NO en la imagen Docker del backend (ver requirements.txt).
+mcp>=2.3.0
+httpx>=0.26.0

@@ -32,6 +32,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import icons
+
 Runner = Callable[[Callable[[], Any], Callable[[Any], None]], None]
 
 
@@ -149,8 +151,9 @@ class ProjectsPanel(QWidget):
         self._list.blockSignals(True)
         self._list.clear()
         for proj in self._projects:
-            mark = "● " if proj.get("is_current") else "   "
-            item = QListWidgetItem(f"{mark}{proj.get('name', '?')}")
+            item = QListWidgetItem(proj.get("name", "?"))
+            if proj.get("is_current"):
+                item.setIcon(icons.icon("check", size=14))
             self._list.addItem(item)
         self._list.blockSignals(False)
         if self._projects:
@@ -195,7 +198,7 @@ class ProjectsPanel(QWidget):
             return
         name, desc = dlg.values()
         if not name:
-            self.status_text.emit("⚠ El nombre del proyecto es obligatorio")
+            self.status_text.emit("El nombre del proyecto es obligatorio")
             return
         self._run(lambda: self._api.create_project(name, desc),
                   lambda r: self._after_create(r, name))
@@ -206,7 +209,7 @@ class ProjectsPanel(QWidget):
             # Activarlo automáticamente para que el shell cargue sus datos.
             self._run(lambda: self._api.select_project(name), self._after_activate)
         else:
-            self.status_text.emit(f"⚠ No se pudo crear '{name}' (¿ya existe?)")
+            self.status_text.emit(f"No se pudo crear '{name}' (¿ya existe?)")
             self.reload()
 
     def _activate(self) -> None:
@@ -223,7 +226,7 @@ class ProjectsPanel(QWidget):
             self.reload()
             self.project_changed.emit()
         else:
-            self.status_text.emit("⚠ No se pudo activar el proyecto")
+            self.status_text.emit("No se pudo activar el proyecto")
 
     def _delete(self) -> None:
         proj = self._current()
@@ -260,7 +263,7 @@ class ProjectsPanel(QWidget):
 
     def _after_import_create(self, result: dict[str, Any]) -> None:
         if isinstance(result, dict) and result.get("error"):
-            self.status_text.emit(f"⚠ Import: {result['error']}")
+            self.status_text.emit(f"Import: {result['error']}")
             return
         self.status_text.emit("Proyecto importado desde archivo")
         self.reload()

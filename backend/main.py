@@ -10,22 +10,17 @@ de negocio vive en backend/routes/ (endpoints), backend/services/ y backend/db.p
 
 import logging
 import os
-import subprocess
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse, Response
 from starlette.middleware.gzip import GZipMiddleware
 
-from config import (BASE_DIR, PROJECTS_DIR, FRONTEND_DIR, FRONTEND_HTML_PATH,
-                    APP_JSX_PATH, APP_COMPILED_PATH, THEMES_JS_PATH, LOGO_SVG_PATH,
-                    get_project_db)
+from config import PROJECTS_DIR, get_project_db
 from services import state, watchdog
 from db import get_db, get_db_with_regex, init_db, load_project_settings
 from services.proxy_control import stop_proxy
 from utils.httpql import compile_httpql_ast
-from utils.jsx import resolve_frontend_module, get_module_js
 
 # --- Routers por dominio ---
 from proxy_console import router as console_router, setup_console_handler
@@ -51,6 +46,7 @@ from routes.scope import router as scope_router
 from routes.intercept import router as intercept_router
 from routes.proxy import router as proxy_router
 from routes.internal import router as internal_router
+from routes.mcp import router as mcp_router
 
 # --- Logging ---
 LOG_LEVEL = os.getenv('BLACKWIRE_LOG_LEVEL', 'INFO').upper()
@@ -67,42 +63,11 @@ def setup_logging():
     logger.info('Logging initialized (level=%s)', LOG_LEVEL)
 
 
-def transpile_jsx():
-    """Pre-transpila App.jsx → App.compiled.js con sucrase (transform JSX rápido).
-
-    Se omite si el compilado ya está al día (su mtime ≥ el de App.jsx): evita un
-    write innecesario en instalaciones de solo-lectura (p.ej. paquete AUR en /usr/share).
-    """
-    if not APP_JSX_PATH.exists():
-        return
-    if APP_COMPILED_PATH.exists() and APP_COMPILED_PATH.stat().st_mtime >= APP_JSX_PATH.stat().st_mtime:
-        return
-    node_script = (
-        "const {transform}=require('sucrase'),fs=require('fs');"
-        f"const code=fs.readFileSync({str(APP_JSX_PATH)!r},'utf8');"
-        "const r=transform(code,{transforms:['jsx'],production:true});"
-        f"fs.writeFileSync({str(APP_COMPILED_PATH)!r},r.code,'utf8');"
-        "console.log('OK:'+r.code.length)"
-    )
-    try:
-        result = subprocess.run(
-            ["node", "-e", node_script],
-            capture_output=True, text=True, timeout=30, cwd=str(BASE_DIR)
-        )
-        if result.returncode == 0:
-            logging.info("Transpiled App.jsx → App.compiled.js (%s)", result.stdout.strip())
-        else:
-            logging.error("sucrase transpile failed: %s", result.stderr[:500])
-    except Exception as e:
-        logging.error("Transpile error: %s", e)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
     setup_logging()
     setup_console_handler()
-    transpile_jsx()
     project = state.get_current_project()
     if project:
         await init_db(project)
@@ -135,105 +100,21 @@ for _router in (console_router, requests_v2_router, bypass_router,
                 rendering_router, repeater_router, chepy_router, websocket_router,
                 collections_router, git_router, intruder_router, session_router,
                 search_router, projects_router, export_import_router, extensions_router,
-                webhook_router, scope_router, intercept_router, proxy_router, internal_router):
+                webhook_router, scope_router, intercept_router, proxy_router, internal_router,
+                mcp_router):
     app.include_router(_router)
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
 
 
-# --- Frontend estático ---
-FRONTEND_HTML = FRONTEND_HTML_PATH.read_text() if FRONTEND_HTML_PATH.exists() else "<h1>Frontend not found</h1>"
-
-
-def _static_headers():
-    return {"Cache-Control": "no-cache"}
-
-
-@app.get("/", response_class=HTMLResponse)
+# --- Raíz ---
+# La UI web fue retirada (EOL): la única interfaz es la app de escritorio nativa
+# (`desktop/`), que consume este backend por REST + WebSocket. La raíz devuelve
+# solo un descriptor del servicio.
+@app.get("/")
 async def root():
-    return HTMLResponse(FRONTEND_HTML)
-
-
-@app.get("/App.jsx")
-async def app_jsx():
-    # Recompilar si el fuente es más nuevo que el compilado.
-    if APP_JSX_PATH.exists():
-        need_compile = not APP_COMPILED_PATH.exists() or APP_JSX_PATH.stat().st_mtime > APP_COMPILED_PATH.stat().st_mtime
-        if need_compile:
-            transpile_jsx()
-    if APP_COMPILED_PATH.exists():
-        return FileResponse(APP_COMPILED_PATH, media_type="text/javascript", headers=_static_headers())
-    if APP_JSX_PATH.exists():
-        return FileResponse(APP_JSX_PATH, media_type="text/javascript", headers=_static_headers())
-    raise HTTPException(status_code=404, detail="App.jsx not found")
-
-
-@app.get("/App.compiled.js")
-async def app_compiled_js():
-    # Alias de /App.jsx — sirve el archivo compilado.
-    return await app_jsx()
-
-
-@app.get("/themes.js")
-async def themes_js():
-    if THEMES_JS_PATH.exists():
-        return FileResponse(THEMES_JS_PATH, media_type="text/javascript", headers=_static_headers())
-    raise HTTPException(status_code=404, detail="themes.js not found")
-
-
-@app.get("/logo.svg")
-async def logo_svg():
-    if LOGO_SVG_PATH.exists():
-        return FileResponse(LOGO_SVG_PATH, media_type="image/svg+xml", headers=_static_headers())
-    raise HTTPException(status_code=404, detail="logo.svg not found")
-
-
-def _serve_frontend_module(subdir: str, filename: str):
-    """Sirve un módulo .js desde frontend/src/<subdir>/."""
-    path = FRONTEND_DIR / "src" / subdir / filename
-    if path.exists() and path.suffix == ".js":
-        return FileResponse(path, media_type="text/javascript", headers=_static_headers())
-    raise HTTPException(status_code=404, detail=f"Module {subdir}/{filename} not found")
-
-
-@app.get("/src/utils/{filename}")
-async def serve_utils(filename: str):
-    return _serve_frontend_module("utils", filename)
-
-
-@app.get("/src/services/{filename}")
-async def serve_services(filename: str):
-    return _serve_frontend_module("services", filename)
-
-
-@app.get("/src/hooks/{filename}")
-async def serve_hooks(filename: str):
-    return _serve_frontend_module("hooks", filename)
-
-
-def _serve_frontend_jsx(subdir: str, path: str):
-    """Sirve un módulo de frontend/src/<subdir>/ (.jsx transpilado o .js crudo).
-
-    Soporta subcarpetas (p. ej. components/tabs/HistoryPanel.jsx).
-    """
-    target = resolve_frontend_module(subdir, path)
-    if target is None:
-        raise HTTPException(status_code=404, detail=f"Module {subdir}/{path} not found")
-    code = get_module_js(target)
-    if code is None:
-        raise HTTPException(status_code=500, detail=f"Could not load module {subdir}/{path}")
-    return Response(content=code, media_type="text/javascript", headers=_static_headers())
-
-
-@app.get("/src/components/{path:path}")
-async def serve_components(path: str):
-    return _serve_frontend_jsx("components", path)
-
-
-@app.get("/src/context/{path:path}")
-async def serve_context(path: str):
-    return _serve_frontend_jsx("context", path)
+    return {"service": "blackwire", "api": "ok", "ui": "desktop"}
 
 
 @app.websocket("/ws")

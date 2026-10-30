@@ -1,5 +1,7 @@
-# Blackwire — comandos de desarrollo.
-# Reemplaza los antiguos scripts .sh. Requisitos: python3 y node (para sucrase).
+# Blackwire — comandos de desarrollo del BACKEND.
+# La UI web fue retirada (EOL); la interfaz es la app de escritorio nativa
+# (ver desktop/README.md: `python desktop/run.py`). Este Makefile gestiona el
+# backend (FastAPI + mitmproxy). Requisitos: python3.
 # Uso: `make <objetivo>`. `make help` lista todo.
 
 VENV      := venv
@@ -10,7 +12,7 @@ PORT      ?= 5000
 MITM_CERT := $(HOME)/.mitmproxy/mitmproxy-ca-cert.pem
 
 .DEFAULT_GOAL := help
-.PHONY: help install venv deps cert compile serve start stop restart run verify clean
+.PHONY: help install venv deps cert serve start stop restart run verify clean
 
 help:  ## Lista los objetivos disponibles
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -28,16 +30,13 @@ deps: venv  ## Instala las dependencias de Python (requirements.txt)
 cert: venv  ## Genera el certificado CA de mitmproxy si no existe
 	@test -f "$(MITM_CERT)" || $(PY) -c "from mitmproxy import certs; certs.CertStore.from_store('$(HOME)/.mitmproxy', 'mitmproxy', 2048)"
 
-compile:  ## Transpila frontend/App.jsx -> App.compiled.js (sucrase)
-	@node -e "const{transform}=require('sucrase'),fs=require('fs');const c=fs.readFileSync('frontend/App.jsx','utf8');fs.writeFileSync('frontend/App.compiled.js',transform(c,{transforms:['jsx'],production:true}).code);console.log('compiled -> frontend/App.compiled.js')"
-
 serve: venv  ## Inicia el backend en primer plano (Ctrl-C para detener)
 	@cd backend && ../$(PY) -m uvicorn main:app --host $(HOST) --port $(PORT)
 
 start: venv  ## Inicia el backend en segundo plano
 	@mkdir -p .run
 	@cd backend && nohup ../$(PY) -m uvicorn main:app --host $(HOST) --port $(PORT) > ../.run/server.log 2>&1 & echo $$! > .run/backend.pid
-	@echo "Blackwire en http://localhost:$(PORT)  (logs: .run/server.log)"
+	@echo "Blackwire backend en http://localhost:$(PORT)  (logs: .run/server.log)"
 
 stop:  ## Detiene el backend
 	@if [ -f .run/backend.pid ]; then kill "$$(cat .run/backend.pid)" 2>/dev/null || true; rm -f .run/backend.pid; fi
@@ -46,15 +45,15 @@ stop:  ## Detiene el backend
 
 restart: stop start  ## Reinicia el backend
 
-run: install compile start  ## Instala, compila, arranca y abre el navegador
-	@sleep 2; (xdg-open http://localhost:$(PORT) 2>/dev/null || open http://localhost:$(PORT) 2>/dev/null) || true
+run: install start  ## Instala y arranca el backend; luego lanza la app de escritorio
+	@sleep 2
+	@echo "Backend listo. Lanza la app de escritorio con: python desktop/run.py"
 
-verify: venv  ## Verifica dependencias y que el frontend compila
+verify: venv  ## Verifica que las dependencias del backend están disponibles
 	@$(PY) -c "import fastapi, mitmproxy, aiosqlite, httpx; print('dependencias OK')"
-	@$(MAKE) -s compile
 	@echo "verificacion OK"
 
 clean:  ## Elimina venv, cachés y artefactos de runtime
-	@rm -rf $(VENV) .run frontend/App.compiled.js
+	@rm -rf $(VENV) .run
 	@find . -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
 	@echo "limpio"

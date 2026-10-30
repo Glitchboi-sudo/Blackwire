@@ -8,6 +8,7 @@ por categoría.
 
 from __future__ import annotations
 
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QProgressBar,
@@ -34,7 +36,13 @@ from PySide6.QtWidgets import (
 
 from .. import themes
 from ..rawhttp import format_raw
-from ..sensitive import DEFAULT_PATTERNS, category_token, scan_detail
+from ..sensitive import (
+    DEFAULT_PATTERNS,
+    PATTERN_GROUPS,
+    category_token,
+    make_custom_pattern,
+    scan_detail,
+)
 from .http_view import HttpView
 
 Runner = Callable[[Callable[[], Any], Callable[[Any], None]], None]
@@ -96,7 +104,7 @@ class _ScanWorker(QRunnable):
                 detail = self._api.get_detail(req["id"])
             except Exception:  # noqa: BLE001
                 return []
-            return scan_detail(detail, DEFAULT_PATTERNS, threshold, max_size)
+            return scan_detail(detail, self._o["patterns"], threshold, max_size)
 
         with ThreadPoolExecutor(max_workers=conc) as ex:
             for start in range(0, total, conc):
@@ -121,6 +129,8 @@ class SensitivePanel(QWidget):
         self._run = runner
         self._tokens = tokens_getter
         self._results: list[dict[str, Any]] = []
+        self._custom_patterns: list[dict[str, Any]] = []
+        self._seen_keys: set[tuple[str, str]] = set()
         self._stop = threading.Event()
         self._running = False
 
@@ -152,6 +162,27 @@ class SensitivePanel(QWidget):
         self._filter.textChanged.connect(self._apply_filter)
         ctrl.addWidget(self._filter)
         layout.addLayout(ctrl)
+
+        # -- grupos de patrones activables + unique + custom ---------------- #
+        groups_bar = QHBoxLayout()
+        groups_bar.addWidget(QLabel("Grupos:"))
+        self._group_checks: dict[str, QCheckBox] = {}
+        for group in PATTERN_GROUPS:
+            chk = QCheckBox(group)
+            chk.setChecked(True)
+            self._group_checks[group] = chk
+            groups_bar.addWidget(chk)
+        self._unique = QCheckBox("Unique")
+        self._unique.setToolTip("Omite coincidencias duplicadas (patrón + valor)")
+        groups_bar.addSpacing(12)
+        groups_bar.addWidget(self._unique)
+        add_custom = QPushButton("Patrón custom…")
+        add_custom.clicked.connect(self._add_custom_pattern)
+        groups_bar.addWidget(add_custom)
+        self._custom_label = QLabel("")
+        groups_bar.addWidget(self._custom_label)
+        groups_bar.addStretch(1)
+        layout.addLayout(groups_bar)
 
         self._progress = QProgressBar()
         layout.addWidget(self._progress)
@@ -207,11 +238,33 @@ class SensitivePanel(QWidget):
         self._req_view.set_palette(palette)
         self._resp_view.set_palette(palette)
 
+    # -- patrones activos --------------------------------------------------- #
+    def _active_patterns(self) -> list[dict[str, Any]]:
+        active_groups = {g for g, chk in self._group_checks.items() if chk.isChecked()}
+        patterns = [p for p in DEFAULT_PATTERNS if p.get("group") in active_groups]
+        return patterns + self._custom_patterns
+
+    def _add_custom_pattern(self) -> None:
+        name, ok = QInputDialog.getText(self, "Patrón custom", "Nombre:")
+        if not (ok and name.strip()):
+            return
+        regex, ok = QInputDialog.getText(self, "Patrón custom", "Regex:")
+        if not (ok and regex.strip()):
+            return
+        try:
+            re.compile(regex)
+        except re.error as exc:
+            self._custom_label.setText(f"regex inválida: {exc}")
+            return
+        self._custom_patterns.append(make_custom_pattern(name.strip(), regex.strip()))
+        self._custom_label.setText(f"{len(self._custom_patterns)} custom")
+
     # -- escaneo ------------------------------------------------------------ #
     def _start(self) -> None:
         if self._running:
             return
         self._results = []
+        self._seen_keys = set()
         self._table.setRowCount(0)
         self._progress.setValue(0)
         self._stop.clear()
@@ -221,6 +274,8 @@ class SensitivePanel(QWidget):
         options = {
             "entropy": self._entropy.value(), "max_size": self._max_size.value(),
             "scope_only": self._scope_only.isChecked(),
+            "patterns": self._active_patterns(),
+            "unique": self._unique.isChecked(),
         }
         signals = _ScanSignals()
         signals.started.connect(lambda t: self._progress.setMaximum(max(1, t)))
@@ -232,6 +287,11 @@ class SensitivePanel(QWidget):
         )
 
     def _on_result(self, row: dict[str, Any]) -> None:
+        if self._unique.isChecked():
+            key = (row.get("patternName", ""), row.get("match", ""))
+            if key in self._seen_keys:
+                return
+            self._seen_keys.add(key)
         self._results.append(row)
         self._append_row(row)
 

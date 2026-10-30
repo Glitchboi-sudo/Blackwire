@@ -8,6 +8,10 @@ path. Cada nodo acumula sus requests, métodos y conteo.
 
 from __future__ import annotations
 
+import csv
+import io
+import json
+from collections import Counter
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -77,3 +81,49 @@ def collect_node_reqs(node: dict[str, Any]) -> list[dict[str, Any]]:
     for child in node.get("children", {}).values():
         out.extend(collect_node_reqs(child))
     return out
+
+
+def _ext(url: str) -> str:
+    """Extensión del último segmento del path (sin punto), o '(none)'."""
+    try:
+        path = urlsplit(url).path
+    except ValueError:
+        return "(none)"
+    last = path.rsplit("/", 1)[-1]
+    if "." in last:
+        return last.rsplit(".", 1)[-1].lower()
+    return "(none)"
+
+
+def node_stats(reqs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Estadísticas de un nodo: top métodos, status codes y extensiones."""
+    methods = Counter(r.get("method", "") for r in reqs if r.get("method"))
+    codes = Counter(
+        r.get("response_status") for r in reqs if r.get("response_status")
+    )
+    exts = Counter(_ext(r.get("url", "") or "") for r in reqs)
+    return {
+        "total": len(reqs),
+        "methods": methods.most_common(),
+        "codes": codes.most_common(),
+        "exts": exts.most_common(),
+    }
+
+
+_EXPORT_FIELDS = ("id", "method", "response_status", "url")
+
+
+def node_to_json(reqs: list[dict[str, Any]]) -> str:
+    """Serializa los requests del nodo (campos livianos) como JSON."""
+    rows = [{k: r.get(k) for k in _EXPORT_FIELDS} for r in reqs]
+    return json.dumps(rows, indent=2, ensure_ascii=False)
+
+
+def node_to_csv(reqs: list[dict[str, Any]]) -> str:
+    """Serializa los requests del nodo como CSV (id, método, status, url)."""
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(_EXPORT_FIELDS)
+    for r in reqs:
+        writer.writerow([r.get(k, "") for k in _EXPORT_FIELDS])
+    return buf.getvalue()

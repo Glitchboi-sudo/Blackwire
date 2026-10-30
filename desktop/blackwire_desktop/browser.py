@@ -126,7 +126,7 @@ def launch_chromium(
     else:
         # Fallback: sin SPKI no podemos pinnear solo el CA de Blackwire.
         args.append("--ignore-certificate-errors")
-        trust = "⚠ sin pin de CA (se ignoran TODOS los errores de cert)"
+        trust = "sin pin de CA (se ignoran TODOS los errores de cert)"
 
     args.append(url)
 

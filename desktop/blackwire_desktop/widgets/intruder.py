@@ -10,23 +10,29 @@ Render seguro: request/response de cada resultado se muestran en texto plano.
 
 from __future__ import annotations
 
+import math
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QAction, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMenu,
+    QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
@@ -96,6 +102,7 @@ class _AttackWorker(QRunnable):
         conc = max(1, min(50, self._o["concurrency"]))
         follow = self._o["follow_redirects"]
         max_retries = self._o["max_retries"]
+        delay_s = max(0, self._o.get("delay", 0)) / 1000.0
         done = 0
 
         def send_one(indexed):
@@ -123,6 +130,9 @@ class _AttackWorker(QRunnable):
         with ThreadPoolExecutor(max_workers=conc) as ex:
             for start in range(0, total, conc):
                 if self._stop.is_set():
+                    break
+                # Throttle entre lotes (delay configurable); salta el primero.
+                if delay_s and start > 0 and self._stop.wait(delay_s):
                     break
                 batch = indexed_combos[start:start + conc]
                 for row in ex.map(send_one, batch):
@@ -271,6 +281,7 @@ class _PayloadEditor(QWidget):
 # --------------------------------------------------------------------------- #
 class IntruderPanel(QWidget):
     status_text = Signal(str)
+    send_to_repeater = Signal(dict)   # request de una fila de resultados
 
     def __init__(self, api, runner: Runner, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -291,13 +302,78 @@ class IntruderPanel(QWidget):
         root.setContentsMargins(6, 6, 6, 6)
         root.setSpacing(6)
 
+        # Sidebar de ataques guardados (estilo frontend web/Tauri) a la izquierda,
+        # siempre visible, + las pestañas Positions/Payloads/Results a la derecha.
+        body = QSplitter(Qt.Horizontal)
+        body.addWidget(self._build_attacks_sidebar())
         self._tabs = QTabWidget()
         self._tabs.addTab(self._build_positions_tab(), "Positions")
         self._tabs.addTab(self._build_payloads_tab(), "Payloads")
         self._tabs.addTab(self._build_results_tab(), "Results")
-        root.addWidget(self._tabs, 1)
+        body.addWidget(self._tabs)
+        body.setStretchFactor(0, 0)
+        body.setStretchFactor(1, 1)
+        body.setSizes([230, 900])
+        root.addWidget(body, 1)
 
         self._recompute_positions()
+
+    # -- sidebar de ataques guardados -------------------------------------- #
+    def _build_attacks_sidebar(self) -> QWidget:
+        panel = QWidget()
+        panel.setObjectName("AttacksSidebar")
+        panel.setMaximumWidth(280)
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(0, 0, 6, 0)
+        lay.setSpacing(4)
+
+        head = QHBoxLayout()
+        title = QLabel("Ataques guardados")
+        title.setObjectName("SectionLabel")
+        new_btn = QPushButton("+ Nuevo")
+        new_btn.setToolTip("Empezar un ataque nuevo (limpia el formulario)")
+        new_btn.clicked.connect(self._new_attack)
+        head.addWidget(title, 1)
+        head.addWidget(new_btn)
+        lay.addLayout(head)
+
+        self.attacks_list = QListWidget()
+        self.attacks_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.attacks_list.setWordWrap(True)
+        self.attacks_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.attacks_list.itemClicked.connect(lambda _i: self._load_selected_attack())
+        lay.addWidget(self.attacks_list, 1)
+
+        row = QHBoxLayout()
+        self.rename_btn = QPushButton("Renombrar")
+        self.rename_btn.clicked.connect(self._rename_selected_attack)
+        self.del_attack_btn = QPushButton("Eliminar")
+        self.del_attack_btn.setObjectName("DangerButton")
+        self.del_attack_btn.clicked.connect(self._delete_selected_attack)
+        row.addWidget(self.rename_btn)
+        row.addWidget(self.del_attack_btn)
+        lay.addLayout(row)
+        return panel
+
+    def _new_attack(self) -> None:
+        """Limpia el formulario para empezar un ataque desde cero (botón +Nuevo)."""
+        self.attacks_list.clearSelection()
+        self.method.setCurrentText("GET")
+        self.url.clear()
+        self.headers.clear()
+        self.body.clear()
+        self._payloads = {}
+        self._results = []
+        self.table.setRowCount(0)
+        self.progress.setValue(0)
+        self._cur_pos = -1
+        self._recompute_positions()
+        self._tabs.setCurrentIndex(0)
+        self.status_text.emit("Nuevo ataque")
+
+    def _current_attack_id(self) -> Any:
+        item = self.attacks_list.currentItem()
+        return item.data(Qt.UserRole) if item is not None else None
 
     # -- pestaña Positions -------------------------------------------------- #
     def _build_positions_tab(self) -> QWidget:
@@ -381,8 +457,12 @@ class IntruderPanel(QWidget):
         self.stop_btn.setObjectName("DangerButton")
         self.stop_btn.clicked.connect(self._runner.stop)
         self.stop_btn.setEnabled(False)
+        self.preview_btn = QPushButton("Preview")
+        self.preview_btn.setToolTip("Estimar nº de requests y tiempo del ataque")
+        self.preview_btn.clicked.connect(self._preview_attack)
         ctrl.addWidget(self.start_btn)
         ctrl.addWidget(self.stop_btn)
+        ctrl.addWidget(self.preview_btn)
         ctrl.addSpacing(12)
         ctrl.addWidget(QLabel("Concurrencia:"))
         self.conc = QSpinBox(); self.conc.setRange(1, 50); self.conc.setValue(10)
@@ -393,14 +473,16 @@ class IntruderPanel(QWidget):
         self.follow = QCheckBox("Redirects"); self.follow.setChecked(True)
         ctrl.addWidget(self.follow)
         ctrl.addStretch(1)
+        # Guardar/exportar viven aquí; la lista de ataques guardados (cargar/
+        # renombrar/eliminar) está en el sidebar izquierdo, siempre visible.
+        self.export_btn = QPushButton("Exportar resultados")
+        self.export_btn.setToolTip("Guardar los resultados del ataque en CSV/JSON")
+        self.export_btn.clicked.connect(self._export_results)
         self.save_btn = QPushButton("Guardar ataque")
+        self.save_btn.setToolTip("Guarda el ataque actual (nombre automático)")
         self.save_btn.clicked.connect(self._save_attack)
-        self.attacks_box = QComboBox()
-        self.load_btn = QPushButton("Cargar")
-        self.load_btn.clicked.connect(self._load_selected_attack)
+        ctrl.addWidget(self.export_btn)
         ctrl.addWidget(self.save_btn)
-        ctrl.addWidget(self.attacks_box)
-        ctrl.addWidget(self.load_btn)
         lay.addLayout(ctrl)
 
         self.progress = QProgressBar()
@@ -416,7 +498,10 @@ class IntruderPanel(QWidget):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.setSortingEnabled(True)  # ordenar por cualquier columna
         self.table.currentCellChanged.connect(self._on_result_row)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_result_menu)
         lay.addWidget(self.table, 1)
 
         detail = QSplitter(Qt.Horizontal)
@@ -513,6 +598,43 @@ class IntruderPanel(QWidget):
             "payloads": self._collect_payloads(),
         }
 
+    def _preview_attack(self) -> None:
+        """Estima nº de requests y tiempo total sin lanzar el ataque."""
+        if not self._positions:
+            self.status_text.emit("No hay posiciones § definidas")
+            return
+        t = self._template()
+        combos = generate_attack_combinations(
+            t["url"], t["headers"], t["body"], t["method"],
+            t["attack_type"], t["payloads"],
+        )
+        total = len(combos)
+        conc = max(1, self.conc.value())
+        delay_ms = self.delay.value()
+        batches = math.ceil(total / conc) if total else 0
+        # Estimación grosera: ~150 ms amortizados por request + delay por lote.
+        est_ms = (total / conc) * 150 + max(0, batches - 1) * delay_ms
+        self.status_text.emit(
+            f"Preview: {total} requests · ~{est_ms / 1000:.1f}s estimado "
+            f"(conc={conc}, delay={delay_ms} ms)"
+        )
+
+    def _show_result_menu(self, pos) -> None:
+        row = self.table.rowAt(pos.y())
+        idx = self._result_index(row)
+        if not (0 <= idx < len(self._results)):
+            return
+        menu = QMenu(self.table)
+        act = QAction("Enviar al Repeater", menu)
+        act.triggered.connect(lambda _c=False, r=idx: self._send_result_to_repeater(r))
+        menu.addAction(act)
+        menu.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _send_result_to_repeater(self, row: int) -> None:
+        req = self._results[row].get("request") or {}
+        if req:
+            self.send_to_repeater.emit(req)
+
     def _start(self) -> None:
         if not self._positions:
             self.status_text.emit("No hay posiciones § definidas")
@@ -534,13 +656,89 @@ class IntruderPanel(QWidget):
         self.status_text.emit(f"Ataque iniciado: {total} requests")
 
     def _on_result(self, row: dict[str, Any]) -> None:
+        self.table.setSortingEnabled(False)
+        self._append_result_row(row)
+        self.table.setSortingEnabled(True)
+
+    def _append_result_row(self, row: dict[str, Any]) -> None:
+        """Añade una fila a la tabla de resultados (usado en vivo y al cargar).
+
+        El índice real se guarda en UserRole (col 0) para que ordenar por
+        columnas no rompa el detalle — la fila visual ya no coincide con el
+        índice de self._results. Las claves usan `.get` por si un ataque
+        guardado trae filas con forma ligeramente distinta.
+        """
+        idx = len(self._results)
         self._results.append(row)
         r = self.table.rowCount()
         self.table.insertRow(r)
-        values = [str(row["num"]), row["payload"], str(row["status"]),
-                  str(row["length"]), str(row["time"]), row["error"]]
-        for c, val in enumerate(values):
-            self.table.setItem(r, c, QTableWidgetItem(val))
+        num_item = self._num_item(row.get("num", r + 1))
+        num_item.setData(Qt.UserRole, idx)
+        self.table.setItem(r, 0, num_item)
+        self.table.setItem(r, 1, QTableWidgetItem(str(row.get("payload", ""))))
+        self.table.setItem(r, 2, self._num_item(row.get("status", "")))
+        self.table.setItem(r, 3, self._num_item(row.get("length", "")))
+        self.table.setItem(r, 4, self._num_item(row.get("time", "")))
+        self.table.setItem(r, 5, QTableWidgetItem(str(row.get("error", ""))))
+
+    def _load_results(self, results: list[dict[str, Any]]) -> None:
+        """Rellena la tabla desde los resultados de un ataque guardado."""
+        self._results = []
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(0)
+        for row in results:
+            if isinstance(row, dict):
+                self._append_result_row(row)
+        self.table.setSortingEnabled(True)
+        self._req_view.clear()
+        self._resp_view.clear()
+
+    @staticmethod
+    def _num_item(value: Any) -> QTableWidgetItem:
+        """Celda que ordena numéricamente si `value` es numérico; si no, por texto."""
+        item = QTableWidgetItem()
+        try:
+            item.setData(Qt.DisplayRole, int(value))
+        except (ValueError, TypeError):
+            item.setData(Qt.DisplayRole, str(value))
+        return item
+
+    def _result_index(self, row: int) -> int:
+        """Índice real en self._results para una fila visual (via UserRole)."""
+        item = self.table.item(row, 0)
+        idx = item.data(Qt.UserRole) if item is not None else None
+        return idx if isinstance(idx, int) else -1
+
+    def _export_results(self) -> None:
+        """Exporta los resultados del ataque a un archivo CSV o JSON."""
+        if not self._results:
+            self.status_text.emit("No hay resultados que exportar")
+            return
+        path, _flt = QFileDialog.getSaveFileName(
+            self, "Exportar resultados", "intruder_results.csv",
+            "CSV (*.csv);;JSON (*.json)",
+        )
+        if not path:
+            return
+        cols = ("num", "payload", "status", "length", "time", "error")
+        try:
+            if path.lower().endswith(".json"):
+                import json
+
+                data = [{k: r.get(k) for k in cols} for r in self._results]
+                with open(path, "w", encoding="utf-8") as fh:
+                    json.dump(data, fh, indent=2, ensure_ascii=False)
+            else:
+                import csv
+
+                with open(path, "w", newline="", encoding="utf-8") as fh:
+                    writer = csv.writer(fh)
+                    writer.writerow(cols)
+                    for r in self._results:
+                        writer.writerow([r.get(k) for k in cols])
+            self.status_text.emit(f"Resultados exportados a {path}")
+        except OSError as exc:
+            self.status_text.emit(f"No se pudo exportar: {exc}")
 
     def _on_progress(self, done: int, total: int) -> None:
         self.progress.setValue(done)
@@ -552,24 +750,34 @@ class IntruderPanel(QWidget):
         self.status_text.emit(f"Ataque terminado: {len(self._results)} resultados")
 
     def _on_result_row(self, row: int, _c: int, _pr: int, _pc: int) -> None:
-        if not (0 <= row < len(self._results)):
+        idx = self._result_index(row)
+        if not (0 <= idx < len(self._results)):
             return
-        res = self._results[row]
-        req = res.get("request", {})
+        res = self._results[idx]
+        req = res.get("request")
+        if not isinstance(req, dict):
+            req = {}
         self._req_view.setPlainText(
             f"{req.get('method', '')} {req.get('url', '')}\n"
             + "\n".join(f"{k}: {v}" for k, v in (req.get("headers") or {}).items())
             + ("\n\n" + req["body"] if req.get("body") else "")
         )
-        resp = res.get("response", {})
-        if resp.get("error"):
-            self._resp_view.setPlainText(f"⚠ Error: {resp['error']}")
+        # La respuesta puede venir como dict (en vivo) o como string/None (de un
+        # ataque guardado round-tripeado por JSON); se maneja cualquier forma.
+        resp = res.get("response")
+        if isinstance(resp, dict):
+            if resp.get("error"):
+                self._resp_view.setPlainText(f"Error: {resp['error']}")
+            else:
+                self._resp_view.setPlainText(
+                    f"HTTP {resp.get('status_code', '')}\n"
+                    + "\n".join(f"{k}: {v}" for k, v in (resp.get("headers") or {}).items())
+                    + ("\n\n" + str(resp.get("body")) if resp.get("body") else "")
+                )
+        elif resp:
+            self._resp_view.setPlainText(str(resp))
         else:
-            self._resp_view.setPlainText(
-                f"HTTP {resp.get('status_code', '')}\n"
-                + "\n".join(f"{k}: {v}" for k, v in (resp.get("headers") or {}).items())
-                + ("\n\n" + str(resp.get("body")) if resp.get("body") else "")
-            )
+            self._resp_view.setPlainText("")
 
     # -- persistencia ------------------------------------------------------- #
     def load_attacks(self) -> None:
@@ -577,11 +785,18 @@ class IntruderPanel(QWidget):
 
     def _on_attacks(self, attacks: list[dict[str, Any]]) -> None:
         self._attacks = attacks or []
-        self.attacks_box.clear()
+        self.attacks_list.clear()
+        if not self._attacks:
+            empty = QListWidgetItem("Sin ataques guardados")
+            empty.setFlags(Qt.NoItemFlags)  # no seleccionable: estado vacío
+            self.attacks_list.addItem(empty)
+            return
         for att in self._attacks:
-            self.attacks_box.addItem(
-                f"{att.get('name')} ({att.get('total', 0)})", att.get("id")
+            item = QListWidgetItem(
+                f"{att.get('name')}   ·   {att.get('total', 0)} res."
             )
+            item.setData(Qt.UserRole, att.get("id"))
+            self.attacks_list.addItem(item)
 
     def _attack_config(self) -> dict[str, Any]:
         t = self._template()
@@ -593,21 +808,63 @@ class IntruderPanel(QWidget):
         }
 
     def _save_attack(self) -> None:
-        name, ok = QInputDialog.getText(self, "Guardar ataque", "Nombre:")
-        if not (ok and name.strip()):
-            return
+        # Guardado instantáneo con nombre autogenerado (sin diálogo). El nombre
+        # es descriptivo (método + host/ruta + hora) para que la lista de ataques
+        # guardados sea fácil de reconocer; se puede renombrar luego.
         config = self._attack_config()
-        results = self._results
+        results = list(self._results)
+        name = self._auto_attack_name(config)
         self._run(
-            lambda: self._api.intruder_save(name.strip(), config, results, len(results)),
-            lambda _r: self.load_attacks(),
+            lambda: self._api.intruder_save(name, config, results, len(results)),
+            lambda _r: self._after_save(name),
         )
 
+    def _after_save(self, name: str) -> None:
+        self.load_attacks()
+        self.status_text.emit(f"Ataque guardado: {name}")
+
+    @staticmethod
+    def _auto_attack_name(config: dict[str, Any]) -> str:
+        """Nombre descriptivo por defecto: 'MÉTODO host/ruta · HH:MM:SS'."""
+        from datetime import datetime
+
+        url = (config.get("url") or "").split("://", 1)[-1]
+        label = url[:46] if url else "ataque"
+        return f"{config.get('method', 'GET')} {label} · {datetime.now():%H:%M:%S}"
+
     def _load_selected_attack(self) -> None:
-        aid = self.attacks_box.currentData()
+        aid = self._current_attack_id()
         if aid is None:
             return
         self._run(lambda: self._api.intruder_load(aid), self._apply_attack)
+
+    def _rename_selected_attack(self) -> None:
+        aid = self._current_attack_id()
+        if aid is None:
+            return
+        item = self.attacks_list.currentItem()
+        old = item.text().split("   ·   ", 1)[0] if item is not None else ""
+        name, ok = QInputDialog.getText(
+            self, "Renombrar ataque", "Nuevo nombre:", text=old
+        )
+        if not (ok and name.strip()):
+            return
+        self._run(lambda: self._api.intruder_update(aid, {"name": name.strip()}),
+                  lambda _r: self.load_attacks())
+
+    def _delete_selected_attack(self) -> None:
+        aid = self._current_attack_id()
+        if aid is None:
+            return
+        item = self.attacks_list.currentItem()
+        name = item.text() if item is not None else ""
+        resp = QMessageBox.question(
+            self, "Eliminar ataque", f"¿Eliminar el ataque guardado '{name}'?"
+        )
+        if resp != QMessageBox.Yes:
+            return
+        self._run(lambda: self._api.intruder_delete(aid),
+                  lambda _r: self.load_attacks())
 
     def _apply_attack(self, attack: dict[str, Any]) -> None:
         if not isinstance(attack, dict) or attack.get("error"):
@@ -627,4 +884,11 @@ class IntruderPanel(QWidget):
         self._payloads = {int(k): v for k, v in raw.items()}
         self._cur_pos = -1
         self._recompute_positions()
-        self.status_text.emit(f"Ataque '{attack.get('name')}' cargado")
+        # Restaurar los resultados guardados en la tabla (antes se ignoraban:
+        # el ataque cargaba pero la tabla quedaba vacía).
+        results = attack.get("results") or []
+        self._load_results(results)
+        if results:
+            self._tabs.setCurrentIndex(2)  # saltar a Results
+        name = attack.get("name", "")
+        self.status_text.emit(f"Ataque '{name}' cargado — {len(results)} resultados")

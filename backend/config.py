@@ -20,19 +20,14 @@ _writable_dir = _data_dir.parent
 PROJECTS_DIR = _data_dir
 CURRENT_PROJECT_FILE = _writable_dir / ".current_project"
 EXTENSIONS_DIR = Path(__file__).parent / "extensions"
-EXTENSIONS_UI_COMPILED_DIR = _writable_dir / ".compiled_ui"
 PROXY_CONFIG_PATH = _writable_dir / ".proxy_config.json"
 # Dir escribible para todo el estado de runtime (config del proxy, archivos
 # .action_*.json, etc.). Derivado de BLACKWIRE_DATA, así un install de solo-lectura
 # (p.ej. AUR en /usr/share) escribe en el dir del usuario y el addon lee lo mismo.
 RUNTIME_DIR = _writable_dir
 
-FRONTEND_DIR = BASE_DIR / "frontend"
-APP_JSX_PATH = FRONTEND_DIR / "App.jsx"
-APP_COMPILED_PATH = FRONTEND_DIR / "App.compiled.js"
-THEMES_JS_PATH = FRONTEND_DIR / "themes.js"
-LOGO_SVG_PATH = FRONTEND_DIR / "logo.svg"
-FRONTEND_HTML_PATH = Path(__file__).parent / "frontend.html"
+# NOTA: la UI web fue retirada (EOL). Ya no hay constantes FRONTEND_*/APP_JSX/etc.;
+# la única interfaz es la app de escritorio nativa (desktop/) que consume el REST.
 
 # Directorio del backend (resuelto) — usado para los archivos .action_*.json
 # que mitm_addon.py lee en su loop de polling.

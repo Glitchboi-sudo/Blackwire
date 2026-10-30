@@ -20,3 +20,9 @@ pyyaml>=6.0
 
 # WebSocket resend support
 websockets>=12.0
+
+# NOTA: el servidor MCP (`mcp_server/`, paquete `mcp>=2.3.0`) NO es una dependencia
+# del backend: corre en el host / en el bundle de escritorio, no en este contenedor.
+# Sus dependencias las instala el build de escritorio (.github/workflows/desktop.yml)
+# y el entorno de desarrollo de la GUI. No añadir `mcp` aquí (entra en conflicto con
+# los pins de uvicorn/fastapi del backend y no se necesita en la imagen Docker).

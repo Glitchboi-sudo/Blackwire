@@ -1,9 +1,14 @@
 """Panel de Collections (Fase 5): secuencias de requests con variables.
 
-Lista colecciones y sus pasos; ejecuta un paso o toda la cadena. No hay endpoint
-"run collection": se encadena en cliente ejecutando cada paso y pasando sus
+Lista colecciones y sus pasos; ejecuta un paso, toda la cadena o avanza paso a
+paso (Send Next/Reset) acumulando variables entre pasos. No hay endpoint "run
+collection": se encadena en cliente ejecutando cada paso y pasando sus
 `extracted_variables` al siguiente (`/api/collections/...`). Sustitución `{{var}}`
 y extracción JSONPath las resuelve el backend por paso.
+
+Las extracciones de variables de un paso (`var_extracts`) son objetos
+`{"name", "source": "body"|"header", "path"}`: `body` usa JSONPath sobre el JSON
+de la respuesta; `header` toma el valor de la cabecera indicada en `path`.
 """
 
 from __future__ import annotations
@@ -14,12 +19,19 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSplitter,
@@ -30,12 +42,51 @@ from PySide6.QtWidgets import (
 )
 
 from .. import themes
+from . import icons
 
 Runner = Callable[[Callable[[], Any], Callable[[Any], None]], None]
 
+_SOURCES = ("body", "header")
+
+
+class _StepEditDialog(QDialog):
+    """Edita método / URL / body de un paso existente."""
+
+    def __init__(self, item: dict[str, Any], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Editar paso")
+        self.setMinimumWidth(420)
+        form = QFormLayout(self)
+
+        self.method = QComboBox()
+        self.method.addItems(["GET", "POST", "PUT", "PATCH", "DELETE",
+                              "HEAD", "OPTIONS"])
+        self.method.setCurrentText(item.get("method", "GET"))
+        self.url = QLineEdit(item.get("url", ""))
+        self.body = QPlainTextEdit(item.get("body") or "")
+        self.body.setFont(QFont(themes.MONO_FAMILY, 10))
+
+        form.addRow("Método", self.method)
+        form.addRow("URL", self.url)
+        form.addRow("Body", self.body)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def values(self) -> dict[str, Any]:
+        return {
+            "method": self.method.currentText(),
+            "url": self.url.text(),
+            "body": self.body.toPlainText(),
+        }
+
 
 class CollectionsPanel(QWidget):
-    """Colecciones | pasos | ejecución encadenada."""
+    """Colecciones | pasos | extracciones | ejecución (paso a paso o cadena)."""
 
     def __init__(self, api, runner: Runner, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -45,6 +96,9 @@ class CollectionsPanel(QWidget):
         self._items: list[dict[str, Any]] = []
         self._cid: int | None = None
         self._pending_detail: dict[str, Any] | None = None
+        # Estado de ejecución paso a paso.
+        self._cursor = 0
+        self._session_vars: dict[str, Any] = {}
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -62,12 +116,14 @@ class CollectionsPanel(QWidget):
         cbtns = QHBoxLayout()
         new_btn = QPushButton("Nueva"); new_btn.clicked.connect(self._new_collection)
         del_btn = QPushButton("Eliminar"); del_btn.clicked.connect(self._delete_collection)
-        reload_btn = QPushButton("↻"); reload_btn.clicked.connect(self.reload)
+        reload_btn = QPushButton(); reload_btn.setToolTip("Recargar"); icons.apply(reload_btn, "refresh", 14)
+        reload_btn.clicked.connect(self.reload)
+        reload_btn.setToolTip("Recargar"); reload_btn.setAccessibleName("Recargar colecciones")
         cbtns.addWidget(new_btn); cbtns.addWidget(del_btn); cbtns.addWidget(reload_btn)
         lleft.addLayout(cbtns)
         split.addWidget(left)
 
-        # -- pasos + ejecución ---------------------------------------------- #
+        # -- pasos + extracciones + ejecución ------------------------------- #
         right = QWidget()
         lright = QVBoxLayout(right)
         lright.setContentsMargins(0, 0, 0, 0)
@@ -76,26 +132,61 @@ class CollectionsPanel(QWidget):
         self._items_tbl.setHorizontalHeaderLabels(["#", "Método", "URL"])
         self._items_tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._items_tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._items_tbl.setSelectionMode(QAbstractItemView.SingleSelection)
         self._items_tbl.verticalHeader().setVisible(False)
         self._items_tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self._items_tbl.itemSelectionChanged.connect(self._on_item_selected)
         lright.addWidget(self._items_tbl, 1)
 
-        ibtns = QHBoxLayout()
+        # Toolbar de edición de pasos.
+        sbtns = QHBoxLayout()
         add_btn = QPushButton("Añadir request actual")
         add_btn.clicked.connect(self._add_current)
+        edit_btn = QPushButton("Editar paso")
+        edit_btn.clicked.connect(self._edit_step)
+        up_btn = QPushButton(); up_btn.setToolTip("Subir"); icons.apply(up_btn, "arrow-up", 14); up_btn.setFixedWidth(28)
+        up_btn.setToolTip("Subir paso"); up_btn.setAccessibleName("Subir paso")
+        up_btn.clicked.connect(lambda: self._move_step(-1))
+        down_btn = QPushButton(); down_btn.setToolTip("Bajar"); icons.apply(down_btn, "arrow-down", 14); down_btn.setFixedWidth(28)
+        down_btn.setToolTip("Bajar paso"); down_btn.setAccessibleName("Bajar paso")
+        down_btn.clicked.connect(lambda: self._move_step(1))
+        del_step = QPushButton("Quitar paso")
+        del_step.setObjectName("DangerButton")
+        del_step.clicked.connect(self._delete_step)
+        sbtns.addWidget(add_btn)
+        sbtns.addWidget(edit_btn)
+        sbtns.addWidget(up_btn)
+        sbtns.addWidget(down_btn)
+        sbtns.addStretch(1)
+        sbtns.addWidget(del_step)
+        lright.addLayout(sbtns)
+
+        # Extracciones de variables del paso seleccionado.
+        lright.addWidget(self._build_extracts_group())
+
+        # Toolbar de ejecución.
+        ibtns = QHBoxLayout()
+        send_next = QPushButton("Send Next")
+        send_next.setObjectName("AccentButton")
+        send_next.clicked.connect(self._send_next)
         run_step = QPushButton("Ejecutar paso")
         run_step.clicked.connect(self._run_step)
         run_all = QPushButton("Ejecutar todo")
-        run_all.setObjectName("AccentButton")
         run_all.clicked.connect(self._run_all)
-        del_step = QPushButton("Quitar paso")
-        del_step.clicked.connect(self._delete_step)
-        ibtns.addWidget(add_btn)
+        reset_btn = QPushButton("Reset")
+        reset_btn.clicked.connect(self._reset_session)
+        self._cursor_label = QLabel("Paso 1")
+        ibtns.addWidget(send_next)
         ibtns.addWidget(run_step)
         ibtns.addWidget(run_all)
+        ibtns.addWidget(reset_btn)
         ibtns.addStretch(1)
-        ibtns.addWidget(del_step)
+        ibtns.addWidget(self._cursor_label)
         lright.addLayout(ibtns)
+
+        self._vars_label = QLabel("Variables de sesión: {}")
+        self._vars_label.setWordWrap(True)
+        lright.addWidget(self._vars_label)
 
         lright.addWidget(QLabel("Salida"))
         self._output = QPlainTextEdit()
@@ -103,8 +194,77 @@ class CollectionsPanel(QWidget):
         self._output.setFont(QFont(themes.MONO_FAMILY, 10))
         lright.addWidget(self._output, 1)
         split.addWidget(right)
-        split.setSizes([300, 760])
+        split.setSizes([280, 780])
         layout.addWidget(split)
+
+    # -- extracciones: UI --------------------------------------------------- #
+    def _build_extracts_group(self) -> QGroupBox:
+        box = QGroupBox("Extracciones de variables (del paso seleccionado)")
+        lay = QVBoxLayout(box)
+        self._ex_tbl = QTableWidget(0, 3)
+        self._ex_tbl.setHorizontalHeaderLabels(["Variable", "Origen", "Path / Header"])
+        self._ex_tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self._ex_tbl.verticalHeader().setVisible(False)
+        self._ex_tbl.setMaximumHeight(140)
+        lay.addWidget(self._ex_tbl)
+        ebtns = QHBoxLayout()
+        add = QPushButton("Añadir"); add.clicked.connect(lambda: self._add_extract_row())
+        rm = QPushButton("Quitar"); rm.clicked.connect(self._remove_extract_row)
+        save = QPushButton("Guardar extracciones")
+        save.clicked.connect(self._save_extracts)
+        ebtns.addWidget(add); ebtns.addWidget(rm); ebtns.addStretch(1); ebtns.addWidget(save)
+        lay.addLayout(ebtns)
+        return box
+
+    def _add_extract_row(self, ve: dict[str, Any] | None = None) -> None:
+        ve = ve or {}
+        r = self._ex_tbl.rowCount()
+        self._ex_tbl.insertRow(r)
+        self._ex_tbl.setItem(r, 0, QTableWidgetItem(ve.get("name", "")))
+        source = QComboBox(); source.addItems(_SOURCES)
+        source.setCurrentText(ve.get("source", "body"))
+        self._ex_tbl.setCellWidget(r, 1, source)
+        self._ex_tbl.setItem(r, 2, QTableWidgetItem(ve.get("path", "")))
+
+    def _remove_extract_row(self) -> None:
+        row = self._ex_tbl.currentRow()
+        if row >= 0:
+            self._ex_tbl.removeRow(row)
+
+    def _load_extracts(self, item: dict[str, Any] | None) -> None:
+        self._ex_tbl.setRowCount(0)
+        if not item:
+            return
+        for ve in item.get("var_extracts") or []:
+            self._add_extract_row(ve)
+
+    def _collect_extracts(self) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for r in range(self._ex_tbl.rowCount()):
+            name_item = self._ex_tbl.item(r, 0)
+            path_item = self._ex_tbl.item(r, 2)
+            source = self._ex_tbl.cellWidget(r, 1)
+            name = name_item.text().strip() if name_item else ""
+            path = path_item.text().strip() if path_item else ""
+            if not name or not path:
+                continue
+            out.append({
+                "name": name,
+                "source": source.currentText() if source else "body",
+                "path": path,
+            })
+        return out
+
+    def _save_extracts(self) -> None:
+        item = self._selected_item()
+        if item is None or self._cid is None:
+            return
+        cid, iid = self._cid, item.get("id")
+        extracts = self._collect_extracts()
+        self._run(
+            lambda: self._api.collection_update_item(cid, iid, {"var_extracts": extracts}),
+            lambda _r: self._load_items(),
+        )
 
     # -- carga -------------------------------------------------------------- #
     def reload(self) -> None:
@@ -123,6 +283,7 @@ class CollectionsPanel(QWidget):
             self._cid = None
             return
         self._cid = current.data(Qt.UserRole)
+        self._reset_session()
         self._load_items()
 
     def _load_items(self) -> None:
@@ -139,6 +300,11 @@ class CollectionsPanel(QWidget):
                 cell = QTableWidgetItem(text)
                 cell.setFlags(cell.flags() & ~Qt.ItemIsEditable)
                 self._items_tbl.setItem(r, c, cell)
+        self._update_session_labels()
+        self._load_extracts(self._selected_item())
+
+    def _on_item_selected(self) -> None:
+        self._load_extracts(self._selected_item())
 
     # -- colecciones CRUD --------------------------------------------------- #
     def _new_collection(self) -> None:
@@ -149,6 +315,13 @@ class CollectionsPanel(QWidget):
 
     def _delete_collection(self) -> None:
         if self._cid is None:
+            return
+        name = self._coll_list.currentItem().text() if self._coll_list.currentItem() else ""
+        resp = QMessageBox.question(
+            self, "Eliminar colección",
+            f"¿Eliminar la colección '{name}' y todos sus pasos? No se puede deshacer.",
+        )
+        if resp != QMessageBox.Yes:
             return
         cid = self._cid
         self._run(lambda: self._api.collection_delete(cid), lambda _r: self.reload())
@@ -178,6 +351,46 @@ class CollectionsPanel(QWidget):
         row = self._items_tbl.currentRow()
         return self._items[row] if 0 <= row < len(self._items) else None
 
+    def _edit_step(self) -> None:
+        item = self._selected_item()
+        if item is None or self._cid is None:
+            return
+        dialog = _StepEditDialog(item, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        cid, iid = self._cid, item.get("id")
+        self._run(
+            lambda: self._api.collection_update_item(cid, iid, dialog.values()),
+            lambda _r: self._load_items(),
+        )
+
+    def _move_step(self, step: int) -> None:
+        """Intercambia la posición del paso seleccionado con su vecino."""
+        row = self._items_tbl.currentRow()
+        target = row + step
+        if self._cid is None or not (0 <= row < len(self._items)) \
+                or not (0 <= target < len(self._items)):
+            return
+        cid = self._cid
+        a, b = self._items[row], self._items[target]
+        pos_a, pos_b = a.get("position"), b.get("position")
+        self._run(
+            lambda: self._swap_positions(cid, a["id"], pos_b, b["id"], pos_a),
+            lambda _r: self._reselect_after_move(target),
+        )
+
+    def _swap_positions(self, cid: int, id_a: int, pos_a: Any,
+                        id_b: int, pos_b: Any) -> dict[str, Any]:
+        """Dos PUT en el hilo de red para intercambiar posiciones."""
+        self._api.collection_update_item(cid, id_a, {"position": pos_a})
+        self._api.collection_update_item(cid, id_b, {"position": pos_b})
+        return {"ok": True}
+
+    def _reselect_after_move(self, row: int) -> None:
+        self._load_items()
+        if 0 <= row < len(self._items):
+            self._items_tbl.selectRow(row)
+
     def _delete_step(self) -> None:
         item = self._selected_item()
         if item is None or self._cid is None:
@@ -186,6 +399,7 @@ class CollectionsPanel(QWidget):
         self._run(lambda: self._api.collection_delete_item(cid, iid),
                   lambda _r: self._load_items())
 
+    # -- ejecución: un paso suelto ------------------------------------------ #
     def _run_step(self) -> None:
         item = self._selected_item()
         if item is None or self._cid is None:
@@ -197,7 +411,7 @@ class CollectionsPanel(QWidget):
 
     def _on_step_result(self, result: dict[str, Any]) -> None:
         if result.get("error"):
-            self._output.setPlainText(f"⚠ Error: {result['error']}")
+            self._output.setPlainText(f"Error: {result['error']}")
             return
         extracted = result.get("extracted_variables", {})
         self._output.setPlainText(
@@ -206,6 +420,50 @@ class CollectionsPanel(QWidget):
             f"Variables extraídas: {extracted}\n\n{result.get('body', '')}"
         )
 
+    # -- ejecución: paso a paso (Send Next / Reset) ------------------------- #
+    def _reset_session(self) -> None:
+        self._cursor = 0
+        self._session_vars = {}
+        self._update_session_labels()
+        self._output.setPlainText("Sesión reiniciada. Send Next ejecuta el paso 1.")
+
+    def _update_session_labels(self) -> None:
+        total = len(self._items)
+        pos = min(self._cursor + 1, total) if total else 0
+        self._cursor_label.setText(f"Paso {pos}/{total}" if total else "Sin pasos")
+        self._vars_label.setText(f"Variables de sesión: {self._session_vars}")
+
+    def _send_next(self) -> None:
+        if self._cid is None or not self._items:
+            return
+        if self._cursor >= len(self._items):
+            self._output.setPlainText("Fin de la cadena. Usa Reset para empezar de nuevo.")
+            return
+        item = self._items[self._cursor]
+        cid, iid = self._cid, item.get("id")
+        variables = dict(self._session_vars)
+        self._items_tbl.selectRow(self._cursor)
+        self._output.setPlainText(f"Ejecutando paso {self._cursor + 1}…")
+        self._run(lambda: self._api.collection_execute_item(cid, iid, variables),
+                  self._on_send_next_result)
+
+    def _on_send_next_result(self, result: dict[str, Any]) -> None:
+        if result.get("error"):
+            self._output.setPlainText(f"Error en paso {self._cursor + 1}: {result['error']}")
+            return
+        extracted = result.get("extracted_variables", {}) or {}
+        self._session_vars.update(extracted)
+        step_no = self._cursor + 1
+        self._cursor += 1
+        self._update_session_labels()
+        self._output.setPlainText(
+            f"[paso {step_no}] HTTP {result.get('status_code', '')}  ·  "
+            f"{round((result.get('elapsed') or 0) * 1000)} ms\n"
+            f"Variables extraídas: {extracted}\n"
+            f"Variables acumuladas: {self._session_vars}\n\n{result.get('body', '')}"
+        )
+
+    # -- ejecución: cadena completa ----------------------------------------- #
     def _run_all(self) -> None:
         """Encadena todos los pasos pasando extracted_variables al siguiente."""
         if self._cid is None or not self._items:
