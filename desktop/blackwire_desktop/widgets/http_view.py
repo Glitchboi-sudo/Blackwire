@@ -74,18 +74,32 @@ def _pretty_body(body: str) -> str:
     return body
 
 
+def _header_body_split(text: str) -> tuple[str, str, str]:
+    """(head, sep, body) partiendo por la PRIMERA línea en blanco.
+
+    Acepta separador CRLF (`\\r\\n\\r\\n`, el de las respuestas HTTP reales) o LF
+    (`\\n\\n`). Antes solo se contemplaba `\\n\\n`, así que una respuesta con CRLF
+    dejaba el cuerpo "vacío" y el Render mostraba «Sin contenido HTML». Devuelve
+    sep='' si no hay línea en blanco (mensaje sin cuerpo).
+    """
+    for sep in ("\r\n\r\n", "\n\n"):
+        head, found, body = text.partition(sep)
+        if found:
+            return head, found, body
+    return text, "", ""
+
+
 def _split_body(text: str) -> str:
     """Devuelve solo el cuerpo (tras la primera línea en blanco), o '' si no hay."""
-    _head, sep, body = text.partition("\n\n")
-    return body if sep else ""
+    return _header_body_split(text)[2]
 
 
 def prettify_message(text: str) -> str:
     """Reformatea el cuerpo (tras la línea en blanco) si es JSON/XML; headers intactos."""
-    head, sep, body = text.partition("\n\n")
+    head, sep, body = _header_body_split(text)
     if not sep or not body.strip():
         return text
-    return f"{head}\n\n{_pretty_body(body)}"
+    return f"{head}{sep}{_pretty_body(body)}"
 
 
 def hexdump(text: str) -> str:
