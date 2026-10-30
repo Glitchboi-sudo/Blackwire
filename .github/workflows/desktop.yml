@@ -108,14 +108,17 @@ jobs:
         run: |
           Copy-Item packaging/docker-compose.runtime.yml dist/blackwire-desktop/docker-compose.yml
           Copy-Item dist-image/blackwire-image.tar.gz dist/blackwire-desktop/blackwire-image.tar.gz
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DBuildDir=dist\blackwire-desktop" "packaging\windows-installer.iss"
+          # Ruta ABSOLUTA: Inno resuelve Source relativo al dir del .iss (packaging/), no al cwd.
+          $build = Join-Path $PWD 'dist\blackwire-desktop'
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DBuildDir=$build" "packaging\windows-installer.iss"
       - name: Empaquetar Windows (.msi WiX)
         if: matrix.asset == 'windows'
         continue-on-error: true
         shell: pwsh
         run: |
           dotnet tool install --global wix
-          wix build packaging\windows-installer.wxs -d BuildDir=dist\blackwire-desktop -o "Blackwire-$env:BW_VERSION-x64.msi"
+          $build = Join-Path $PWD 'dist\blackwire-desktop'
+          wix build packaging\windows-installer.wxs -d "BuildDir=$build" -o "Blackwire-$env:BW_VERSION-x64.msi"
 
       - name: Subir instaladores como artifact
         if: always()
