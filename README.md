@@ -19,35 +19,40 @@
 
 ## ¿Qué es BlackWire?
 
-**BlackWire** es un proxy interceptor HTTP/HTTPS de código abierto diseñado para **pruebas de seguridad**, **análisis de tráfico web** y **debugging de aplicaciones**. Ofrece una alternativa ligera, portable y extensible a herramientas como Burp Suite o OWASP ZAP, con un frontend web moderno y un potente backend basado en mitmproxy.
+**BlackWire** es un proxy interceptor HTTP/HTTPS de código abierto diseñado para **pruebas de seguridad**, **análisis de tráfico web** y **debugging de aplicaciones**. Ofrece una alternativa ligera, portable y extensible a herramientas como Burp Suite o OWASP ZAP, con una **app de escritorio nativa (PySide6/Qt)** sobre un potente backend basado en mitmproxy.
+
+> **Nota (v2.0.0):** la interfaz web fue retirada (EOL). La única UI es la app de escritorio nativa; el backend sigue vivo y es consumido por esa app vía REST + WebSocket.
 
 ### Por qué BlackWire
 
 - **Para Pentesters**: Interceptor completo, HTTPQL, Collections, Sensitive Discovery
-- **Portable**: Sin instalación compleja - solo `make install` y listo
+- **Portable**: Sin instalación compleja
 - **Extensible**: Sistema de plugins en Python con UI auto-generada
-- **Moderno**: Frontend React, 15 temas, Import/Export compatible con Burp Suite
+- **Nativo**: App de escritorio PySide6/Qt, 17 temas, Import/Export compatible con Burp Suite
+- **IA-ready**: Servidor MCP integrado para que agentes de IA conduzcan BlackWire
 
 ---
 
 ## Quick Start
 
-### Versión Web (Desarrollo)
+### Desarrollo (desde el código)
 
 ```bash
-# 1. Clonar e instalar (crea venv, instala deps y genera el certificado mitmproxy)
+# 1. Clonar e instalar el backend (venv, deps y certificado mitmproxy)
 git clone https://github.com/Glitchboi-sudo/Blackwire.git
 cd Blackwire
 make install
 
-# 2. Lanzar aplicación (compila el frontend, arranca el backend y abre el navegador)
-make run
+# 2. Arrancar el backend (FastAPI + mitmproxy) en segundo plano
+make start
+
+# 3. Lanzar la app de escritorio nativa (requiere PySide6 en el host)
+python desktop/run.py
 ```
 
-**Eso es todo.** Abre en http://localhost:5000
-
-> Todos los comandos de desarrollo viven en el `Makefile`. Ejecuta `make help` para verlos
-> (`make serve` en primer plano, `make start`/`make stop` en segundo plano, `make compile`, `make restart`, `make clean`).
+> Los comandos del backend viven en el `Makefile` (`make help`): `make serve` (primer plano),
+> `make start`/`make stop`, `make restart`, `make clean`. La app de escritorio también puede
+> correr su smoke test headless: `python desktop/run.py --selftest`.
 
 ### Versión Desktop (Producción)
 
@@ -117,10 +122,7 @@ def register():
 
 **¡Y listo!** Reinicia el servidor (`make restart`) y tu extensión aparece automáticamente en la pestaña Extensions con su formulario configurado.
 
-**3 tipos de extensiones:**
-1. **Schema-Driven** → Formularios simples auto-generados (ejemplos: [rate_limiter.py](backend/extensions/rate_limiter.py))
-2. **Dynamic JSX** → UIs complejas sin recompilar frontend (ejemplos: [webhook_site.ui.jsx](backend/extensions/webhook_site.ui.jsx), [headers_injector.ui.jsx](backend/extensions/headers_injector.ui.jsx))
-3. **Custom React** → Componentes hardcoded para casos especiales (legacy)
+**Extensiones Schema-Driven** → Formularios auto-generados desde `EXTENSION_META["ui_schema"]`, renderizados por la app de escritorio (ejemplo: [rate_limiter.py](backend/extensions/rate_limiter.py)). Los tipos legacy `Dynamic JSX` / `Custom React` fueron retirados junto con la UI web (v2.0.0).
 
 **Documentación completa**: [Sistema de Extensiones Wiki](https://github.com/Glitchboi-sudo/Blackwire/wiki/07-Sistema-de-Extensiones)
 
@@ -147,10 +149,10 @@ def register():
 - **WebSocket Viewer** - Captura y reenvío de frames WS
 
 ### Extensibilidad
-- **Sistema de Plugins** - Crea extensiones en Python sin tocar el frontend
-- **UI Schema-Driven** - Formularios auto-generados desde metadata
-- **Dynamic JSX** - UIs complejas con archivos `.ui.jsx` sin recompilar
+- **Sistema de Plugins** - Crea extensiones en Python puro
+- **UI Schema-Driven** - Formularios auto-generados desde metadata, renderizados en la app nativa
 - **Auto-Discovery** - Las extensiones se descubren y configuran automáticamente
+- **Servidor MCP** - Expón BlackWire a agentes de IA (`blackwire-desktop --mcp`)
 
 ### Integración
 - **Burp Suite** - Import/Export compatible con formato XML
@@ -193,10 +195,8 @@ rm -rf ~/.mitmproxy
 make cert
 ```
 
-**Frontend no carga:**
-```bash
-make compile
-```
+**La app de escritorio no conecta:** asegúrate de que el backend esté arriba
+(`make start`) y responda en `http://localhost:5000`.
 ---
 
 ## Créditos
@@ -209,8 +209,9 @@ Gracias por el apoyo de **[Lychi3](https://www.linkedin.com/in/carlos-polanco-ma
 **Tecnologías:**
 - [mitmproxy](https://mitmproxy.org/) — Motor de proxy
 - [FastAPI](https://fastapi.tiangolo.com/) — Backend API
-- [React](https://react.dev/) — Frontend
-- [Sucrase](https://github.com/alangpierce/sucrase) — Transpilación JSX
+- [PySide6 / Qt](https://doc.qt.io/qtforpython/) — App de escritorio nativa
+- [PyInstaller](https://pyinstaller.org/) — Empaquetado de escritorio
+- [MCP](https://modelcontextprotocol.io/) — Servidor para agentes de IA
 - [SQLite](https://www.sqlite.org/) — Base de datos
 
 ---
