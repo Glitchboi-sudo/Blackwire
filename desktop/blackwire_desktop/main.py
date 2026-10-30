@@ -66,7 +66,7 @@ from .widgets.webhook_site import WebhookSitePanel
 from .widgets.websocket_viewer import WebSocketPanel
 from .ws_client import LiveHistoryClient
 from .backend_server import BackendServer, BackendError
-from .docker_runtime import make_backend_runtime, DockerError
+from .docker_runtime import make_backend_runtime, mcp_owns_backend, DockerError
 
 
 # --------------------------------------------------------------------------- #
@@ -1176,11 +1176,15 @@ class MainWindow(QMainWindow):
         Sin backend cualquier petición falla, así que esto corre antes de
         `load_initial()`. Reutiliza un backend ya en marcha (no abre otro).
         """
+        # Creamos el runtime siempre, aunque el backend ya responda: así podemos
+        # "adoptar" un contenedor en marcha y apagarlo al cerrar la GUI (salvo
+        # que una sesión MCP lo posea; ver closeEvent).
+        self._backend = make_backend_runtime(self._api.base_url)
         if self._api.ping():
+            self._status.setText(f"Backend: {self._api.base_url}")
             return
         self._status.setText(t("Starting backend…"))
         QApplication.processEvents()
-        self._backend = make_backend_runtime(self._api.base_url)
         try:
             self._backend.start()
         except (BackendError, DockerError) as exc:
@@ -1233,8 +1237,15 @@ class MainWindow(QMainWindow):
         self._settings.sync()
         if self._live is not None:
             self._live.stop()
+        # Apagamos el backend al cerrar la GUI, EXCEPTO si una sesión MCP lo
+        # posee (marcador vivo): en ese caso el agente de IA lo sigue usando.
         if self._backend is not None:
-            self._backend.stop()
+            if mcp_owns_backend():
+                self._status.setText(
+                    t("Backend kept running for the MCP session")
+                )
+            else:
+                self._backend.stop(force=True)
         super().closeEvent(event)
 
 

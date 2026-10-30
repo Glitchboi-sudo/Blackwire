@@ -33,6 +33,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ._sorting import make_sortable, populating
+
 Runner = Callable[[Callable[[], Any], Callable[[Any], None]], None]
 
 _WHEN = ["request", "response", "both"]
@@ -105,6 +107,7 @@ class MatchReplacePanel(QWidget):
         # -- tabla de reglas ------------------------------------------------ #
         self._table = QTableWidget(0, len(_COLUMNS))
         self._table.setHorizontalHeaderLabels(_COLUMNS)
+        make_sortable(self._table)  # orden por clic en cabecera / click-sort
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SingleSelection)
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -142,21 +145,25 @@ class MatchReplacePanel(QWidget):
         self._refresh_table()
 
     def _refresh_table(self) -> None:
-        self._table.setRowCount(len(self._rules))
-        for r, rule in enumerate(self._rules):
-            cells = [
-                "sí" if rule.get("enabled", True) else "no",
-                rule.get("when", "request"),
-                rule.get("target", "url"),
-                rule.get("pattern", ""),
-                rule.get("replace", ""),
-                "sí" if rule.get("regex") else "no",
-                rule.get("header", "") if rule.get("target") == "headers" else "",
-            ]
-            for c, text in enumerate(cells):
-                item = QTableWidgetItem(text)
-                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-                self._table.setItem(r, c, item)
+        with populating(self._table):
+            self._table.setRowCount(len(self._rules))
+            for r, rule in enumerate(self._rules):
+                cells = [
+                    "sí" if rule.get("enabled", True) else "no",
+                    rule.get("when", "request"),
+                    rule.get("target", "url"),
+                    rule.get("pattern", ""),
+                    rule.get("replace", ""),
+                    "sí" if rule.get("regex") else "no",
+                    rule.get("header", "") if rule.get("target") == "headers" else "",
+                ]
+                for c, text in enumerate(cells):
+                    item = QTableWidgetItem(text)
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                    if c == 0:
+                        # Índice estable en self._rules / stable rules index.
+                        item.setData(Qt.UserRole, r)
+                    self._table.setItem(r, c, item)
 
     # -- persistencia (PUT reemplaza el config entero) ---------------------- #
     def _persist(self) -> None:
@@ -203,8 +210,16 @@ class MatchReplacePanel(QWidget):
         self._persist()
 
     def _selected_index(self) -> int:
+        # Resuelve el índice original (UserRole) de la fila seleccionada, porque
+        # el orden visual puede diferir del de self._rules tras ordenar.
         row = self._table.currentRow()
-        return row if 0 <= row < len(self._rules) else -1
+        if row < 0:
+            return -1
+        item = self._table.item(row, 0)
+        idx = item.data(Qt.UserRole) if item is not None else None
+        if isinstance(idx, int) and 0 <= idx < len(self._rules):
+            return idx
+        return -1
 
     def _toggle_selected(self) -> None:
         idx = self._selected_index()

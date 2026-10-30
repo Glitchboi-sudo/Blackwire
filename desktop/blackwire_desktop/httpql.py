@@ -23,6 +23,8 @@ HTTPQL_RESP_FIELDS = ["code", "raw", "len"]
 HTTPQL_STR_OPS = ["eq", "ne", "cont", "ncont", "like", "nlike", "regex", "nregex"]
 HTTPQL_NUM_OPS = ["eq", "ne", "gt", "gte", "lt", "lte"]
 HTTPQL_BOOL_OPS = ["eq", "ne"]
+# Unión de todos los operadores, para reconocer la forma natural `ns.field OP value`.
+HTTPQL_ALL_OPS = set(HTTPQL_STR_OPS) | set(HTTPQL_NUM_OPS) | set(HTTPQL_BOOL_OPS)
 
 _WORD_RE = re.compile(r"[a-zA-Z0-9_.%*?\-/&+=@:]+")
 
@@ -172,13 +174,30 @@ def httpql_parse(input_str: str) -> tuple[dict[str, Any] | None, str | None]:
             if ident == "preset" and peek()["type"] == "COLON":
                 advance()
                 return {"type": "preset", "name": parse_value()}
+            # Dos formas equivalentes de comparación:
+            #   - Caido:   `ns.field.op:value`   -> IDENT de 3 partes + ':'  + valor
+            #   - natural: `ns.field op value`    -> IDENT de 2 partes + op (IDENT) + valor
+            # El operador puede ir en mayúsculas y el valor tras ':' o un espacio.
             parts = ident.split(".")
-            if len(parts) != 3:
+            if len(parts) == 3:
+                ns, field, op = parts
+                op = op.lower()
+            elif len(parts) == 2:
+                nxt = peek()
+                op_word = (nxt.get("value") or "").lower() if nxt["type"] == "IDENT" else ""
+                if op_word not in HTTPQL_ALL_OPS:
+                    raise HttpqlError(
+                        f'Expected an operator (eq, ne, cont, gt…) after "{ident}" '
+                        f"at position {nxt.get('pos')}"
+                    )
+                ns, field = parts
+                op = op_word
+                advance()  # consume el operador
+            else:
                 raise HttpqlError(
                     f"Expected namespace.field.operator at position {tok['pos']}, "
                     f'got "{ident}"'
                 )
-            ns, field, op = parts
             if ns not in ("req", "resp"):
                 raise HttpqlError(f'Unknown namespace "{ns}" at position {tok["pos"]}')
             valid_fields = HTTPQL_REQ_FIELDS if ns == "req" else HTTPQL_RESP_FIELDS
@@ -193,11 +212,9 @@ def httpql_parse(input_str: str) -> tuple[dict[str, Any] | None, str | None]:
             )
             if op not in valid_ops:
                 raise HttpqlError(f'Operator "{op}" not valid for {ns}.{field}')
-            if peek()["type"] != "COLON":
-                raise HttpqlError(
-                    f"Expected : after {ident} at position {peek().get('pos')}"
-                )
-            advance()
+            # El valor va tras ':' (forma Caido) o separado por un espacio (natural).
+            if peek()["type"] == "COLON":
+                advance()
             return {
                 "type": "comparison", "namespace": ns, "field": field,
                 "operator": op, "value": parse_value(),

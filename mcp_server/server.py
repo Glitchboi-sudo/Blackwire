@@ -23,6 +23,9 @@ de que la puerta exista y arranque CERRADA.
 
 from __future__ import annotations
 
+import os
+import time
+from pathlib import Path
 from typing import Any
 
 from .rest import BlackwireRest, RestError
@@ -267,9 +270,84 @@ def current_project() -> dict[str, Any]:
     return current if isinstance(current, dict) else {"project": current}
 
 
+# --------------------------------------------------------------------------- #
+# Ciclo de vida del backend compartido con la GUI
+# --------------------------------------------------------------------------- #
+# Mientras esta sesión MCP viva, escribimos un marcador con nuestro PID. La GUI
+# lo consulta al cerrarse (ver desktop/.../docker_runtime.mcp_owns_backend) y, si
+# existe, NO apaga el backend: el agente de IA lo sigue usando. Ruta y formato
+# deben coincidir con los de docker_runtime (solo el PID en texto).
+def _mcp_lock_path() -> Path:
+    return Path.home() / ".blackwire" / "mcp-backend.lock"
+
+
+def _write_mcp_marker() -> None:
+    path = _mcp_lock_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(os.getpid()))
+    except OSError:
+        pass  # best-effort: sin marcador la GUI podría apagar el backend
+
+
+def _remove_mcp_marker() -> None:
+    try:
+        _mcp_lock_path().unlink()
+    except OSError:
+        pass
+
+
+def _backend_reachable() -> bool:
+    base = os.environ.get("BLACKWIRE_BASE_URL", "http://127.0.0.1:5000")
+    try:
+        import httpx
+
+        httpx.get(f"{base.rstrip('/')}/", timeout=2.0)
+        return True
+    except Exception:  # noqa: BLE001 - cualquier fallo => no alcanzable
+        return False
+
+
+def _ensure_backend_for_mcp():
+    """Si el backend no responde, intenta arrancarlo (Docker). Best-effort.
+
+    Devuelve el runtime si lo arrancó aquí (para pararlo al salir), o None. Así,
+    "si se inicia el backend con el MCP", el MCP es su dueño y lo mantiene vivo
+    mientras dure la sesión, parándolo al terminar.
+    """
+    if _backend_reachable():
+        return None
+    try:
+        from blackwire_desktop.docker_runtime import make_backend_runtime
+    except Exception:  # noqa: BLE001 - sin el paquete desktop no podemos arrancarlo
+        return None
+    base = os.environ.get("BLACKWIRE_BASE_URL", "http://127.0.0.1:5000")
+    runtime = make_backend_runtime(base)
+    try:
+        runtime.start()
+    except Exception:  # noqa: BLE001 - Docker no disponible, etc.
+        return None
+    for _ in range(60):  # esperar hasta ~30s a que responda
+        if _backend_reachable():
+            break
+        time.sleep(0.5)
+    return runtime
+
+
 def main() -> None:
     """Punto de entrada del console-script `blackwire-mcp` (transport stdio)."""
-    server.run()
+    runtime = _ensure_backend_for_mcp()
+    _write_mcp_marker()
+    try:
+        server.run()
+    finally:
+        _remove_mcp_marker()
+        if runtime is not None:
+            # El backend lo arrancó esta sesión MCP: lo apagamos al salir.
+            try:
+                runtime.stop(force=True)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 if __name__ == "__main__":

@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import themes
+from ._sorting import make_sortable, populating
 
 Runner = Callable[[Callable[[], Any], Callable[[Any], None]], None]
 
@@ -131,6 +132,8 @@ class WebhookSitePanel(QWidget):
         self._table.currentCellChanged.connect(
             lambda r, _c, _pr, _pc: self._show_detail(r)
         )
+        # Ordenar por cabecera / sort by header click.
+        make_sortable(self._table)
         split.addWidget(self._table)
 
         self._detail = QTabWidget()
@@ -177,18 +180,23 @@ class WebhookSitePanel(QWidget):
 
     def _on_requests(self, requests: list[dict[str, Any]]) -> None:
         self._requests = requests or []
-        self._table.setRowCount(len(self._requests))
-        for r, req in enumerate(self._requests):
-            cells = [
-                req.get("method", ""),
-                req.get("url", ""),
-                req.get("ip", ""),
-                req.get("created_at", ""),
-            ]
-            for c, text in enumerate(cells):
-                item = QTableWidgetItem(str(text))
-                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-                self._table.setItem(r, c, item)
+        # Poblar sin ordenar para no corromper filas a medio construir.
+        with populating(self._table):
+            self._table.setRowCount(len(self._requests))
+            for r, req in enumerate(self._requests):
+                cells = [
+                    req.get("method", ""),
+                    req.get("url", ""),
+                    req.get("ip", ""),
+                    req.get("created_at", ""),
+                ]
+                for c, text in enumerate(cells):
+                    item = QTableWidgetItem(str(text))
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                    if c == 0:
+                        # Índice estable en self._requests / stable list index.
+                        item.setData(Qt.UserRole, r)
+                    self._table.setItem(r, c, item)
         if self._requests:
             self._table.selectRow(0)
         else:
@@ -198,10 +206,17 @@ class WebhookSitePanel(QWidget):
         for view in (self._req_view, self._hdr_view, self._query_view, self._body_view):
             view.setPlainText("")
 
+    def _req_index(self, row: int) -> int:
+        """Resuelve el índice estable en self._requests desde una fila visual."""
+        item = self._table.item(row, 0) if row >= 0 else None
+        idx = item.data(Qt.UserRole) if item is not None else None
+        return idx if isinstance(idx, int) else -1
+
     def _show_detail(self, row: int) -> None:
-        if not (0 <= row < len(self._requests)):
+        idx = self._req_index(row)
+        if not (0 <= idx < len(self._requests)):
             return
-        req = self._requests[row]
+        req = self._requests[idx]
         # Regla de seguridad: setPlainText, jamás setHtml con datos capturados.
         self._req_view.setPlainText(
             f"{req.get('method', '')} {req.get('url', '')}\n"
@@ -268,10 +283,10 @@ class WebhookSitePanel(QWidget):
             self.status_text.emit("Webhook.site: URL copiada al portapapeles")
 
     def _send_selected_to_repeater(self) -> None:
-        row = self._table.currentRow()
-        if not (0 <= row < len(self._requests)):
+        idx = self._req_index(self._table.currentRow())
+        if not (0 <= idx < len(self._requests)):
             return
-        req = self._requests[row]
+        req = self._requests[idx]
         detail = {
             "method": req.get("method", "GET"),
             "url": req.get("url", ""),

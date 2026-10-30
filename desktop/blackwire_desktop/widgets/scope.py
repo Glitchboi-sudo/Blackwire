@@ -25,6 +25,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ._sorting import make_sortable, populating
+
 Runner = Callable[[Callable[[], Any], Callable[[Any], None]], None]
 
 
@@ -71,6 +73,7 @@ class ScopePanel(QWidget):
             2, QHeaderView.ResizeToContents
         )
         self._table.cellDoubleClicked.connect(lambda _r, _c: self._toggle_selected())
+        make_sortable(self._table)
         layout.addWidget(self._table, 1)
 
         # -- acciones ------------------------------------------------------- #
@@ -94,20 +97,33 @@ class ScopePanel(QWidget):
 
     def _on_rules(self, rules: list[dict[str, Any]]) -> None:
         self._rules = rules or []
-        self._table.setRowCount(len(self._rules))
-        for r, rule in enumerate(self._rules):
-            self._set_cell(r, 0, rule.get("pattern", ""))
-            self._set_cell(r, 1, rule.get("rule_type", ""))
-            self._set_cell(r, 2, "sí" if rule.get("enabled", True) else "no")
+        with populating(self._table):
+            self._table.setRowCount(len(self._rules))
+            for r, rule in enumerate(self._rules):
+                # Guarda el índice estable en la celda col-0 (resiste reordenar).
+                self._set_cell(r, 0, rule.get("pattern", ""), index=r)
+                self._set_cell(r, 1, rule.get("rule_type", ""))
+                self._set_cell(r, 2, "sí" if rule.get("enabled", True) else "no")
 
-    def _set_cell(self, row: int, col: int, text: str) -> None:
+    def _set_cell(
+        self, row: int, col: int, text: str, *, index: int | None = None
+    ) -> None:
         item = QTableWidgetItem(text)
         item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+        if index is not None:
+            item.setData(Qt.UserRole, index)
         self._table.setItem(row, col, item)
 
     def _selected_rule(self) -> dict[str, Any] | None:
+        # Resuelve el índice original vía UserRole de la col-0 (resiste reordenar).
         row = self._table.currentRow()
-        return self._rules[row] if 0 <= row < len(self._rules) else None
+        if row < 0:
+            return None
+        item = self._table.item(row, 0)
+        idx = item.data(Qt.UserRole) if item is not None else None
+        if isinstance(idx, int) and 0 <= idx < len(self._rules):
+            return self._rules[idx]
+        return None
 
     # -- mutaciones (vía runner, luego recarga + avisa) --------------------- #
     def _after_mutation(self, _result: Any) -> None:

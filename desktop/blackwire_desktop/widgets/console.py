@@ -48,11 +48,11 @@ class ConsolePanel(QWidget):
         bar = QHBoxLayout()
         self._level = QComboBox()
         self._level.addItems(_LEVELS)
-        self._level.currentTextChanged.connect(lambda _t: self._render())
+        self._level.currentTextChanged.connect(lambda _t: self._render_full())
         self._text = QLineEdit()
         self._text.setPlaceholderText("Filtrar texto…")
         self._text.setClearButtonEnabled(True)
-        self._text.textChanged.connect(lambda _t: self._render())
+        self._text.textChanged.connect(lambda _t: self._render_full())
         self._autoscroll = QCheckBox("Auto-scroll")
         self._autoscroll.setChecked(True)
         self._paused = QCheckBox("Pausar")
@@ -76,9 +76,11 @@ class ConsolePanel(QWidget):
         self._view.setFont(QFont(themes.MONO_FAMILY, 9))
         layout.addWidget(self._view, 1)
 
-        # Sondeo periódico (los logs no se emiten por el WS de la app).
+        # Sondeo rápido (1s) con append incremental -> sensación de tiempo real.
+        # Los logs no se emiten por el WS de la app; el backend mantiene un ring
+        # buffer que incluye los errores del proxy (reenviados por el addon).
         self._timer = QTimer(self)
-        self._timer.setInterval(2000)
+        self._timer.setInterval(1000)
         self._timer.timeout.connect(self._poll)
         self._timer.start()
 
@@ -89,29 +91,78 @@ class ConsolePanel(QWidget):
     def _poll(self) -> None:
         if self._paused.isChecked():
             return
-        self._run(lambda: self._api.console_logs(500), self._on_logs)
+        self._run(lambda: self._api.console_logs(1000), self._on_logs)
+
+    @staticmethod
+    def _sig(entry: dict[str, Any]) -> tuple:
+        """Firma para detectar entradas ya vistas (ts+nivel+nombre+msg)."""
+        return (entry.get("ts"), entry.get("level"),
+                entry.get("name"), entry.get("msg"))
 
     def _on_logs(self, entries: list[dict[str, Any]]) -> None:
-        self._entries = entries or []
-        self._render()
+        """Integra el tail devuelto por el backend añadiendo solo lo nuevo.
 
-    def _render(self) -> None:
-        level_name = self._level.currentText()
-        threshold = _LEVEL_ORDER.get(level_name, 0)
+        El endpoint devuelve las últimas N entradas (no un delta); localizamos la
+        última conocida dentro del tail y añadimos únicamente el sufijo posterior,
+        así la vista no se reconstruye entera en cada sondeo (sin parpadeo ni
+        saltos de scroll).
+        """
+        entries = entries or []
+        if not self._entries:
+            self._entries = entries
+            self._render_full()
+            return
+        last = self._sig(self._entries[-1])
+        idx = next((i for i in range(len(entries) - 1, -1, -1)
+                    if self._sig(entries[i]) == last), None)
+        if idx is None:
+            # El buffer rotó más allá del tail: reemplazo completo.
+            self._entries = entries
+            self._render_full()
+            return
+        new = entries[idx + 1:]
+        if not new:
+            return
+        self._entries.extend(new)
+        if len(self._entries) > 20000:
+            self._entries = self._entries[-20000:]
+        self._append(new)
+
+    def _passes_filter(self, entry: dict[str, Any]) -> str | None:
+        """Devuelve la línea formateada si pasa los filtros; si no, None."""
+        threshold = _LEVEL_ORDER.get(self._level.currentText(), 0)
+        if _LEVEL_ORDER.get(entry.get("level", ""), 0) < threshold:
+            return None
+        line = (f"{entry.get('ts', '')} [{entry.get('level', '')}] "
+                f"{entry.get('name', '')}: {entry.get('msg', '')}")
         needle = self._text.text().strip().lower()
-        lines = []
-        for e in self._entries:
-            if _LEVEL_ORDER.get(e.get("level", ""), 0) < threshold:
-                continue
-            line = f"{e.get('ts', '')} [{e.get('level', '')}] {e.get('name', '')}: {e.get('msg', '')}"
-            if needle and needle not in line.lower():
-                continue
-            lines.append(line)
-        self._count.setText(str(len(lines)))
-        self._view.setPlainText("\n".join(lines))
+        if needle and needle not in line.lower():
+            return None
+        return line
+
+    def _scroll_to_end(self) -> None:
         if self._autoscroll.isChecked():
             sb = self._view.verticalScrollBar()
             sb.setValue(sb.maximum())
 
+    def _render_full(self) -> None:
+        """Reconstruye la vista completa (carga inicial o cambio de filtro)."""
+        lines = [ln for e in self._entries if (ln := self._passes_filter(e))]
+        self._count.setText(str(len(lines)))
+        self._view.setPlainText("\n".join(lines))
+        self._scroll_to_end()
+
+    def _append(self, new: list[dict[str, Any]]) -> None:
+        """Añade al final solo las entradas nuevas que pasan el filtro."""
+        lines = [ln for e in new if (ln := self._passes_filter(e))]
+        if not lines:
+            return
+        self._view.appendPlainText("\n".join(lines))
+        self._count.setText(str(int(self._count.text() or 0) + len(lines)))
+        self._scroll_to_end()
+
     def _clear(self) -> None:
-        self._run(self._api.clear_console_logs, lambda _r: self._on_logs([]))
+        def _done(_r: Any) -> None:
+            self._entries = []
+            self._render_full()
+        self._run(self._api.clear_console_logs, _done)

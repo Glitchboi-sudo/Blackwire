@@ -21,7 +21,7 @@ permissions:
   contents: write
 
 env:
-  BW_VERSION: "2.0.0"
+  BW_VERSION: "2.1.0"
 
 jobs:
   # 1) Imagen Docker del backend (compartida por los 3 SO).

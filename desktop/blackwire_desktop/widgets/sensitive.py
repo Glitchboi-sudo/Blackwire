@@ -43,6 +43,7 @@ from ..sensitive import (
     make_custom_pattern,
     scan_detail,
 )
+from ._sorting import make_sortable, numeric_item, populating
 from .http_view import HttpView
 
 Runner = Callable[[Callable[[], Any], Callable[[Any], None]], None]
@@ -194,6 +195,7 @@ class SensitivePanel(QWidget):
         self._table.setSelectionMode(QAbstractItemView.SingleSelection)
         self._table.verticalHeader().setVisible(False)
         self._table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
+        make_sortable(self._table)  # orden por clic en cabeceras / click-to-sort
         self._table.itemSelectionChanged.connect(self._on_select)
 
         # -- detalle: Request / Response completos del hallazgo seleccionado --- #
@@ -296,16 +298,26 @@ class SensitivePanel(QWidget):
         self._append_row(row)
 
     def _append_row(self, row: dict[str, Any]) -> None:
-        r = self._table.rowCount()
-        self._table.insertRow(r)
+        # Índice estable en self._results del hallazgo recién añadido.
+        # Stable index of the just-appended finding in self._results.
+        original_index = len(self._results) - 1
         values = [row["patternName"], row["category"], row["match"], row["section"],
                   row["method"], row["url"], row["entropy"]]
         color = self._tokens().get(category_token(row["category"]))
-        for c, val in enumerate(values):
-            item = QTableWidgetItem(str(val))
-            if c == 1 and color:
-                item.setForeground(QColor(color))
-            self._table.setItem(r, c, item)
+        last = len(values) - 1
+        # Se envuelve el append para que el ordenamiento activo no reordene la
+        # fila a medio construir. / Wrap append so active sort doesn't reshuffle.
+        with populating(self._table):
+            r = self._table.rowCount()
+            self._table.insertRow(r)
+            for c, val in enumerate(values):
+                # "Entropía" (última col) ordena numéricamente / sorts numerically.
+                item = numeric_item(val) if c == last else QTableWidgetItem(str(val))
+                if c == 1 and color:
+                    item.setForeground(QColor(color))
+                if c == 0:
+                    item.setData(Qt.UserRole, original_index)
+                self._table.setItem(r, c, item)
 
     def _on_progress(self, done: int, total: int) -> None:
         self._progress.setValue(done)
@@ -319,15 +331,25 @@ class SensitivePanel(QWidget):
     def _apply_filter(self, text: str) -> None:
         needle = text.lower()
         for r in range(self._table.rowCount()):
-            row = self._results[r] if r < len(self._results) else {}
+            # El orden visual puede diferir: se mapea vía UserRole al hallazgo.
+            # Visual order may differ; map via UserRole to the backing finding.
+            item = self._table.item(r, 0)
+            idx = item.data(Qt.UserRole) if item is not None else None
+            row = self._results[idx] if isinstance(idx, int) and \
+                idx < len(self._results) else {}
             hay = " ".join(str(row.get(k, "")) for k in
                            ("patternName", "category", "match", "url")).lower()
             self._table.setRowHidden(r, bool(needle) and needle not in hay)
 
     # -- detalle del hallazgo seleccionado ---------------------------------- #
     def _on_select(self) -> None:
-        idx = self._table.currentRow()
-        if idx < 0 or idx >= len(self._results):
+        # El orden visual puede diferir del de self._results: se resuelve el
+        # índice estable desde UserRole. / Visual order may differ from the list;
+        # resolve the stable index stored in column-0 UserRole.
+        row = self._table.currentRow()
+        item = self._table.item(row, 0) if row >= 0 else None
+        idx = item.data(Qt.UserRole) if item is not None else None
+        if not isinstance(idx, int) or idx < 0 or idx >= len(self._results):
             return
         finding = self._results[idx]
         rid = finding.get("requestId")

@@ -6,5 +6,5 @@ texto plano (regla de seguridad) y el consumo del REST del backend en Docker.
 Ver el plan en memoria del proyecto: native-rewrite-plan.
 """
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 __codename__ = "Buck"

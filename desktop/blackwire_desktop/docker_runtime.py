@@ -37,6 +37,48 @@ IMAGE_TARBALL = "blackwire-image.tar.gz"
 _COMPOSE_NAMES = ("docker-compose.yml", "docker-compose.runtime.yml")
 
 
+# --------------------------------------------------------------------------- #
+# Propiedad del backend: marcador del MCP
+# --------------------------------------------------------------------------- #
+# El servidor MCP (`blackwire-desktop --mcp`) escribe este fichero con su PID
+# mientras usa/gestiona el backend. Si existe y el PID sigue vivo, la GUI NO
+# detiene el backend al cerrarse (el agente de IA lo sigue necesitando). Si no
+# existe, la GUI "adopta y apaga" el backend al cerrarse.
+# El MCP escribe el MISMO fichero (ver mcp_server/server.py); manténganse en
+# sincronía la ruta y el formato (solo el PID en texto).
+def mcp_lock_path() -> Path:
+    return Path.home() / ".blackwire" / "mcp-backend.lock"
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # existe pero es de otro usuario
+    except OSError:
+        return False
+    return True
+
+
+def mcp_owns_backend() -> bool:
+    """True si una sesión MCP viva reclamó el backend (no apagarlo con la GUI)."""
+    path = mcp_lock_path()
+    try:
+        pid = int(path.read_text().strip())
+    except (OSError, ValueError):
+        return False
+    if _pid_alive(pid):
+        return True
+    # Marcador obsoleto (el MCP murió sin limpiar): bórralo para no bloquear.
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    return False
+
+
 class DockerError(RuntimeError):
     """No se pudo gestionar el contenedor del backend."""
 
@@ -185,9 +227,16 @@ class DockerRuntime:
             time.sleep(0.5)
         return False
 
-    def stop(self) -> None:
-        """Detiene el contenedor solo si lo arrancamos nosotros."""
-        if not self._started_here or self._resource_dir is None:
+    def stop(self, force: bool = False) -> None:
+        """Detiene el contenedor del backend.
+
+        Por defecto solo lo para si lo arrancamos nosotros. Con `force=True` lo
+        para aunque lo hayamos adoptado (lo usa la GUI al cerrarse: "adopta y
+        apaga" cualquier backend Docker que no sea de una sesión MCP).
+        """
+        if self._resource_dir is None:
+            return
+        if not self._started_here and not force:
             return
         try:
             compose_file = _compose_file(self._resource_dir)

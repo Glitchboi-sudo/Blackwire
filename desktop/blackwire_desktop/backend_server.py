@@ -113,8 +113,13 @@ class BackendServer:
             time.sleep(0.25)
         return False
 
-    def stop(self) -> None:
-        """Detiene el backend solo si lo arrancamos nosotros."""
+    def stop(self, force: bool = False) -> None:
+        """Detiene el backend que arrancamos nosotros.
+
+        `force` se acepta por compatibilidad con `DockerRuntime.stop` (la GUI
+        llama `stop(force=True)` al cerrarse). En modo host solo podemos parar el
+        proceso que lanzamos; un uvicorn externo (p. ej. `make start`) no se toca.
+        """
         if self._proc is None:
             return
         proc, self._proc = self._proc, None

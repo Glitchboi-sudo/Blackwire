@@ -157,7 +157,7 @@ def register():
 ### Integración
 - **Burp Suite** - Import/Export compatible con formato XML
 - **Git Integration** - Control de versiones integrado
-- **15 Temas** - Midnight, Gruvbox, Solarized, Noir, Synth, etc.
+- **17 Temas** - GitHub Dark, Dracula, Nord, Tokyo Night, Gruvbox, Solarized, etc. (conmutables en caliente + densidad)
 - **100% Portable** - Sin rutas hardcoded, funciona desde cualquier directorio
 
 ## Contribuir
