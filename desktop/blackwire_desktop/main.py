@@ -746,11 +746,11 @@ class MainWindow(QMainWindow):
 
     # -- menú Ayuda --------------------------------------------------------- #
     def _show_about(self) -> None:
-        from . import __version__
+        from . import __version__, __codename__
         QMessageBox.about(
             self, t("About Blackwire"),
             f"<b>Blackwire</b> — GUI (PySide6)<br>"
-            f"{t('Version')} {__version__}<br><br>"
+            f"{t('Version')} {__version__} &quot;{__codename__}&quot;<br><br>"
             f"{t('Proxy interceptor HTTP/HTTPS for security testing.')}<br>"
             f"Backend: {self._api.base_url}",
         )

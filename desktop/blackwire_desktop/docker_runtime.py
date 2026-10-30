@@ -64,7 +64,11 @@ def _resource_dir() -> Optional[Path]:
     """
     candidates: List[Path] = []
     if getattr(sys, "frozen", False):
-        candidates.append(Path(sys.executable).resolve().parent)
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.append(exe_dir)
+        # macOS .app: el ejecutable vive en Contents/MacOS/; los recursos
+        # empaquetados (compose + tarball) van en Contents/Resources/.
+        candidates.append(exe_dir.parent / "Resources")
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
         candidates.append(Path(meipass))

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- WiX v4/v5 — instalador .msi por-usuario de Blackwire (Windows).
+     Empaqueta la salida onedir de PyInstaller (pasada como -d BuildDir=...).
+     Compilar:
+       wix build packaging/windows-installer.wxs -d BuildDir=dist\blackwire-desktop -o Blackwire-2.0.0-x64.msi
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Blackwire"
+           Manufacturer="Blackwire"
+           Version="2.0.0"
+           UpgradeCode="7b1ac471-0000-4000-a000-626c61636b77"
+           Scope="perUser">
+
+    <MajorUpgrade DowngradeErrorMessage="Ya hay una versión más reciente de Blackwire instalada." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="INSTALLFOLDER" Name="Blackwire" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppShortcutFolder" Name="Blackwire" />
+    </StandardDirectory>
+
+    <!-- Cosecha recursiva de todo el onedir. -->
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Files Include="$(BuildDir)\**" />
+    </ComponentGroup>
+
+    <!-- Acceso directo del menú inicio + clave de registro (KeyPath per-user). -->
+    <Component Id="AppShortcut" Directory="AppShortcutFolder" Guid="*">
+      <Shortcut Id="StartMenuShortcut"
+                Name="Blackwire"
+                Target="[INSTALLFOLDER]blackwire-desktop.exe"
+                WorkingDirectory="INSTALLFOLDER" />
+      <RemoveFolder Id="RemoveShortcutFolder" On="uninstall" />
+      <RegistryValue Root="HKCU" Key="Software\Blackwire" Name="installed"
+                     Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <Feature Id="Main" Title="Blackwire">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="AppShortcut" />
+    </Feature>
+  </Package>
+</Wix>

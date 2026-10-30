@@ -1,13 +1,15 @@
 name: Desktop build
 
-# Construye la app de escritorio NATIVA (PySide6, empaquetada con PyInstaller) para
-# Linux, macOS y Windows. Se dispara al publicar un tag `v*` (crea un release en
-# borrador con todos los bundles) o manualmente desde la pestaña Actions.
+# Construye instaladores NATIVOS de la app de escritorio (PySide6 + PyInstaller),
+# lo más amplio posible por SO:
+#   Linux   -> .deb, .rpm, .AppImage, .tar.gz
+#   macOS   -> .dmg, .pkg
+#   Windows -> .exe (Inno Setup), .msi (WiX)
+# Se dispara al publicar un tag `v*` (adjunta los instaladores al release) o
+# manualmente desde Actions.
 #
-# Arquitectura: la GUI nativa corre en el HOST y gestiona un contenedor Docker con
-# el backend (ver desktop/blackwire_desktop/docker_runtime.py). Por eso la MISMA
-# imagen Docker de Linux se construye una vez y se incluye, como tarball, junto al
-# ejecutable de cada SO; la GUI la carga en el primer arranque (`docker load`).
+# La MISMA imagen Docker del backend se construye una vez y se incluye, como
+# tarball, dentro de cada instalador (la GUI gestiona el contenedor en runtime).
 
 on:
   push:
@@ -16,28 +18,28 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # necesario para crear el release
+  contents: write
+
+env:
+  BW_VERSION: "2.0.0"
 
 jobs:
-  # 1) Construye la imagen Docker del backend una vez y la comparte como artifact.
+  # 1) Imagen Docker del backend (compartida por los 3 SO).
   docker-image:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-
       - name: Construir imagen Docker
         run: docker build -f packaging/Dockerfile -t blackwire:latest .
-
       - name: Exportar imagen como tarball
         run: docker save blackwire:latest | gzip -c > blackwire-image.tar.gz
-
       - uses: actions/upload-artifact@v6
         with:
           name: blackwire-image
           path: blackwire-image.tar.gz
           retention-days: 1
 
-  # 2) Empaqueta la GUI nativa en cada SO con PyInstaller y le adjunta el tarball.
+  # 2) Instaladores nativos por SO.
   bundle:
     needs: docker-image
     permissions:
@@ -46,7 +48,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04   # glibc antigua = mejor compatibilidad del binario
+          - os: ubuntu-22.04
             asset: linux
           - os: macos-latest
             asset: macos
@@ -60,9 +62,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      # Dependencias de ejecución de la GUI + MCP + el empaquetador. El backend
-      # (mitmproxy/fastapi/uvicorn) NO se instala: va en la imagen Docker.
-      - name: Instalar dependencias
+      - name: Instalar dependencias (Python)
         shell: bash
         run: |
           python -m pip install --upgrade pip
@@ -78,30 +78,73 @@ jobs:
         shell: bash
         run: pyinstaller --noconfirm packaging/blackwire-desktop.spec
 
-      # Coloca compose + tarball JUNTO al ejecutable: docker_runtime._resource_dir()
-      # los resuelve primero via Path(sys.executable).parent.
-      - name: Adjuntar compose + imagen al bundle
+      # ---------------- Linux: .deb, .rpm, .AppImage, .tar.gz ----------------
+      - name: Herramientas de empaquetado (Linux)
+        if: matrix.asset == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm librsvg2-bin
+          sudo gem install --no-document fpm
+      - name: Empaquetar Linux
+        if: matrix.asset == 'linux'
         shell: bash
         run: |
           cp packaging/docker-compose.runtime.yml dist/blackwire-desktop/docker-compose.yml
           cp dist-image/blackwire-image.tar.gz dist/blackwire-desktop/blackwire-image.tar.gz
+          bash packaging/build-linux.sh "${BW_VERSION}" dist/blackwire-desktop
 
-      - name: Empaquetar el bundle
+      # ------------------------- macOS: .dmg, .pkg --------------------------
+      - name: Empaquetar macOS
+        if: matrix.asset == 'macos'
         shell: bash
-        run: tar -C dist -czf blackwire-desktop-${{ matrix.asset }}.tar.gz blackwire-desktop
+        run: bash packaging/build-macos.sh "${BW_VERSION}"
 
-      - name: Subir bundle como artifact
+      # ----------------------- Windows: .exe, .msi --------------------------
+      - name: Empaquetar Windows (.exe Inno Setup)
+        if: matrix.asset == 'windows'
+        shell: bash
+        run: |
+          cp packaging/docker-compose.runtime.yml dist/blackwire-desktop/docker-compose.yml
+          cp dist-image/blackwire-image.tar.gz dist/blackwire-desktop/blackwire-image.tar.gz
+          choco install innosetup --no-progress -y
+          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "/DBuildDir=dist\\blackwire-desktop" packaging/windows-installer.iss
+      - name: Empaquetar Windows (.msi WiX)
+        if: matrix.asset == 'windows'
+        continue-on-error: true
+        shell: bash
+        run: |
+          dotnet tool install --global wix
+          wix extension add -g WixToolset.Util.wixext || true
+          wix build packaging/windows-installer.wxs -d BuildDir=dist/blackwire-desktop -o "Blackwire-${BW_VERSION}-x64.msi"
+
+      - name: Subir instaladores como artifact
         if: always()
         uses: actions/upload-artifact@v6
         with:
           name: blackwire-desktop-${{ matrix.asset }}
-          path: blackwire-desktop-${{ matrix.asset }}.tar.gz
-          if-no-files-found: error
+          path: |
+            *.deb
+            *.rpm
+            *.AppImage
+            *.dmg
+            *.pkg
+            *.msi
+            blackwire-desktop-*-linux.tar.gz
+            packaging/Output/*.exe
+          if-no-files-found: ignore
 
       - name: Publicar en el release (solo en tag)
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
-          name: 'Blackwire ${{ github.ref_name }}'
+          name: 'Blackwire 2.0 "Buck"'
           draft: true
-          files: blackwire-desktop-${{ matrix.asset }}.tar.gz
+          files: |
+            *.deb
+            *.rpm
+            *.AppImage
+            *.dmg
+            *.pkg
+            *.msi
+            blackwire-desktop-*-linux.tar.gz
+            packaging/Output/*.exe

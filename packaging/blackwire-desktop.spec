@@ -91,3 +91,21 @@ coll = COLLECT(
     upx=False,
     name="blackwire-desktop",
 )
+
+# macOS: envolver el onedir en un .app para poder generar un .dmg. El empaquetado
+# de CI coloca docker-compose.yml + blackwire-image.tar.gz en Contents/Resources/,
+# donde docker_runtime._resource_dir() los resuelve.
+if sys.platform == "darwin":
+    app = BUNDLE(
+        coll,
+        name="Blackwire.app",
+        icon=None,
+        bundle_identifier="com.blackwire.app",
+        info_plist={
+            "CFBundleName": "Blackwire",
+            "CFBundleDisplayName": "Blackwire",
+            "CFBundleShortVersionString": "2.0.0",
+            "CFBundleVersion": "2.0.0",
+            "NSHighResolutionCapable": True,
+        },
+    )
